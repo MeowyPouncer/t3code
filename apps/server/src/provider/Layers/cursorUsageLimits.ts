@@ -152,12 +152,15 @@ export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function
     return cursorUsageResponseToLimits(body, checkedAt);
   }).pipe(
     Effect.timeout("10 seconds"),
-    Effect.orElseSucceed(() =>
-      makeUnavailableUsageLimits({
-        checkedAt,
-        reason: "probeFailed",
-        message: "Cursor could not read usage limits.",
-      }),
+    // FORK: a defect too, since a browser sign-in now reaches the request; limits never fail a refresh.
+    Effect.catchCause(() =>
+      Effect.succeed(
+        makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "probeFailed",
+          message: "Cursor could not read usage limits.",
+        }),
+      ),
     ),
   );
 });
