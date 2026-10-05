@@ -393,6 +393,18 @@ export function computeLatestLocalTurnOrdinal(
   return latest;
 }
 
+export function countCompletedCompactions(
+  turnItems: ReadonlyArray<Pick<OrchestrationV2TurnItem, "type" | "status">>,
+): number {
+  let count = 0;
+  for (const item of turnItems) {
+    if (item.type === "compaction" && item.status === "completed") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /**
  * Encoded timeline contribution for a bounded snapshot: visible rows plus the
  * duplicated local turnItems and any retained interrupt-request dependencies.
@@ -519,6 +531,8 @@ export function buildBoundedThreadProjection(input: {
     messages: messagesForBoundedProjection(controlProjection, turnItems),
     turnItems,
     visibleTurnItems,
+    // From the full projection: the window holds only the recent compactions.
+    compactionCount: countCompletedCompactions(input.projection.turnItems),
   };
   return {
     projection,

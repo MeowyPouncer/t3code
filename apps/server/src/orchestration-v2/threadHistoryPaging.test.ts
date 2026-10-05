@@ -374,6 +374,30 @@ describe("threadHistoryPaging", () => {
     expect(computeLatestLocalTurnOrdinal(full.turnItems)).toBe(40);
   });
 
+  it("counts completed compactions over the whole thread, not only the bounded window", () => {
+    const compaction = (index: number, status: "completed" | "running") => {
+      const row = makeRow(index);
+      return {
+        ...row,
+        item: { ...row.item, type: "compaction", driver: null, status },
+      } as unknown as OrchestrationV2ProjectedTurnItem;
+    };
+    const rows = Array.from({ length: 40 }, (_, index) =>
+      index === 2 || index === 5
+        ? compaction(index, "completed")
+        : index === 30
+          ? compaction(index, "running")
+          : makeRow(index),
+    );
+    const bounded = buildBoundedThreadProjection({
+      projection: makeProjection(rows),
+      snapshotSequence: 7,
+      policy: { maxItems: 5, maxEncodedBytes: 10_000_000 },
+    });
+    expect(bounded.projection.turnItems.some((item) => item.type === "compaction")).toBe(false);
+    expect(bounded.projection.compactionCount).toBe(2);
+  });
+
   it("preserves linked control rows as one coherent graph", () => {
     const base = makeProjection(Array.from({ length: 40 }, (_, index) => makeRow(index)));
     const linked = {

@@ -1687,6 +1687,12 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
   contextHandoffs: Schema.Array(OrchestrationV2ContextHandoff),
   contextTransfers: Schema.Array(OrchestrationV2ContextTransfer),
   visibleTurnItems: Schema.Array(OrchestrationV2ProjectedTurnItem),
+  /**
+   * Completed compactions in the whole thread. A bounded snapshot carries only
+   * a window of turn items, so the client cannot count them itself; absent on
+   * unbounded projections, where the loaded items are all of them.
+   */
+  compactionCount: Schema.optional(NonNegativeInt),
   updatedAt: Schema.DateTimeUtc,
 });
 export type OrchestrationV2ThreadProjection = typeof OrchestrationV2ThreadProjection.Type;

@@ -696,6 +696,13 @@ describe("ClientSettings composer collapse", () => {
   });
 });
 
+describe("ClientSettings status line", () => {
+  it("shows by default and accepts opting out", () => {
+    expect(decodeClientSettings({}).statusLineEnabled).toBe(true);
+    expect(decodeClientSettingsPatch({ statusLineEnabled: false }).statusLineEnabled).toBe(false);
+  });
+});
+
 describe("ServerSettings thread settlement", () => {
   it("defaults merge settlement on and inactivity settlement to three days", () => {
     const settings = decodeServerSettings({});

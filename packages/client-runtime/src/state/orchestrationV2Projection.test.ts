@@ -242,6 +242,33 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.visibleTurnItems[1]).toBe(secondRow);
   });
 
+  it("adds a compaction to the snapshot's total once, when it first completes", () => {
+    const compaction = {
+      ...commandItem("item-compaction", "", 10),
+      type: "compaction",
+      driver: null,
+    } as unknown as OrchestrationV2TurnItem;
+    const apply = (projection: OrchestrationV2ThreadProjection, payload: OrchestrationV2TurnItem) =>
+      applyOrchestrationV2ProjectionEvent(projection, {
+        id: "event-compaction",
+        type: "turn-item.updated",
+        threadId,
+        runId,
+        occurredAt: now,
+        payload,
+      } as OrchestrationV2DomainEvent);
+    const projection = { ...emptyProjection, runs: [run], compactionCount: 4 };
+
+    const counted = apply(projection, compaction);
+    expect(counted?.compactionCount).toBe(5);
+    // The same item arriving again is an update, not another compaction.
+    expect(apply(counted!, { ...compaction, title: "Context compacted" })?.compactionCount).toBe(5);
+    // An unfinished compaction is not counted yet.
+    expect(apply(projection, { ...compaction, status: "running" })?.compactionCount).toBe(4);
+    // Without a snapshot total the loaded items are the count; the reducer adds none.
+    expect(apply({ ...emptyProjection, runs: [run] }, compaction)?.compactionCount).toBeUndefined();
+  });
+
   it("inserts live turn items by authoritative ordinal", () => {
     const queuedFuture = commandItem("item-queued-future", "queued", 300);
     const activeAssistant = commandItem("item-active-assistant", "done", 201);

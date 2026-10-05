@@ -256,10 +256,22 @@ export function applyOrchestrationV2ProjectionEvent(
       ) {
         return projection;
       }
-      const next = { ...base, turnItems: upsertEntity(base.turnItems, event.payload) };
+      const previous = projection.turnItems.find((item) => item.id === event.payload.id);
+      // A bounded snapshot counts compactions outside its window; a live one
+      // joins that total once, when the item first completes.
+      const compactionCompleted =
+        event.payload.type === "compaction" &&
+        event.payload.status === "completed" &&
+        !(previous?.type === "compaction" && previous.status === "completed");
+      const next = {
+        ...base,
+        turnItems: upsertEntity(base.turnItems, event.payload),
+        ...(compactionCompleted && base.compactionCount !== undefined
+          ? { compactionCount: base.compactionCount + 1 }
+          : {}),
+      };
       // Only interrupt requests can change another item's visibility. Streaming
       // text/tool updates must not recheck every row against every run.
-      const previous = projection.turnItems.find((item) => item.id === event.payload.id);
       const visible =
         event.payload.type === "run_interrupt_request" || previous?.type === "run_interrupt_request"
           ? { ...next, visibleTurnItems: activeVisibleTurnItems(next) }

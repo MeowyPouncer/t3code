@@ -471,6 +471,11 @@ import {
 } from "./chat/QueuedRunsControl";
 import { useLinkedThreadPullRequest } from "./ThreadStatusIndicators";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { ComposerStatusLine } from "./chat/ComposerStatusLine";
+import {
+  latestProviderTurnCompletedAtMs,
+  resolveCompactionCount,
+} from "./chat/ComposerStatusLine.logic";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import { resolveThreadSyncPhase } from "../threadSync";
 import {
@@ -3537,6 +3542,24 @@ export default function ChatView(props: ChatViewProps) {
         ),
       ),
     [activeThreadLiveTokenUsage, serverVisibleTurnItems, serverProjection],
+  );
+  // Status line under the composer. The cache belongs to the provider thread
+  // that ran last, which the composer's current pick can differ from.
+  const statusLineProviderThread = serverProjection?.providerThreads.find(
+    (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
+  );
+  const statusLineDriverKind = statusLineProviderThread?.driver ?? selectedProvider;
+  const statusLineCompactionCount = useMemo(
+    () => resolveCompactionCount(serverProjection ?? null),
+    [serverProjection],
+  );
+  const statusLineLastTurnCompletedAtMs = useMemo(
+    () =>
+      latestProviderTurnCompletedAtMs(
+        serverProjection?.providerTurns ?? [],
+        statusLineProviderThread?.id ?? null,
+      ),
+    [serverProjection?.providerTurns, statusLineProviderThread?.id],
   );
   const pendingBackgroundTasks = useMemo(() => {
     if (serverProjection === null || serverProjection === undefined) {
@@ -11371,6 +11394,14 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
+                    <ComposerStatusLine
+                      enabled={settings.statusLineEnabled}
+                      driverKind={statusLineDriverKind}
+                      contextWindow={activeContextWindow}
+                      compactionCount={statusLineCompactionCount}
+                      turnRunning={phase === "running"}
+                      lastTurnCompletedAtMs={statusLineLastTurnCompletedAtMs}
+                    />
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"

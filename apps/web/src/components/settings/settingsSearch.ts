@@ -397,6 +397,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["composer rest resting scroll wheel conversation timeline shrink minimize"],
   },
   {
+    id: "status-line",
+    title: "Status line",
+    to: "/settings/general",
+    searchTerms: ["composer context window bar cache timer compaction count usage tokens"],
+  },
+  {
     id: "send-shortcut",
     title: "Send shortcut",
     to: "/settings/general",
