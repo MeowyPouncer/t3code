@@ -22,3 +22,6 @@ entries.forEach(([key, value], index) => {
 
 // FORK: no test reads the developer's own ~/.config/t3code/instructions.md; tests that need one set a path.
 process.env.T3CODE_LOCAL_INSTRUCTIONS_FILE ??= "";
+
+// FORK: no test reads the developer's own ~/.config/t3code/mcp-servers.json; tests that need one set a path.
+process.env.T3CODE_LOCAL_MCP_SERVERS_FILE ??= "";

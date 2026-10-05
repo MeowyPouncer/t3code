@@ -46,6 +46,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import { mcpToolPresentation } from "../../provider/McpToolPresentation.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { localMcpServersFor } from "../../provider/LocalMcpServers.ts";
 import { CursorTransportFailure } from "../../provider/acp/CursorTransportFailure.ts";
 import { cursorSdkModelSelection } from "../../provider/cursorSdkModel.ts";
 import {
@@ -218,6 +219,22 @@ export function cursorMcpServers(threadId: ThreadId): Record<string, McpServerCo
   };
 }
 
+/**
+ * FORK: the MCP servers a Cursor run gets. Under T3, Cursor's SDK starts no server from
+ * ~/.cursor/mcp.json or the project's .cursor/mcp.json, so the user's local stdio servers
+ * (`~/.config/t3code/mcp-servers.json`) go inline beside T3's own, which wins a name clash.
+ */
+export function cursorRunMcpServers(
+  threadId: ThreadId,
+  cwd: string | null,
+): Record<string, McpServerConfig> | undefined {
+  const servers: Record<string, McpServerConfig> = {
+    ...localMcpServersFor(cwd),
+    ...cursorMcpServers(threadId),
+  };
+  return Object.keys(servers).length > 0 ? servers : undefined;
+}
+
 function providerSession(input: {
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
   readonly providerInstanceId: ProviderInstanceId;
@@ -309,7 +326,7 @@ export function makeCursorAgentOptions(input: {
   readonly threadId: ThreadId;
 }): AgentOptions {
   const policy = cursorRuntimeAgentPolicy(input.runtimePolicy);
-  const mcpServers = cursorMcpServers(input.threadId);
+  const mcpServers = cursorRunMcpServers(input.threadId, input.runtimePolicy.cwd);
   return {
     model: cursorSdkModelSelection(input.modelSelection),
     name: `T3 Code ${input.threadId}`,
@@ -2202,7 +2219,7 @@ export function makeCursorAdapterV2(
               runtimePolicy: turnInput.runtimePolicy,
             });
             const message = yield* resolveUserMessage(turnInput);
-            const mcpServers = cursorMcpServers(turnInput.threadId);
+            const mcpServers = cursorRunMcpServers(turnInput.threadId, turnInput.runtimePolicy.cwd);
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;
             const sdkRun = yield* agent.session.send({
