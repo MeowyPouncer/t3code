@@ -19,3 +19,6 @@ entries.forEach(([key, value], index) => {
   process.env[`GIT_CONFIG_KEY_${existing + index}`] = key;
   process.env[`GIT_CONFIG_VALUE_${existing + index}`] = value;
 });
+
+// FORK: no test reads the developer's own ~/.config/t3code/instructions.md; tests that need one set a path.
+process.env.T3CODE_LOCAL_INSTRUCTIONS_FILE ??= "";
