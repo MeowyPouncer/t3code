@@ -5,13 +5,27 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { cursorUsageResponseToLimits, readCursorUsageLimits } from "./cursorUsageLimits.ts";
+import {
+  cursorUsageEnvironment,
+  cursorUsageResponseToLimits,
+  readCursorUsageLimits,
+} from "./cursorUsageLimits.ts";
 
 const withNodeServices = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
   effect.pipe(Effect.provide(NodeServices.layer));
 
 describe("Cursor usage limits", () => {
   const checkedAt = "2026-09-16T00:00:00.000Z";
+
+  it("forwards the SDK key only for an API-key login", () => {
+    const env = { HOME: "/home/test" };
+    expect(cursorUsageEnvironment(env, "sdk-key", true).CURSOR_API_KEY).toBe("sdk-key");
+    expect(cursorUsageEnvironment(env, "sdk-key", false).CURSOR_API_KEY).toBeUndefined();
+    expect(
+      cursorUsageEnvironment({ ...env, CURSOR_API_KEY: "explicit" }, "sdk-key", false)
+        .CURSOR_API_KEY,
+    ).toBe("explicit");
+  });
 
   it("uses the advertised percentages and billing-cycle reset", () => {
     const limits = cursorUsageResponseToLimits(

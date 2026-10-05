@@ -59,6 +59,18 @@ export function cursorUsageResponseToLimits(
     : makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
 }
 
+/**
+ * The reader's environment. A browser sign-in also hands the SDK a key, and as CURSOR_API_KEY it
+ * would stop the reader, so only an API-key login forwards it; a browser sign-in uses the CLI login.
+ */
+export function cursorUsageEnvironment(
+  processEnv: NodeJS.ProcessEnv,
+  apiKey: string | undefined,
+  usesApiKey: boolean,
+): NodeJS.ProcessEnv {
+  return usesApiKey ? { ...processEnv, CURSOR_API_KEY: apiKey } : processEnv;
+}
+
 export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function* (
   settings: Pick<CursorSettings, "apiEndpoint">,
   environment: NodeJS.ProcessEnv = process.env,

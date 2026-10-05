@@ -13,7 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
-import { readCursorUsageLimits } from "../Layers/cursorUsageLimits.ts";
+import { cursorUsageEnvironment, readCursorUsageLimits } from "../Layers/cursorUsageLimits.ts";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
@@ -217,7 +217,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
                     Effect.flatMap((settings) =>
                       readCursorUsageLimits(
                         effectiveConfig,
-                        { ...processEnv, CURSOR_API_KEY: apiKey },
+                        cursorUsageEnvironment(processEnv, apiKey, auth.usesApiKey),
                         settings.cursorKeychainUsageEnabled,
                       ),
                     ),
