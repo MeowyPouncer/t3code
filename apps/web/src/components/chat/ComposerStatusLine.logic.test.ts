@@ -5,8 +5,8 @@ import { describe, expect, it } from "vite-plus/test";
 import type { ContextWindowSnapshot } from "~/lib/contextWindow";
 import {
   deriveStatusLine,
+  describeStatusLine,
   formatCacheRemaining,
-  formatContextBar,
   formatStatusLinePercent,
   formatStatusLineTokens,
   latestProviderTurnCompletedAtMs,
@@ -56,13 +56,6 @@ describe("status line formatting", () => {
     expect(formatStatusLinePercent(140)).toBe("100%");
   });
 
-  it("fills ten cells of the bar", () => {
-    expect(formatContextBar(42)).toBe("████░░░░░░");
-    expect(formatContextBar(0)).toBe("░░░░░░░░░░");
-    expect(formatContextBar(100)).toBe("██████████");
-    expect(formatContextBar(250)).toBe("██████████");
-  });
-
   it("counts the cache down in minutes and seconds", () => {
     expect(formatCacheRemaining(HOUR_MS)).toBe("60:00");
     expect(formatCacheRemaining(HOUR_MS - 6_000)).toBe("59:54");
@@ -76,7 +69,7 @@ describe("deriveStatusLine", () => {
   it("fills all three widgets for a Claude thread", () => {
     expect(line({ compactionCount: 1 })).toEqual({
       context: {
-        bar: "████░░░░░░",
+        ratio: expect.closeTo(42.2, 5),
         used: "422k",
         max: "1.0M",
         percent: "42%",
@@ -102,7 +95,7 @@ describe("deriveStatusLine", () => {
   it("hides the context when the provider reports no usage, and the bar when it reports no window", () => {
     expect(line({ contextWindow: null })?.context).toBeNull();
     expect(line({ contextWindow: usage(80_000, null) })?.context).toEqual({
-      bar: null,
+      ratio: null,
       used: "80k",
       max: null,
       percent: null,
@@ -185,5 +178,30 @@ describe("latestProviderTurnCompletedAtMs", () => {
       latestProviderTurnCompletedAtMs([{ providerThreadId: first, completedAt: null }], first),
     ).toBeNull();
     expect(latestProviderTurnCompletedAtMs([], first)).toBeNull();
+  });
+});
+
+describe("describeStatusLine", () => {
+  it("spells each widget out for its tooltip", () => {
+    const text = describeStatusLine(line({ compactionCount: 1 })!);
+    expect(text.context).toBe("Context window: 422k of 1.0M tokens used (42%)");
+    expect(text.cache).toContain("59:54 left");
+    expect(text.compactions).toBe("1 compaction in this thread");
+    expect(describeStatusLine(line({ compactionCount: 6 })!).compactions).toBe(
+      "6 compactions in this thread",
+    );
+  });
+
+  it("explains a live and an expired cache, and a context with no window", () => {
+    expect(describeStatusLine(line({ turnRunning: true })!).cache).toContain("every request");
+    expect(describeStatusLine(line({ lastTurnCompletedAtMs: NOW_MS - HOUR_MS })!).cache).toContain(
+      "expired",
+    );
+    expect(describeStatusLine(line({ contextWindow: usage(80_000, null) })!).context).toBe(
+      "Context window: 80k tokens used",
+    );
+    expect(
+      describeStatusLine(line({ driverKind: "codex", contextWindow: null, compactionCount: 2 })!),
+    ).toEqual({ context: null, cache: null, compactions: "2 compactions in this thread" });
   });
 });

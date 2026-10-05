@@ -471,7 +471,6 @@ import {
 } from "./chat/QueuedRunsControl";
 import { useLinkedThreadPullRequest } from "./ThreadStatusIndicators";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
-import { ComposerStatusLine } from "./chat/ComposerStatusLine";
 import {
   latestProviderTurnCompletedAtMs,
   resolveCompactionCount,
@@ -11260,6 +11259,9 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               activeThreadModelSelection={activeThread?.modelSelection}
                               activeContextWindow={activeContextWindow}
+                              statusLineDriverKind={statusLineDriverKind}
+                              statusLineCompactionCount={statusLineCompactionCount}
+                              statusLineLastTurnCompletedAtMs={statusLineLastTurnCompletedAtMs}
                               activeTasksProgress={activeComposerTasksProgress}
                               activeTaskSteps={activeComposerTaskSteps}
                               compactThreadUnavailable={compactThreadUnavailable}
@@ -11394,14 +11396,6 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
-                    <ComposerStatusLine
-                      enabled={settings.statusLineEnabled}
-                      driverKind={statusLineDriverKind}
-                      contextWindow={activeContextWindow}
-                      compactionCount={statusLineCompactionCount}
-                      turnRunning={phase === "running"}
-                      lastTurnCompletedAtMs={statusLineLastTurnCompletedAtMs}
-                    />
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"

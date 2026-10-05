@@ -261,6 +261,7 @@ import {
 } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { ComposerStatusLine } from "./ComposerStatusLine";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
@@ -1586,6 +1587,10 @@ export interface ChatComposerProps {
 
   // Context window
   activeContextWindow: ContextWindowSnapshot | null;
+  /** Footer status widgets: the cache and compaction facts the snapshot above lacks. */
+  statusLineDriverKind: string | null | undefined;
+  statusLineCompactionCount: number;
+  statusLineLastTurnCompletedAtMs: number | null;
   compactThreadUnavailable: boolean;
   compactDisabled: boolean;
   compactDisabledReason: string | null;
@@ -1732,6 +1737,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection,
     reportedModelSelection,
     activeContextWindow,
+    statusLineDriverKind,
+    statusLineCompactionCount,
+    statusLineLastTurnCompletedAtMs,
     compactThreadUnavailable,
     compactDisabled,
     compactDisabledReason,
@@ -7466,6 +7474,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }
                   className="flex shrink-0 flex-nowrap items-center justify-end gap-2"
                 >
+                  {isComposerResting ? null : (
+                    <ComposerStatusLine
+                      enabled={settings.statusLineEnabled}
+                      driverKind={statusLineDriverKind}
+                      contextWindow={activeContextWindow}
+                      compactionCount={statusLineCompactionCount}
+                      turnRunning={phase === "running"}
+                      lastTurnCompletedAtMs={statusLineLastTurnCompletedAtMs}
+                    />
+                  )}
                   {showComposerAttachAction ? (
                     <>
                       <input

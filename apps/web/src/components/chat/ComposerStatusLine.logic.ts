@@ -15,10 +15,9 @@ const PROMPT_CACHE_TTL_MS: Readonly<Record<string, number>> = {
   claudeAgent: 60 * 60 * 1000,
 };
 
-const CONTEXT_BAR_CELLS = 10;
-
 export type StatusLineContext = {
-  readonly bar: string | null;
+  /** 0–100 for the ring; null when the provider reports no window. */
+  readonly ratio: number | null;
   readonly used: string;
   readonly max: string | null;
   readonly percent: string | null;
@@ -49,11 +48,6 @@ export function formatStatusLinePercent(value: number): string {
   return clamped < 10 ? `${clamped.toFixed(1).replace(/\.0$/, "")}%` : `${Math.round(clamped)}%`;
 }
 
-export function formatContextBar(percent: number): string {
-  const filled = Math.round((Math.max(0, Math.min(100, percent)) / 100) * CONTEXT_BAR_CELLS);
-  return "█".repeat(filled) + "░".repeat(CONTEXT_BAR_CELLS - filled);
-}
-
 /** `59:54`; minutes run to 60 because the longest lifetime is one hour. */
 export function formatCacheRemaining(remainingMs: number): string {
   const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1_000));
@@ -72,7 +66,7 @@ function deriveContext(usage: ContextWindowSnapshot | null): StatusLineContext |
   const maxTokens = reportedMax !== null && reportedMax > 0 ? reportedMax : null;
   const percent = maxTokens === null ? null : Math.min(100, (usage.usedTokens / maxTokens) * 100);
   return {
-    bar: percent === null ? null : formatContextBar(percent),
+    ratio: percent,
     used: formatStatusLineTokens(usage.usedTokens),
     max: maxTokens === null ? null : formatStatusLineTokens(maxTokens),
     percent: percent === null ? null : formatStatusLinePercent(percent),
@@ -153,4 +147,35 @@ export function latestProviderTurnCompletedAtMs(
     if (latest === null || completedAtMs > latest) latest = completedAtMs;
   }
   return latest;
+}
+
+const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
+
+/** Hover text for each widget, so the row itself can stay a ring, a clock and a counter. */
+export function describeStatusLine(line: StatusLineModel): {
+  readonly context: string | null;
+  readonly cache: string | null;
+  readonly compactions: string | null;
+} {
+  const { context, cache, compactions } = line;
+  return {
+    context:
+      context === null
+        ? null
+        : context.max !== null && context.percent !== null
+          ? `Context window: ${context.used} of ${context.max} tokens used (${context.percent})`
+          : `Context window: ${context.used} tokens used`,
+    cache:
+      cache === null
+        ? null
+        : cache.state === "live"
+          ? "Prompt cache: refreshed by every request while the turn runs"
+          : cache.state === "warm"
+            ? `Prompt cache: ${cache.remaining} left. The next message is cheaper while it is warm; it lasts 1 hour after the last turn.`
+            : "Prompt cache expired: the next message re-reads the whole context at full price",
+    compactions:
+      compactions === null
+        ? null
+        : `${compactions} ${plural(compactions, "compaction", "compactions")} in this thread`,
+  };
 }
