@@ -1,4 +1,5 @@
 // FORK: the user's own rules file reaches every provider's runtime instructions.
+// @effect-diagnostics nodeBuiltinImport:off - fixtures for a synchronous file reader
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -57,7 +58,7 @@ describe("local instructions", () => {
     NodeFS.writeFileSync(file, "first");
     expect(localInstructions()).toContain("first");
     NodeFS.writeFileSync(file, "x".repeat(20_000));
-    NodeFS.utimesSync(file, new Date(), new Date(Date.now() + 5_000));
+    NodeFS.utimesSync(file, 4_000_000_000, 4_000_000_000);
     const text = localInstructions();
     expect(text).not.toContain("first");
     expect(text.length).toBeLessThan(16_100);

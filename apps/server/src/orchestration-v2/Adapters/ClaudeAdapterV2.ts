@@ -584,7 +584,11 @@ export function makeClaudeAgentSdkProtocolLogger(input: {
           protocol: CLAUDE_AGENT_SDK_QUERY_PROTOCOL,
           kind: "protocol",
           providerSessionId: input.providerSessionId,
-          event: boundProviderEventForLogging(event),
+          event: boundProviderEventForLogging(
+            event.direction === "incoming"
+              ? { ...event, payload: withoutRawMaskedToolResult(event.payload) }
+              : event,
+          ),
         },
         input.threadId,
       )
@@ -2154,7 +2158,8 @@ function claudeToolResultEntriesFromMessage(message: SDKMessage): ReadonlyArray<
     ...userResults.map((toolResult) => ({
       toolResult,
       output:
-        structuredOutput === undefined
+        structuredOutput === undefined ||
+        claudeToolResultWasMasked(outputFromClaudeToolResult(toolResult))
           ? claudeNativeToolOutputFromToolResult(toolResult)
           : claudeNativeToolOutputFromStructuredResult({
               structuredOutput,
@@ -2162,6 +2167,35 @@ function claudeToolResultEntriesFromMessage(message: SDKMessage): ReadonlyArray<
             }),
     })),
   ];
+}
+
+/** FORK: the marker a local hooks mod leaves where it masked a secret in the model's copy. */
+const CLAUDE_MASKED_MARKER = "[masked: ";
+
+/**
+ * FORK: whether the model's copy of a tool result had a secret masked. T3 then keeps that copy:
+ * the SDK's `tool_use_result` still carries the raw output, which must not reach the UI or the logs.
+ */
+export function claudeToolResultWasMasked(value: unknown): boolean {
+  if (value === undefined) return false;
+  return (typeof value === "string" ? value : (JSON.stringify(value) ?? "")).includes(
+    CLAUDE_MASKED_MARKER,
+  );
+}
+
+/** FORK: a user message whose model copy was masked loses its raw `tool_use_result` before logging. */
+export function withoutRawMaskedToolResult(payload: unknown): unknown {
+  if (typeof payload !== "object" || payload === null) return payload;
+  const { tool_use_result: raw, ...rest } = payload as {
+    readonly type?: unknown;
+    readonly tool_use_result?: unknown;
+    readonly message?: { readonly content?: unknown };
+  };
+  return rest.type === "user" &&
+    raw !== undefined &&
+    claudeToolResultWasMasked(rest.message?.content)
+    ? rest
+    : payload;
 }
 
 // These wire fields are not yet declared by the SDK's SDKUserMessage type.

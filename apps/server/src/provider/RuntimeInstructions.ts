@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - FORK: the plain instruction builders read the local file synchronously
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
