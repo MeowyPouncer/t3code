@@ -41,6 +41,10 @@ const mocks = vi.hoisted(() => ({
       (target: { environmentId: EnvironmentId; input: PreviewAutomationResponse }) => Promise<void>
     >(),
   focus: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(),
+  windowStatus: vi.fn(),
+  windowViewport: vi.fn(),
+  evaluate: vi.fn(),
+  automationStatus: vi.fn(),
 }));
 
 vi.mock("~/localApi", () => ({
@@ -66,7 +70,12 @@ vi.mock("~/state/use-atom-command", () => ({
 vi.mock("~/state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => mocks.list,
 }));
-vi.mock("./previewBridge", () => ({ previewBridge: { automation: {} } }));
+vi.mock("./previewBridge", () => ({
+  previewBridge: {
+    automation: { status: mocks.automationStatus, evaluate: mocks.evaluate },
+    separateWindow: { status: mocks.windowStatus, setViewport: mocks.windowViewport },
+  },
+}));
 
 const environmentId = EnvironmentId.make("automation-environment");
 const threadId = ThreadId.make("automation-thread");
@@ -120,6 +129,10 @@ beforeEach(async () => {
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
   mocks.respond.mockReset();
   mocks.focus.mockReset().mockResolvedValue(AsyncResult.success(undefined));
+  mocks.windowStatus.mockReset().mockResolvedValue(null);
+  mocks.windowViewport.mockReset();
+  mocks.evaluate.mockReset();
+  mocks.automationStatus.mockReset();
   __resetClientSettingsPersistenceForTests();
   resetPreviewStateForTests();
   useBrowserSurfaceStore.setState({ byTabId: {} });
@@ -212,6 +225,131 @@ describe("PreviewAutomationHosts open", () => {
 });
 
 describe("PreviewAutomationHosts ownership", () => {
+  it("reports the live pop-out as visible while the main window is hidden", async () => {
+    mocks.windowStatus.mockResolvedValue({ visible: true, viewportSetting: { _tag: "fill" } });
+    mocks.evaluate.mockResolvedValue({ width: 1100, height: 708 });
+    mocks.automationStatus.mockResolvedValue({
+      available: true,
+      url: "https://example.com/",
+      title: "Example",
+      loading: false,
+    });
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    await act(() => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({ type: "connected", connectionId: "automation-connection" }),
+      );
+      applyPreviewServerSnapshot(threadRef, snapshot);
+      applyPreviewDesktopState(threadRef, snapshot.tabId, {
+        hasWebContents: true,
+        canGoBack: false,
+        canGoForward: false,
+        loading: false,
+        zoomFactor: 1,
+        pictureInPicture: false,
+        separateWindow: true,
+        colorScheme: "system",
+        audioMuted: false,
+        audible: false,
+        controller: "none",
+        favicon: null,
+      });
+    });
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: true }],
+        }),
+      }),
+    );
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          ...requestEvent,
+          request: {
+            ...requestEvent.request,
+            requestId: "window-status",
+            operation: "status",
+            tabId: snapshot.tabId,
+            input: {},
+          },
+        }),
+      );
+    });
+    await expect(response.promise).resolves.toMatchObject({
+      ok: true,
+      result: {
+        visible: true,
+        viewport: { width: 1100, height: 708 },
+        viewportSetting: { _tag: "fill" },
+      },
+    });
+  });
+
+  it("resizes the native page and confirms its viewport without an embedded surface", async () => {
+    let setting: { readonly _tag: "freeform"; readonly width: number; readonly height: number } =
+      viewport;
+    mocks.windowStatus.mockImplementation(async () => ({
+      visible: true,
+      viewportSetting: setting,
+    }));
+    mocks.windowViewport.mockImplementation(async (_tabId: string, next: typeof setting) => {
+      setting = next;
+    });
+    mocks.evaluate.mockImplementation(async () => ({
+      width: setting.width,
+      height: setting.height,
+    }));
+    mocks.automationStatus.mockResolvedValue({
+      available: true,
+      url: "https://example.com/",
+      title: "Example",
+      loading: false,
+    });
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+    const next = { _tag: "freeform", width: 800, height: 600 } as const;
+    mocks.resize.mockResolvedValueOnce(AsyncResult.success({ ...snapshot, viewport: next }));
+    await act(async () => {
+      applyPreviewServerSnapshot(threadRef, snapshot);
+      applyPreviewDesktopState(threadRef, snapshot.tabId, {
+        hasWebContents: true,
+        canGoBack: false,
+        canGoForward: false,
+        loading: false,
+        zoomFactor: 1,
+        pictureInPicture: false,
+        separateWindow: true,
+        colorScheme: "system",
+        audioMuted: false,
+        audible: false,
+        controller: "none",
+        favicon: null,
+      });
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          ...requestEvent,
+          request: {
+            ...requestEvent.request,
+            requestId: "window-resize",
+            operation: "resize",
+            tabId: snapshot.tabId,
+            input: { mode: "freeform", width: 800, height: 600 },
+          },
+        }),
+      );
+      await response.promise;
+    });
+    await expect(response.promise).resolves.toMatchObject({
+      ok: true,
+      result: { setting: next, viewport: { width: 800, height: 600 } },
+    });
+  });
   it("reports only local live tabs and removes ownership when their web contents close", async () => {
     await act(() => {
       appAtomRegistry.set(

@@ -10598,6 +10598,7 @@ export default function ChatView(props: ChatViewProps) {
           tabId={renderedRightPanelSurface.resourceId}
           configuredUrls={configuredPreviewUrls}
           visible={rightPanelOpen}
+          allowExpand={editingQueuedRun === null}
           onSendAnnotation={(annotation, image) => {
             void onSend(undefined, "auto", "foreground", { annotation, image });
           }}
@@ -11461,6 +11462,7 @@ export default function ChatView(props: ChatViewProps) {
                 key={`${activeThreadKey}:${previewMiniPlayerSourceKey(activePreviewMiniPlayer.source)}`}
                 threadRef={activeThreadRef}
                 miniPlayer={activePreviewMiniPlayer}
+                allowExpand={editingQueuedRun === null}
               />
             ) : null}
 

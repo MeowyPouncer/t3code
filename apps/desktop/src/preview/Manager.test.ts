@@ -25,6 +25,12 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
 import * as PreviewManager from "./Manager.ts";
+import type { createInteractivePreviewWindow } from "./InteractivePreviewWindow.ts";
+
+const interactiveWindowConstructor = vi.hoisted(() => vi.fn());
+vi.mock("./InteractivePreviewWindow.ts", () => ({
+  createInteractivePreviewWindow: interactiveWindowConstructor,
+}));
 
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {
@@ -544,6 +550,7 @@ const makeTestPictureInPictureWindow = (loadURL: () => Promise<void> = async () 
 
 describe("PreviewManager", () => {
   beforeEach(() => {
+    interactiveWindowConstructor.mockReset();
     browserWindowConstructor.mockReset();
     fromId.mockClear();
     getFocusedWebContents.mockReset();
@@ -557,6 +564,208 @@ describe("PreviewManager", () => {
     createFromPath.mockClear();
     webviewSend.mockClear();
   });
+
+  const interactiveFixture = (
+    manager: PreviewManager.PreviewManager["Service"],
+    initialize: () => Promise<void> = async () => undefined,
+  ) =>
+    Effect.gen(function* () {
+      const capture = async () => ({
+        toJPEG: () => Buffer.from("frame"),
+        getSize: () => ({ width: 1280, height: 720 }),
+      });
+      const embedded = Object.assign(makeTestPreviewWebContents(capture, 42), {
+        session: previewSession,
+        loadURL: vi.fn(async (_url: string) => undefined),
+        reload: vi.fn(),
+      });
+      const native = Object.assign(makeTestPreviewWebContents(capture, 84), {
+        getType: () => "browserView",
+        session: previewSession,
+        loadURL: vi.fn(async (_url: string) => undefined),
+        reload: vi.fn(),
+      });
+      const foreign = Object.assign(makeTestPreviewWebContents(capture, 99), {
+        getType: () => "browserView",
+      });
+      fromId.mockImplementation((id?: number) =>
+        id === 42 ? embedded : id === 84 ? native : foreign,
+      );
+      const presentation = {
+        webContents: native,
+        initialize: vi.fn(initialize),
+        update: vi.fn(),
+        dispose: vi.fn(),
+        focus: vi.fn(),
+        setViewport: vi.fn(),
+        status: () => ({ visible: true, viewportSetting: { _tag: "fill" as const } }),
+      };
+      let options: Parameters<typeof createInteractivePreviewWindow>[0] | undefined;
+      interactiveWindowConstructor.mockImplementation(
+        (input: Parameters<typeof createInteractivePreviewWindow>[0]) => {
+          options = input;
+          return presentation;
+        },
+      );
+      const states: PreviewManager.PreviewTabState[] = [];
+      yield* manager.subscribeStateChanges((_tabId, state) =>
+        Effect.sync(() => {
+          states.push(state);
+        }),
+      );
+      yield* manager.createTab("tab-window");
+      yield* manager.registerWebview("tab-window", 42);
+      return { embedded, native, presentation, states, options: () => options };
+    });
+
+  effectIt.effect(
+    "moves the automation target to owned live window content and keeps the profile",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = yield* interactiveFixture(manager);
+          yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+          expect(fixture.states.at(-1)).toMatchObject({ webContentsId: 84, separateWindow: true });
+          expect(fixture.options()?.session).toBe(previewSession);
+          yield* manager.refresh("tab-window");
+          expect(fixture.native.reload).toHaveBeenCalledOnce();
+          expect(fixture.embedded.reload).not.toHaveBeenCalled();
+          expect(fixture.embedded.setAudioMuted).toHaveBeenLastCalledWith(true);
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "returns to the embedded guest after window navigation with mute intent intact",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = yield* interactiveFixture(manager);
+          yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+          yield* manager.navigate("tab-window", "https://changed.example/");
+          expect(fixture.states.at(-1)?.separateWindow).toBe(true);
+          yield* manager.setAudioMuted("tab-window", true);
+          yield* manager.closeInteractiveWindow("tab-window");
+          yield* settle(() =>
+            fixture.embedded.loadURL.mock.calls.some(([url]) => url === "https://changed.example/"),
+          );
+          expect(fixture.states.at(-1)).toMatchObject({
+            webContentsId: 42,
+            separateWindow: false,
+            audioMuted: true,
+          });
+          expect(fixture.embedded.loadURL).toHaveBeenCalledWith("https://changed.example/");
+          expect(fixture.presentation.dispose).toHaveBeenCalledOnce();
+        }),
+      ),
+  );
+
+  effectIt.effect("rejects unrelated native web contents during window ownership", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const fixture = yield* interactiveFixture(manager);
+        yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+        const result = yield* Effect.exit(manager.registerWebview("tab-window", 99));
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(fixture.states.at(-1)).toMatchObject({ webContentsId: 84, separateWindow: true });
+      }),
+    ),
+  );
+
+  effectIt.effect("focuses an existing window and does not restore a tab being closed", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const fixture = yield* interactiveFixture(manager);
+        yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+        yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+        expect(interactiveWindowConstructor).toHaveBeenCalledOnce();
+        expect(fixture.presentation.focus).toHaveBeenCalledOnce();
+        fixture.embedded.loadURL.mockClear();
+        yield* manager.closeTab("tab-window");
+        expect(fixture.states.at(-1)).toMatchObject({ webContentsId: null, separateWindow: false });
+        expect(fixture.embedded.loadURL).not.toHaveBeenCalled();
+        expect(yield* manager.interactiveWindowStatus("tab-window")).toBeNull();
+      }),
+    ),
+  );
+
+  effectIt.effect("rolls back a failed window initialization to the embedded guest", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const fixture = yield* interactiveFixture(manager, async () => {
+          throw new Error("Window closed");
+        });
+        const result = yield* Effect.exit(
+          manager.openInteractiveWindow("tab-window", { _tag: "fill" }),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(fixture.states.at(-1)).toMatchObject({ webContentsId: 42, separateWindow: false });
+        expect(fixture.presentation.dispose).toHaveBeenCalledOnce();
+        expect(yield* manager.interactiveWindowStatus("tab-window")).toBeNull();
+      }),
+    ),
+  );
+
+  effectIt.effect("refuses recording while the native window owns the page", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        yield* interactiveFixture(manager);
+        yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+        const result = yield* Effect.exit(manager.startRecording("tab-window"));
+        expect(Exit.isFailure(result)).toBe(true);
+      }),
+    ),
+  );
+
+  effectIt.effect("keeps a newer navigation while window chrome is initializing", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let notifyInitializing!: () => void;
+        let continueInitialization!: () => void;
+        const initializing = new Promise<void>((resolve) => {
+          notifyInitializing = resolve;
+        });
+        const initialized = new Promise<void>((resolve) => {
+          continueInitialization = resolve;
+        });
+        const fixture = yield* interactiveFixture(manager, () => {
+          notifyInitializing();
+          return initialized;
+        });
+        const opening = yield* manager
+          .openInteractiveWindow("tab-window", { _tag: "fill" })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => initializing);
+        yield* manager.navigate("tab-window", "https://newer.example/");
+        continueInitialization();
+        yield* Fiber.join(opening);
+        yield* Effect.yieldNow;
+        expect(fixture.native.loadURL).toHaveBeenCalledExactlyOnceWith("https://newer.example/");
+      }),
+    ),
+  );
+
+  effectIt.effect("ignores a closed window's toolbar instead of recreating its tab", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const fixture = yield* interactiveFixture(manager);
+        yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+        const oldWindow = fixture.options();
+        yield* manager.closeTab("tab-window");
+        fixture.native.loadURL.mockClear();
+        fixture.embedded.loadURL.mockClear();
+        const result = yield* Effect.exit(
+          Effect.tryPromise(() =>
+            oldWindow!.onAction({ kind: "navigate", url: "https://stale.example/" }),
+          ),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(fixture.states.at(-1)?.webContentsId).toBeNull();
+        expect(fixture.native.loadURL).not.toHaveBeenCalled();
+        expect(fixture.embedded.loadURL).not.toHaveBeenCalled();
+      }),
+    ),
+  );
 
   effectIt.effect("keeps preview shortcuts out of the host window", () =>
     withManager((manager) =>

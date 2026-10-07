@@ -48,9 +48,10 @@ interface Props {
   deviceToolbarVisible: boolean;
   /** Switches between fill-panel mode and a fixed responsive viewport. */
   onToggleDeviceToolbar: () => void;
-  /** Whether the separate native always-on-top preview window is open. */
+  /** Whether the separate interactive preview window is open. */
   nativePictureInPicture: boolean;
-  /** Toggles the optional native always-on-top preview window. */
+  separateWindowDisabled?: boolean | undefined;
+  /** Opens the interactive preview window or returns its page to T3. */
   onNativePictureInPicture: () => void;
   /** Environment the tab belongs to; scopes storage clearing to its partitions. */
   environmentId: EnvironmentId;
@@ -78,6 +79,7 @@ export function PreviewMoreMenu({
   deviceToolbarVisible,
   onToggleDeviceToolbar,
   nativePictureInPicture,
+  separateWindowDisabled = false,
   onNativePictureInPicture,
   environmentId,
   profileId,
@@ -115,7 +117,10 @@ export function PreviewMoreMenu({
         <MenuItem onClick={callTab(bridge.openDevTools)} disabled={tabDisabled}>
           Open DevTools
         </MenuItem>
-        <MenuItem onClick={onNativePictureInPicture} disabled={tabDisabled}>
+        <MenuItem
+          onClick={onNativePictureInPicture}
+          disabled={tabDisabled || separateWindowDisabled}
+        >
           {nativePictureInPicture
             ? "Close separate preview window"
             : "Open separate preview window"}

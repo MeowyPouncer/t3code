@@ -14,6 +14,9 @@ import {
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { MaximizeIcon } from "lucide-react";
+import { Button } from "~/components/ui/button";
 
 import {
   BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT,
@@ -78,6 +81,7 @@ interface Props {
   tabId?: string | null;
   configuredUrls?: ReadonlyArray<string> | undefined;
   visible: boolean;
+  allowExpand?: boolean | undefined;
   onSendAnnotation?: (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -103,7 +107,10 @@ export function PreviewView({
   configuredUrls,
   visible,
   onSendAnnotation,
+  allowExpand = true,
 }: Props) {
+  const navigate = useNavigate();
+  const inWorkspace = useLocation({ select: (location) => location.pathname === "/preview" });
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
   const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
@@ -324,18 +331,18 @@ export function PreviewView({
   }, [miniPlayerTabId, tabId, threadRef]);
 
   const handleNativePictureInPicture = useCallback(() => {
-    if (!previewBridge || !runtimeTabId) return;
-    const operation = desktopOverlay?.pictureInPicture
-      ? previewBridge.pictureInPicture.close
-      : previewBridge.pictureInPicture.open;
-    void operation(runtimeTabId).catch((error) => {
+    if (!previewBridge?.separateWindow || !runtimeTabId) return;
+    const operation = desktopOverlay?.separateWindow
+      ? previewBridge.separateWindow.close(runtimeTabId)
+      : previewBridge.separateWindow.open(runtimeTabId, viewport);
+    void operation.catch((error) => {
       toastManager.add({
         type: "error",
         title: "Unable to update popped-out preview",
         description: error instanceof Error ? error.message : "An error occurred.",
       });
     });
-  }, [desktopOverlay?.pictureInPicture, runtimeTabId]);
+  }, [desktopOverlay?.separateWindow, runtimeTabId, viewport]);
 
   const handleCapture = useCallback(
     (record: boolean) => {
@@ -758,21 +765,52 @@ export function PreviewView({
           ) : null
         }
         trailingActions={
-          previewBridge ? (
-            <PreviewMoreMenu
-              environmentId={threadRef.environmentId}
-              profileId={activeProfileId}
-              profileName={activeProfileName}
-              tabId={runtimeTabId}
-              hasWebContents={desktopOverlay?.hasWebContents ?? false}
-              zoomFactor={desktopOverlay?.zoomFactor ?? 1}
-              colorScheme={desktopOverlay?.colorScheme ?? "system"}
-              deviceToolbarVisible={viewport._tag !== "fill"}
-              onToggleDeviceToolbar={handleToggleDeviceToolbar}
-              nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
-              onNativePictureInPicture={handleNativePictureInPicture}
-            />
-          ) : null
+          <>
+            {!inWorkspace && allowExpand && tabId ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Expand preview"
+                      onClick={() =>
+                        void navigate({
+                          to: "/preview",
+                          search: {
+                            environmentId: threadRef.environmentId,
+                            threadId: threadRef.threadId,
+                            tabId,
+                          },
+                        })
+                      }
+                    />
+                  }
+                >
+                  <MaximizeIcon />
+                </TooltipTrigger>
+                <TooltipPopup>Expand preview</TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {previewBridge ? (
+              <PreviewMoreMenu
+                environmentId={threadRef.environmentId}
+                profileId={activeProfileId}
+                profileName={activeProfileName}
+                tabId={runtimeTabId}
+                hasWebContents={desktopOverlay?.hasWebContents ?? false}
+                zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+                colorScheme={desktopOverlay?.colorScheme ?? "system"}
+                deviceToolbarVisible={viewport._tag !== "fill"}
+                onToggleDeviceToolbar={handleToggleDeviceToolbar}
+                nativePictureInPicture={desktopOverlay?.separateWindow ?? false}
+                separateWindowDisabled={
+                  !previewBridge.separateWindow || recordingRuntimeTabId !== null
+                }
+                onNativePictureInPicture={handleNativePictureInPicture}
+              />
+            ) : null}
+          </>
         }
       />
 
@@ -781,9 +819,17 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && !isUnreachable}
+            visible={visible && !isUnreachable && !desktopOverlay?.separateWindow}
             className="absolute inset-0 h-full w-full"
           />
+        ) : null}
+        {desktopOverlay?.separateWindow ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background text-sm text-muted-foreground">
+            <span>Preview is in a separate window</span>
+            <Button variant="outline" size="sm" onClick={handleNativePictureInPicture}>
+              Return to T3
+            </Button>
+          </div>
         ) : null}
         {showEmptyState ? (
           <PreviewEmptyState

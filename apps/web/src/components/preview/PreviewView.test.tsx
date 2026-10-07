@@ -7,7 +7,7 @@ import {
   FILL_PREVIEW_VIEWPORT,
   ThreadId,
 } from "@t3tools/contracts";
-import { act, createElement, Profiler } from "react";
+import { act, createElement, Profiler, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const EMPTY_HISTORY: never[] = [];
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useLocation: () => false }));
 
 const STUB_BROWSER_DEFAULTS = {
   viewport: FILL_PREVIEW_VIEWPORT,
@@ -110,6 +111,7 @@ vi.mock("~/previewStateStore", () => ({
         loading: mocks.loading,
         zoomFactor: 1,
         pictureInPicture: mocks.pictureInPicture,
+        separateWindow: mocks.pictureInPicture,
         colorScheme: "system",
         audioMuted: false,
         audible: false,
@@ -211,6 +213,10 @@ vi.mock("./previewBridge", () => ({
       open: mocks.openPictureInPicture,
       close: mocks.closePictureInPicture,
     },
+    separateWindow: {
+      open: mocks.openPictureInPicture,
+      close: mocks.closePictureInPicture,
+    },
   },
 }));
 
@@ -220,17 +226,13 @@ vi.mock("./PreviewChromeRow", () => ({
     onPickElement?: () => void;
     onPictureInPicture?: () => void;
     pictureInPicture?: boolean;
-    trailingActions?: {
-      props: { onNativePictureInPicture?: () => void };
-    };
+    trailingActions?: ReactNode;
   }) => {
     mocks.submittedUrl = props.onSubmit;
     mocks.toggleAnnotation = props.onPickElement ?? null;
     mocks.togglePictureInPicture = props.onPictureInPicture ?? null;
-    mocks.toggleNativePictureInPicture =
-      props.trailingActions?.props.onNativePictureInPicture ?? null;
     mocks.pictureInPicturePressed = props.pictureInPicture ?? false;
-    return null;
+    return createElement("div", null, props.trailingActions);
   },
 }));
 
@@ -367,12 +369,16 @@ describe("PreviewView navigation", () => {
     mocks.recordingRuntimeTabId = TEST_RUNTIME_TAB_ID;
     try {
       await act(() => {
-        root.render(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
+        root.render(
+          <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible allowExpand={false} />,
+        );
       });
       expect(hasCursor(container)).toBe(false);
       mocks.serverEpoch = "replacement-server";
       await act(() => {
-        root.render(<PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />);
+        root.render(
+          <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible allowExpand={false} />,
+        );
       });
       expect(hasCursor(container)).toBe(true);
       expect(mocks.recordingTabIds.has(TEST_RUNTIME_TAB_ID)).toBe(true);
@@ -394,7 +400,7 @@ describe("PreviewView navigation", () => {
       await act(() => {
         root.render(
           <Profiler id="preview" onRender={onRender}>
-            <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible />
+            <PreviewView threadRef={TEST_THREAD_REF} tabId="tab-1" visible allowExpand={false} />
           </Profiler>,
         );
       });
@@ -540,7 +546,10 @@ describe("PreviewView navigation", () => {
     renderToStaticMarkup(<PreviewView {...props} />);
     mocks.toggleNativePictureInPicture?.();
     await vi.waitFor(() =>
-      expect(mocks.openPictureInPicture).toHaveBeenCalledWith(TEST_RUNTIME_TAB_ID),
+      expect(mocks.openPictureInPicture).toHaveBeenCalledWith(
+        TEST_RUNTIME_TAB_ID,
+        FILL_PREVIEW_VIEWPORT,
+      ),
     );
 
     mocks.pictureInPicture = true;

@@ -34,6 +34,7 @@ import type {
   PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
+  PreviewViewportSetting,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
@@ -91,6 +92,11 @@ import {
 } from "./PreviewKeyboard.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS, type RecordingInputOptions } from "./RecordingInput.ts";
+import {
+  createInteractivePreviewWindow,
+  type InteractivePreviewWindow,
+  type PreviewWindowAction,
+} from "./InteractivePreviewWindow.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -112,6 +118,7 @@ export interface PreviewTabState {
   canGoForward: boolean;
   zoomFactor: number;
   pictureInPicture: boolean;
+  separateWindow?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   /** User intent to silence this tab. Re-applied to each guest that attaches. */
   audioMuted: boolean;
@@ -683,6 +690,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const pictureInPictureAspectRatiosRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const pictureInPictureMutationSemaphore = yield* Semaphore.make(1);
   const closingTabIdsRef = yield* Ref.make<ReadonlySet<string>>(new Set());
+  const interactiveWindows = new Map<
+    string,
+    {
+      readonly presentation: InteractivePreviewWindow;
+      readonly webContentsId: number;
+      embedded: Electron.WebContents;
+      readonly generation: number | undefined;
+      lastUrl: string;
+    }
+  >();
   // Tab recording uses `setDisplayMediaRequestHandler` because Electron's legacy
   // `getMediaSourceId` + `chromeMediaSource: "tab"` capture path was removed upstream
   // (electron#44618) and now always rejects with NotAllowedError.
@@ -700,6 +717,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     { readonly semaphore: Semaphore.Semaphore; users: number }
   >();
   const tabLifecycleGenerations = new Map<string, number>();
+  const tabNavigationVersions = new Map<string, number>();
 
   const attempt = <A>(errorContext: PreviewOperationContext, evaluate: () => A) =>
     Effect.try({
@@ -961,6 +979,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
 
   const emit = Effect.fn("PreviewManager.emit")(function* (tabId: string, state: PreviewTabState) {
+    const window = interactiveWindows.get(tabId);
+    if (window) {
+      if (state.navStatus.kind !== "Idle") window.lastUrl = state.navStatus.url;
+      yield* attempt({ operation: "interactiveWindow.update", tabId }, () =>
+        window.presentation.update(state),
+      ).pipe(Effect.ignore);
+    }
     const listeners = yield* Ref.get(listenersRef);
     yield* Effect.forEach(
       listeners,
@@ -2128,10 +2153,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           currentMainWindow = undefined;
           frameCaptureWindowOpen = false;
           mainWindowCleanupFiber = runFork(
-            Effect.all([closeAllPictureInPicture(), stopAllRecordings()], {
-              concurrency: "unbounded",
-              discard: true,
-            }).pipe(Effect.ignore),
+            Effect.all(
+              [closeAllInteractiveWindows(), closeAllPictureInPicture(), stopAllRecordings()],
+              {
+                concurrency: "unbounded",
+                discard: true,
+              },
+            ).pipe(Effect.ignore),
           );
         });
         return [undefined, sessions] as const;
@@ -2192,6 +2220,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   const closeTabUnlocked = Effect.fn("PreviewManager.closeTabUnlocked")(function* (tabId: string) {
     if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) return;
+    yield* releaseInteractiveWindow(tabId, false);
     clearPendingRecording(tabId);
     yield* Effect.all(
       [
@@ -2215,6 +2244,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ] as const;
     });
     if (Option.isNone(tab)) return;
+    tabNavigationVersions.delete(tabId);
     const closedTab = tab.value;
     if (closedTab.webContentsId != null) {
       yield* Effect.all(
@@ -2231,6 +2261,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       canGoForward: false,
       zoomFactor: DEFAULT_ZOOM_FACTOR,
       pictureInPicture: false,
+      separateWindow: false,
       colorScheme: "system",
       audioMuted: false,
       audible: false,
@@ -2262,6 +2293,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     webContentsId: number,
     expectedGeneration: number | undefined,
+    loadPendingUrl = true,
   ) {
     const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
     if (
@@ -2273,13 +2305,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
     const wc = webContents.fromId(webContentsId);
     const mainWindow = yield* Ref.get(mainWindowRef);
+    const interactive = interactiveWindows.get(tabId);
+    const ownedWindowContents = wc != null && interactive?.presentation.webContents === wc;
     if (
       !wc ||
       wc.isDestroyed() ||
-      wc.getType() !== "webview" ||
-      (Option.isSome(mainWindow) && wc.hostWebContents !== mainWindow.value.webContents)
+      (!ownedWindowContents &&
+        (wc.getType() !== "webview" ||
+          (Option.isSome(mainWindow) && wc.hostWebContents !== mainWindow.value.webContents)))
     ) {
       return yield* new PreviewWebContentsNotFoundError({ tabId, webContentsId });
+    }
+    if (interactive && !ownedWindowContents) {
+      // A background embedded guest may recover while the window owns the tab.
+      // Retain it for return without stealing the active automation target.
+      interactive.embedded = wc;
+      yield* attempt({ operation: "interactiveWindow.muteRecoveredGuest", tabId }, () =>
+        wc.setAudioMuted(true),
+      );
+      return;
     }
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
@@ -2404,6 +2448,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
     const latestNavStatus = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.navStatus;
     if (
+      loadPendingUrl &&
       pendingUrl &&
       latestNavStatus?.kind === "Loading" &&
       latestNavStatus.url === pendingUrl &&
@@ -2426,6 +2471,230 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       tabId,
       registerWebviewUnlocked(tabId, webContentsId, expectedGeneration),
     );
+  });
+
+  const releaseInteractiveWindow = Effect.fn("PreviewManager.releaseInteractiveWindow")(function* (
+    tabId: string,
+    restore: boolean,
+  ) {
+    const session = interactiveWindows.get(tabId);
+    if (!session) return;
+    const navigationVersion = tabNavigationVersions.get(tabId) ?? 0;
+    interactiveWindows.delete(tabId);
+    yield* Effect.all(
+      [
+        detachControlSession(session.webContentsId),
+        detachListeners(session.webContentsId),
+        cancelPickElement(tabId),
+      ],
+      { discard: true },
+    );
+    yield* attempt(
+      { operation: "interactiveWindow.dispose", tabId },
+      session.presentation.dispose,
+    ).pipe(Effect.ignore);
+    if (
+      !restore ||
+      tabLifecycleGenerations.get(tabId) !== session.generation ||
+      (yield* Ref.get(closingTabIdsRef)).has(tabId) ||
+      !(yield* SynchronizedRef.get(tabsRef)).has(tabId)
+    )
+      return;
+    if (session.embedded.isDestroyed()) {
+      yield* update(tabId, { webContentsId: null, separateWindow: false });
+      return;
+    }
+    yield* registerWebviewUnlocked(tabId, session.embedded.id, session.generation, false);
+    yield* update(tabId, { separateWindow: false });
+    if (session.lastUrl && session.lastUrl !== "about:blank") {
+      // Window transitions intentionally reload; cookies stay in the same session.
+      runFork(
+        loadInteractiveWindowPage(
+          tabId,
+          session.embedded,
+          session.lastUrl,
+          session.generation,
+          navigationVersion,
+        ).pipe(Effect.ignore),
+      );
+    }
+  });
+
+  const closeInteractiveWindow = Effect.fn("PreviewManager.closeInteractiveWindow")(function* (
+    tabId: string,
+  ) {
+    yield* withTabLifecycleLock(tabId, releaseInteractiveWindow(tabId, true));
+  });
+  const closeAllInteractiveWindows = Effect.fn("PreviewManager.closeAllInteractiveWindows")(
+    function* () {
+      for (const session of interactiveWindows.values()) {
+        yield* attempt({ operation: "interactiveWindow.closeOwner", tabId: "" }, () => {
+          if (!session.presentation.window.isDestroyed()) session.presentation.window.close();
+        }).pipe(Effect.ignore);
+      }
+      yield* Effect.forEach(
+        [...interactiveWindows.keys()],
+        (tabId) => withTabLifecycleLock(tabId, releaseInteractiveWindow(tabId, false)),
+        { discard: true },
+      );
+    },
+  );
+  const loadInteractiveWindowPage = Effect.fn("PreviewManager.loadInteractiveWindowPage")(
+    function* (
+      tabId: string,
+      wc: Electron.WebContents,
+      rawUrl: string,
+      generation: number | undefined,
+      navigationVersion: number,
+    ) {
+      const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (
+        !tab ||
+        (tabNavigationVersions.get(tabId) ?? 0) !== navigationVersion ||
+        tab.webContentsId !== wc.id ||
+        tabLifecycleGenerations.get(tabId) !== generation ||
+        wc.isDestroyed() ||
+        (yield* Ref.get(closingTabIdsRef)).has(tabId)
+      )
+        return;
+      const url = yield* attempt({ operation: "interactiveWindow.normalizeUrl", tabId }, () =>
+        normalizePreviewUrl(rawUrl),
+      );
+      yield* attemptPromise({ operation: "interactiveWindow.loadPage", tabId }, () =>
+        wc.loadURL(url),
+      );
+    },
+  );
+  const openInteractiveWindow = Effect.fn("PreviewManager.openInteractiveWindow")(function* (
+    tabId: string,
+    viewport: PreviewViewportSetting,
+  ) {
+    yield* withTabLifecycleLock(
+      tabId,
+      Effect.gen(function* () {
+        const existing = interactiveWindows.get(tabId);
+        if (existing) {
+          yield* attempt(
+            { operation: "interactiveWindow.focus", tabId },
+            existing.presentation.focus,
+          );
+          return;
+        }
+        const embedded = yield* requireWebContents(tabId);
+        const capture = (yield* SynchronizedRef.get(frameCaptureSessionsRef)).get(tabId);
+        if (pendingRecording?.tabId === tabId || capture?.consumers.has("recording")) {
+          return yield* new PreviewOperationError({
+            operation: "interactiveWindow.open",
+            tabId,
+            cause: new Error("Stop the recording before opening a separate window."),
+          });
+        }
+        yield* closePictureInPicture(tabId);
+        const generation = tabLifecycleGenerations.get(tabId);
+        const navigationVersion = tabNavigationVersions.get(tabId) ?? 0;
+        const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        if (!tab) return yield* new PreviewTabNotFoundError({ tabId });
+        const url = yield* attempt({ operation: "interactiveWindow.readUrl", tabId }, () =>
+          tab.navStatus.kind === "Idle" ? embedded.getURL() : tab.navStatus.url,
+        );
+        let presentation: InteractivePreviewWindow;
+        const onAction = (action: PreviewWindowAction) => runForkAction(action);
+        const runForkAction = async (action: PreviewWindowAction) => {
+          const operation = withTabLifecycleLock(
+            tabId,
+            Effect.suspend(() => {
+              if (interactiveWindows.get(tabId)?.presentation !== presentation)
+                return new PreviewTabNotFoundError({ tabId });
+              return action.kind === "return"
+                ? releaseInteractiveWindow(tabId, true)
+                : action.kind === "navigate"
+                  ? navigate(tabId, action.url)
+                  : action.kind === "back"
+                    ? goBack(tabId)
+                    : action.kind === "forward"
+                      ? goForward(tabId)
+                      : action.kind === "refresh"
+                        ? refresh(tabId)
+                        : Effect.void;
+            }),
+          );
+          await Effect.runPromiseWith(context)(operation);
+        };
+        presentation = yield* attempt({ operation: "interactiveWindow.create", tabId }, () =>
+          createInteractivePreviewWindow({
+            session: embedded.session,
+            chromePreloadPath: pictureInPicturePreloadPath,
+            pagePreloadPath: path.join(
+              path.dirname(pictureInPicturePreloadPath),
+              "preview-pick-preload.cjs",
+            ),
+            viewport,
+            zoomFactor: tab.zoomFactor,
+            onAction,
+            onClosed: () => {
+              runFork(
+                withTabLifecycleLock(
+                  tabId,
+                  Effect.suspend(() =>
+                    interactiveWindows.get(tabId)?.presentation === presentation
+                      ? releaseInteractiveWindow(tabId, frameCaptureWindowOpen)
+                      : Effect.void,
+                  ),
+                ).pipe(Effect.ignore),
+              );
+            },
+          }),
+        );
+        interactiveWindows.set(tabId, {
+          presentation,
+          webContentsId: presentation.webContents.id,
+          embedded,
+          generation,
+          lastUrl: url,
+        });
+        yield* Effect.gen(function* () {
+          yield* attempt({ operation: "interactiveWindow.muteEmbedded", tabId }, () =>
+            embedded.setAudioMuted(true),
+          );
+          yield* registerWebviewUnlocked(tabId, presentation.webContents.id, generation, false);
+          yield* update(tabId, { separateWindow: true });
+          yield* attemptPromise(
+            { operation: "interactiveWindow.initialize", tabId },
+            presentation.initialize,
+          );
+          if (url && url !== "about:blank")
+            runFork(
+              loadInteractiveWindowPage(
+                tabId,
+                presentation.webContents,
+                url,
+                generation,
+                navigationVersion,
+              ).pipe(Effect.ignore),
+            );
+        }).pipe(Effect.onError(() => releaseInteractiveWindow(tabId, true).pipe(Effect.ignore)));
+      }),
+    );
+  });
+  const setInteractiveWindowViewport = Effect.fn("PreviewManager.setInteractiveWindowViewport")(
+    function* (tabId: string, viewport: PreviewViewportSetting) {
+      const session = interactiveWindows.get(tabId);
+      if (!session) return yield* new PreviewTabNotFoundError({ tabId });
+      yield* attempt({ operation: "interactiveWindow.setViewport", tabId }, () =>
+        session.presentation.setViewport(viewport),
+      );
+    },
+  );
+  const interactiveWindowStatus = Effect.fn("PreviewManager.interactiveWindowStatus")(function* (
+    tabId: string,
+  ) {
+    const session = interactiveWindows.get(tabId);
+    return session
+      ? yield* attempt(
+          { operation: "interactiveWindow.status", tabId },
+          session.presentation.status,
+        )
+      : null;
   });
 
   // Called when a guest attaches to the window, before its first document
@@ -2456,6 +2725,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const url = yield* attempt({ operation: "navigate.normalizeUrl", tabId }, () =>
       normalizePreviewUrl(rawUrl),
     );
+    tabNavigationVersions.set(tabId, (tabNavigationVersions.get(tabId) ?? 0) + 1);
     const updatedAt = yield* currentIso;
     const pending = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
       const current = tabs.get(tabId);
@@ -2471,6 +2741,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         canGoForward: current?.canGoForward ?? false,
         zoomFactor: current?.zoomFactor ?? DEFAULT_ZOOM_FACTOR,
         pictureInPicture: current?.pictureInPicture ?? false,
+        separateWindow: current?.separateWindow ?? false,
         colorScheme: current?.colorScheme ?? "system",
         // Both carry across navigation. Mute is user intent, and the old
         // document keeps playing until loadURL actually replaces it, so
@@ -3593,6 +3864,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return yield* withTabLifecycleLock(
       tabId,
       Effect.gen(function* () {
+        if (interactiveWindows.has(tabId))
+          return yield* new PreviewOperationError({
+            operation: "recording.start",
+            tabId,
+            cause: new Error("Return the preview to T3 before recording."),
+          });
         yield* startFrameCapture(tabId, "recording");
         yield* SynchronizedRef.update(frameCaptureSessionsRef, (sessions) =>
           replaceMap(sessions, (copy) => {
@@ -4710,6 +4987,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     installDownloadHandler,
     navigate,
     openPictureInPicture,
+    openInteractiveWindow,
+    closeInteractiveWindow,
+    setInteractiveWindowViewport,
+    interactiveWindowStatus,
     openDevTools,
     pickElement,
     prepareWebview,
@@ -5094,6 +5375,21 @@ export class PreviewManager extends Context.Service<
     readonly revealArtifact: (path: string) => Effect.Effect<void, PreviewManagerError>;
     readonly copyArtifactToClipboard: (path: string) => Effect.Effect<void, PreviewManagerError>;
     readonly openPictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly openInteractiveWindow: (
+      tabId: string,
+      viewport: PreviewViewportSetting,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly closeInteractiveWindow: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+    readonly setInteractiveWindowViewport: (
+      tabId: string,
+      viewport: PreviewViewportSetting,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly interactiveWindowStatus: (
+      tabId: string,
+    ) => Effect.Effect<
+      { visible: boolean; viewportSetting: PreviewViewportSetting } | null,
+      PreviewManagerError
+    >;
     readonly closePictureInPicture: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
     readonly startRecording: (
       tabId: string,
@@ -5223,6 +5519,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     revealArtifact: operations.revealArtifact,
     copyArtifactToClipboard: operations.copyArtifactToClipboard,
     openPictureInPicture: operations.openPictureInPicture,
+    openInteractiveWindow: operations.openInteractiveWindow,
+    closeInteractiveWindow: operations.closeInteractiveWindow,
+    setInteractiveWindowViewport: operations.setInteractiveWindowViewport,
+    interactiveWindowStatus: operations.interactiveWindowStatus,
     closePictureInPicture: operations.closePictureInPicture,
     startRecording: operations.startRecording,
     stopRecording: operations.stopRecording,
