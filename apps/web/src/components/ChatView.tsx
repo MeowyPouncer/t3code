@@ -275,6 +275,7 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { appendTaskPrompt } from "./tasks/taskBoardLogic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -691,6 +692,9 @@ const DevicePanel = lazy(() =>
   import("./device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
+const TasksPanel = lazy(() =>
+  import("./tasks/TasksPanel").then((module) => ({ default: module.TasksPanel })),
+);
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -5280,6 +5284,10 @@ export default function ChatView(props: ChatViewProps) {
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
+  }, [activeProject, activeThreadRef]);
+  const addTasksSurface = useCallback(() => {
+    if (activeThreadRef && activeProject)
+      useRightPanelStore.getState().open(activeThreadRef, "tasks");
   }, [activeProject, activeThreadRef]);
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
@@ -10539,7 +10547,50 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   const rightPanelContent = activeThreadRef ? (
-    renderedRightPanelSurface?.kind === "preview" ? (
+    renderedRightPanelSurface?.kind === "tasks" && activeProject ? (
+      <Suspense fallback={null}>
+        <TasksPanel
+          project={activeProject}
+          visible={rightPanelOpen}
+          onUseInChat={(card) => {
+            const store = useComposerDraftStore.getState();
+            store.setPrompt(
+              composerDraftTarget,
+              appendTaskPrompt(store.getComposerDraft(composerDraftTarget)?.prompt ?? "", card),
+            );
+            if (shouldUsePlanSidebarSheet) closePreviewPanel();
+            focusComposer();
+          }}
+          onOpenFile={(snapshot, card) => {
+            if (!card.origin_only)
+              useRightPanelStore
+                .getState()
+                .openFile(
+                  activeThreadRef,
+                  `${snapshot.root.replace(/[/\\]+$/, "")}/${card.path}`,
+                  card.line,
+                );
+          }}
+          onExpand={
+            editingQueuedRun === null
+              ? () => {
+                  void navigate({
+                    to: "/tasks",
+                    search: {
+                      environmentId: activeProject.environmentId,
+                      projectId: activeProject.id,
+                      threadId: activeThreadRef.threadId,
+                      ...(typeof composerDraftTarget === "string"
+                        ? { draftId: composerDraftTarget }
+                        : {}),
+                    },
+                  });
+                }
+              : undefined
+          }
+        />
+      </Suspense>
+    ) : renderedRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
           mode="embedded"
@@ -11515,6 +11566,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
+          onAddTasks={addTasksSurface}
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddDevice={addDeviceSurface}
@@ -11522,6 +11574,7 @@ export default function ChatView(props: ChatViewProps) {
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
+          tasksAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
@@ -11570,6 +11623,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
+            onAddTasks={addTasksSurface}
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddDevice={addDeviceSurface}
@@ -11577,6 +11631,7 @@ export default function ChatView(props: ChatViewProps) {
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
+            tasksAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
