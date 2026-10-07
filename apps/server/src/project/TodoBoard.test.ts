@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as TodoBoard from "./TodoBoard.ts";
