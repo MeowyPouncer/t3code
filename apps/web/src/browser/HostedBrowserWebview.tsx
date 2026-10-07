@@ -1,6 +1,10 @@
 "use client";
 
-import type { PreviewViewportSetting, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  DesktopPreviewColorScheme,
+  PreviewViewportSetting,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -18,7 +22,7 @@ import {
 } from "./browserViewportLayout";
 import { BrowserDeviceToolbar } from "./BrowserDeviceToolbar";
 import { BrowserViewportResizeHandles } from "./BrowserViewportResizeHandles";
-import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime";
+import { acquireDesktopTab, type AcquiredDesktopTab, withDesktopTab } from "./desktopTabLifetime";
 import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserViewportResize } from "./useBrowserViewportResize";
@@ -57,6 +61,16 @@ export function HostedBrowserWebview(props: {
    */
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
+  /** A tab of the desktop's own server; the server drives this webview's page. */
+  readonly serverDriven?: boolean;
+  /**
+   * For a server-driven tab, the appearance and zoom its environment published,
+   * which this webview follows so every client and agent sees one state.
+   */
+  readonly serverRendering?: {
+    readonly colorScheme: DesktopPreviewColorScheme;
+    readonly zoomFactor: number;
+  };
 }) {
   const {
     threadRef,
@@ -68,6 +82,8 @@ export function HostedBrowserWebview(props: {
     separateWindow = false,
     zoomFactor,
     profileId,
+    serverDriven = false,
+    serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
@@ -95,7 +111,10 @@ export function HostedBrowserWebview(props: {
     (state) => (state.activityByTabId[runtimeTabId] ?? 0) > 0,
   );
   const recordingActive = useActiveBrowserRecordingTabIds().has(runtimeTabId);
-  usePreviewBridge({ threadRef, tabId, runtimeTabId });
+  usePreviewBridge({ threadRef, tabId, runtimeTabId, serverDriven });
+
+  const serverColorScheme = serverRendering?.colorScheme;
+  const serverZoomFactor = serverRendering?.zoomFactor;
 
   useEffect(() => {
     if (!separateWindow || !previewBridge?.separateWindow) return;
@@ -105,13 +124,28 @@ export function HostedBrowserWebview(props: {
   useEffect(() => {
     if (!clientSettingsHydrated) return;
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
-    const lease = acquireDesktopTab(runtimeTabId);
+    const lease = acquireDesktopTab(
+      runtimeTabId,
+      serverDriven ? { threadId: threadRef.threadId, tabId } : undefined,
+    );
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       lease.release();
     };
-  }, [clientSettingsHydrated, runtimeTabId]);
+  }, [clientSettingsHydrated, runtimeTabId, serverDriven, tabId, threadRef.threadId]);
+
+  // A server tab looks the way its environment published, once the desktop tab exists.
+  useEffect(() => {
+    const bridge = window.desktopBridge?.preview;
+    if (!bridge || serverColorScheme === undefined) return;
+    withDesktopTab(runtimeTabId, () => bridge.setColorScheme(runtimeTabId, serverColorScheme));
+  }, [runtimeTabId, serverColorScheme]);
+  useEffect(() => {
+    const bridge = window.desktopBridge?.preview;
+    if (!bridge || serverZoomFactor === undefined) return;
+    withDesktopTab(runtimeTabId, () => bridge.setZoomFactor(runtimeTabId, serverZoomFactor));
+  }, [runtimeTabId, serverZoomFactor]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
@@ -187,6 +221,20 @@ export function HostedBrowserWebview(props: {
   }, [clientSettingsHydrated, config, initialSrc, runtimeTabId, webviewGeneration]);
 
   const active = presentation.visible && presentation.rect !== null;
+  useEffect(() => {
+    const bridge = previewBridge;
+    if (!bridge?.setSurfaceVisible) return;
+    const sync = () =>
+      withDesktopTab(runtimeTabId, () =>
+        bridge.setSurfaceVisible!(runtimeTabId, active && document.visibilityState !== "hidden"),
+      );
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      withDesktopTab(runtimeTabId, () => bridge.setSurfaceVisible!(runtimeTabId, false));
+    };
+  }, [active, runtimeTabId]);
   const lastRect = presentation.rect;
   const normalizedZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
   const viewportWidth = viewport._tag === "fill" ? null : viewport.width;

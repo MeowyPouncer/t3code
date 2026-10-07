@@ -12,7 +12,9 @@ NodeChildProcess.execFileSync(
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
 
-const electronCommand = resolveElectronLaunchCommand(["dist-electron/main.cjs"]);
+// Load package metadata and its boot entry so Electron reports T3's nightly
+// version and update channel when starting a locally built fork.
+const electronCommand = resolveElectronLaunchCommand(["."]);
 const child = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
   stdio: "inherit",
   cwd: desktopDir,
