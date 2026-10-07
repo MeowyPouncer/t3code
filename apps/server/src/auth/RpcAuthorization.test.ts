@@ -3,6 +3,9 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  AuthTerminalOperateScope,
+  ProjectId,
+  type AuthEnvironmentScope,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -122,6 +125,49 @@ it("requires operate permission for tool updates even alongside a read-only chec
 });
 
 describe("RPC scope middleware", () => {
+  it.effect("does not execute a project board parser for a read-only session", () =>
+    Effect.gen(function* () {
+      const method = WS_METHODS.projectsReadTodoBoard;
+      const boardGroup = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof method> => tag !== method,
+        ),
+      );
+      let executions = 0;
+      const grants: ReadonlyArray<ReadonlyArray<AuthEnvironmentScope>> = [
+        [],
+        [AuthOrchestrationReadScope],
+        [AuthTerminalOperateScope],
+      ];
+      for (const scopes of grants) {
+        const client = yield* RpcTest.makeClient(boardGroup).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              boardGroup.toLayerHandler(method, () =>
+                Effect.sync(() => {
+                  executions += 1;
+                  return { available: false } as const;
+                }),
+              ),
+              rpcScopeAuthorizationLayer(scopes),
+            ),
+          ),
+        );
+        if (scopes.includes(AuthTerminalOperateScope))
+          expect(yield* client[method]({ projectId: ProjectId.make("board") })).toEqual({
+            available: false,
+          });
+        else
+          expect(
+            yield* client[method]({ projectId: ProjectId.make("board") }).pipe(Effect.flip),
+          ).toMatchObject({
+            _tag: "EnvironmentAuthorizationError",
+            requiredScope: AuthTerminalOperateScope,
+          });
+      }
+      expect(executions).toBe(1);
+    }),
+  );
   const tested = [WS_METHODS.serverProbe, WS_METHODS.serverRetryResourceTelemetry] as const;
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(

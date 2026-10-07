@@ -1,7 +1,11 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, ListTodoIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { resolveThreadRouteRef } from "../../threadRoutes";
+import { useRightPanelStore } from "../../rightPanelStore";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
@@ -166,6 +170,8 @@ function SidebarUtilityItem({
 
 export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
+  const threadRef = useParams({ strict: false, select: resolveThreadRouteRef });
+  const routeDraftId = useParams({ strict: false, select: (params) => params.draftId ?? null });
   const navigateToMainApp = useNavigateToMainApp();
   const { isMobile, setOpenMobile } = useSidebar();
   const isOnUtilityPage = useLocation({
@@ -188,6 +194,16 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({ to: "/settings" });
   }, [closeMobileSidebar, navigate]);
+  const handleTasksClick = useCallback(() => {
+    closeMobileSidebar();
+    const draft = routeDraftId
+      ? useComposerDraftStore.getState().getDraftSession(DraftId.make(routeDraftId))
+      : null;
+    const target =
+      threadRef ?? (draft ? scopeThreadRef(draft.environmentId, draft.threadId) : null);
+    if (target) useRightPanelStore.getState().open(target, "tasks");
+    else void navigate({ to: "/tasks", search: {} });
+  }, [closeMobileSidebar, navigate, threadRef, routeDraftId]);
 
   const handleUsageClick = useCallback(() => {
     if (isMobile) {
@@ -229,6 +245,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
+          <SidebarUtilityItem icon={<ListTodoIcon />} label="Tasks" onClick={handleTasksClick} />
         </>
       )}
       <SidebarUpdatePill />

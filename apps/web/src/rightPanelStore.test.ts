@@ -27,6 +27,18 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("keeps Tasks beside file tabs and restores it after returning from a card file", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "tasks");
+    store.openFile(refA, "/integration/docs/todo/TASK-001.md");
+    let state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["tasks", "file"]);
+    store.activateSurface(refA, "tasks");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("tasks");
+    store.closeSurface(refA, "tasks");
+    state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["file"]);
+  });
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {
