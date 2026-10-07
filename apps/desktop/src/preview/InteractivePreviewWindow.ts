@@ -90,13 +90,18 @@ export function createInteractivePreviewWindow(options: {
     });
     pageForCleanup = view.webContents;
     window.contentView.addChildView(view);
+    // Device emulation reaches into the page's render widget, which does not
+    // exist before the first navigation commits or after its renderer dies.
+    // Calling it then segfaults the main process (Electron 44), so it waits
+    // for a committed page and is reapplied to each new one.
+    let pageLive = false;
     const syncBounds = () => {
       if (window.isDestroyed() || view.webContents.isDestroyed()) return;
       const [contentWidth = 1, contentHeight = CHROME_HEIGHT + 1] = window.getContentSize();
       const availableWidth = Math.max(1, contentWidth);
       const availableHeight = Math.max(1, contentHeight - CHROME_HEIGHT);
       if (viewport._tag === "fill") {
-        view.webContents.disableDeviceEmulation();
+        if (pageLive) view.webContents.disableDeviceEmulation();
         view.setBounds({ x: 0, y: CHROME_HEIGHT, width: availableWidth, height: availableHeight });
         return;
       }
@@ -112,6 +117,7 @@ export function createInteractivePreviewWindow(options: {
         width,
         height,
       });
+      if (!pageLive) return;
       view.webContents.enableDeviceEmulation({
         screenPosition: "desktop",
         screenSize: { width: viewport.width, height: viewport.height },
@@ -134,6 +140,13 @@ export function createInteractivePreviewWindow(options: {
         fullscreen: window.isFullScreen(),
       });
     };
+    view.webContents.on("did-navigate", () => {
+      pageLive = true;
+      syncBounds();
+    });
+    view.webContents.on("render-process-gone", () => {
+      pageLive = false;
+    });
     window.on("resize", syncBounds);
     window.on("enter-full-screen", syncChrome);
     window.on("leave-full-screen", syncChrome);
