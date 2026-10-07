@@ -121,6 +121,9 @@ export function projectDesktopState(state: DesktopPreviewTabState): DesktopPrevi
     zoomFactor: state.zoomFactor,
     pictureInPicture: state.pictureInPicture,
     ...(state.separateWindow === undefined ? {} : { separateWindow: state.separateWindow }),
+    ...(state.separateWindowVisible === undefined
+      ? {}
+      : { separateWindowVisible: state.separateWindowVisible }),
     colorScheme: state.colorScheme,
     audioMuted: state.audioMuted,
     audible: state.audible,

@@ -579,8 +579,10 @@ describe("PreviewManager", () => {
         loadURL: vi.fn(async (_url: string) => undefined),
         reload: vi.fn(),
       });
+      let nativeDestroyed = false;
       const native = Object.assign(makeTestPreviewWebContents(capture, 84), {
         getType: () => "browserView",
+        isDestroyed: () => nativeDestroyed,
         session: previewSession,
         loadURL: vi.fn(async (_url: string) => undefined),
         reload: vi.fn(),
@@ -615,7 +617,16 @@ describe("PreviewManager", () => {
       );
       yield* manager.createTab("tab-window");
       yield* manager.registerWebview("tab-window", 42);
-      return { embedded, native, presentation, states, options: () => options };
+      return {
+        embedded,
+        native,
+        presentation,
+        states,
+        options: () => options,
+        destroyNative: () => {
+          nativeDestroyed = true;
+        },
+      };
     });
 
   effectIt.effect(
@@ -765,6 +776,82 @@ describe("PreviewManager", () => {
         expect(fixture.embedded.loadURL).not.toHaveBeenCalled();
       }),
     ),
+  );
+
+  effectIt.effect(
+    "finishes native navigation cleanup if the page dies while publishing its URL",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = yield* interactiveFixture(manager);
+          yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+          yield* manager.subscribeStateChanges((_tabId, state) =>
+            Effect.sync(() => {
+              if (
+                state.navStatus.kind === "Loading" &&
+                state.navStatus.url === "https://closing.example/"
+              )
+                fixture.destroyNative();
+            }),
+          );
+          yield* Effect.promise(() =>
+            fixture.options()!.onAction({ kind: "navigate", url: "https://closing.example/" }),
+          );
+          expect(fixture.states.at(-1)?.webContentsId).toBeNull();
+          yield* manager.closeInteractiveWindow("tab-window");
+          expect(fixture.states.at(-1)).toMatchObject({ webContentsId: 42, separateWindow: false });
+          yield* manager.closeTab("tab-window");
+          expect(fixture.states.at(-1)?.webContentsId).toBeNull();
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "rejects queued navigation after native page destruction without blocking return",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = yield* interactiveFixture(manager);
+          yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+          fixture.destroyNative();
+          const result = yield* Effect.exit(
+            Effect.tryPromise(() =>
+              fixture.options()!.onAction({ kind: "navigate", url: "https://closed.example/" }),
+            ),
+          );
+          expect(Exit.isFailure(result)).toBe(true);
+          yield* manager.closeInteractiveWindow("tab-window");
+          expect(fixture.states.at(-1)).toMatchObject({ webContentsId: 42, separateWindow: false });
+          yield* manager.closeTab("tab-window");
+        }),
+      ),
+  );
+
+  effectIt.effect(
+    "publishes native minimize and restore state without changing page ownership",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const fixture = yield* interactiveFixture(manager);
+          yield* manager.openInteractiveWindow("tab-window", { _tag: "fill" });
+          const shown = yield* Deferred.make<void>();
+          const hidden = yield* Deferred.make<void>();
+          yield* manager.subscribeStateChanges((_tabId, state) =>
+            state.separateWindowVisible
+              ? Deferred.succeed(shown, undefined)
+              : Deferred.succeed(hidden, undefined),
+          );
+          fixture.options()!.onVisibilityChange(true);
+          yield* Deferred.await(shown);
+          fixture.options()!.onVisibilityChange(false);
+          yield* Deferred.await(hidden);
+          expect(fixture.states.at(-1)).toMatchObject({
+            webContentsId: 84,
+            separateWindow: true,
+            separateWindowVisible: false,
+          });
+        }),
+      ),
   );
 
   effectIt.effect("keeps preview shortcuts out of the host window", () =>

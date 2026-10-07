@@ -627,6 +627,8 @@ export interface DesktopPreviewTabState {
   pictureInPicture: boolean;
   /** Whether the live tab is hosted in an interactive desktop window. */
   separateWindow?: boolean;
+  /** Actual visibility of the native page window, including minimization. */
+  separateWindowVisible?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   /**
    * Whether the user has silenced this tab. Per tab rather than per origin, so

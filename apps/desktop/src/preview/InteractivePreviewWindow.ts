@@ -41,12 +41,14 @@ export function createInteractivePreviewWindow(options: {
   readonly viewport: PreviewViewportSetting;
   readonly zoomFactor: number;
   readonly onAction: (action: PreviewWindowAction) => Promise<void>;
+  readonly onVisibilityChange: (visible: boolean) => void;
   readonly onClosed: () => void;
 }) {
   let viewport = options.viewport;
   let zoomFactor = options.zoomFactor;
   let lastState: DesktopPreviewTabState | null = null;
   let disposed = false;
+  let lastVisibility: boolean | undefined;
   const width = viewport._tag === "fill" ? 1100 : Math.round(viewport.width * zoomFactor);
   const height =
     viewport._tag === "fill" ? 760 : Math.round(viewport.height * zoomFactor) + CHROME_HEIGHT;
@@ -91,17 +93,32 @@ export function createInteractivePreviewWindow(options: {
     const syncBounds = () => {
       if (window.isDestroyed() || view.webContents.isDestroyed()) return;
       const [contentWidth = 1, contentHeight = CHROME_HEIGHT + 1] = window.getContentSize();
+      const availableWidth = Math.max(1, contentWidth);
+      const availableHeight = Math.max(1, contentHeight - CHROME_HEIGHT);
+      if (viewport._tag === "fill") {
+        view.webContents.disableDeviceEmulation();
+        view.setBounds({ x: 0, y: CHROME_HEIGHT, width: availableWidth, height: availableHeight });
+        return;
+      }
+      // Device emulation scales presentation without changing the requested CSS viewport.
+      const emulatedWidth = Math.round(viewport.width * zoomFactor);
+      const emulatedHeight = Math.round(viewport.height * zoomFactor);
+      const scale = Math.min(1, availableWidth / emulatedWidth, availableHeight / emulatedHeight);
+      const width = Math.max(1, Math.floor(emulatedWidth * scale));
+      const height = Math.max(1, Math.floor(emulatedHeight * scale));
       view.setBounds({
-        x: 0,
-        y: CHROME_HEIGHT,
-        width:
-          viewport._tag === "fill"
-            ? Math.max(1, contentWidth)
-            : Math.round(viewport.width * zoomFactor),
-        height:
-          viewport._tag === "fill"
-            ? Math.max(1, contentHeight - CHROME_HEIGHT)
-            : Math.round(viewport.height * zoomFactor),
+        x: Math.floor((availableWidth - width) / 2),
+        y: CHROME_HEIGHT + Math.floor((availableHeight - height) / 2),
+        width,
+        height,
+      });
+      view.webContents.enableDeviceEmulation({
+        screenPosition: "desktop",
+        screenSize: { width: viewport.width, height: viewport.height },
+        viewPosition: { x: 0, y: 0 },
+        deviceScaleFactor: 0,
+        viewSize: { width: emulatedWidth, height: emulatedHeight },
+        scale,
       });
     };
     const syncChrome = () => {
@@ -120,7 +137,19 @@ export function createInteractivePreviewWindow(options: {
     window.on("resize", syncBounds);
     window.on("enter-full-screen", syncChrome);
     window.on("leave-full-screen", syncChrome);
+    const reportVisibility = () => {
+      const visible =
+        !disposed && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
+      if (visible === lastVisibility) return;
+      lastVisibility = visible;
+      options.onVisibilityChange(visible);
+    };
+    window.on("show", reportVisibility);
+    window.on("hide", reportVisibility);
+    window.on("minimize", reportVisibility);
+    window.on("restore", reportVisibility);
     const onClosed = () => {
+      reportVisibility();
       // Abort page loads immediately so a command cannot hold its lifecycle lock
       // while the owning window has already gone away.
       if (!view.webContents.isDestroyed()) view.webContents.close({ waitForBeforeUnload: false });
@@ -173,6 +202,7 @@ export function createInteractivePreviewWindow(options: {
           throw new Error("Preview window closed while opening.");
         syncChrome();
         window.show();
+        reportVisibility();
         view.webContents.focus();
       },
       update: (state: DesktopPreviewTabState) => {
@@ -193,6 +223,7 @@ export function createInteractivePreviewWindow(options: {
       }),
       focus: () => {
         if (!window.isDestroyed()) {
+          if (window.isMinimized()) window.restore();
           window.show();
           window.focus();
           view.webContents.focus();

@@ -97,6 +97,21 @@ const snapshot: PreviewSessionSnapshot = {
   profileId: "work",
   updatedAt: "2026-09-05T00:00:00.000Z",
 };
+const liveWindowOverlay = {
+  hasWebContents: true,
+  canGoBack: false,
+  canGoForward: false,
+  loading: false,
+  zoomFactor: 1,
+  pictureInPicture: false,
+  separateWindow: true,
+  separateWindowVisible: true,
+  colorScheme: "system",
+  audioMuted: false,
+  audible: false,
+  controller: "none",
+  favicon: null,
+} as const;
 const emptyList = { sessions: [], serverEpoch: "test-server", revision: 0 };
 const listAtom = Atom.make(AsyncResult.success(emptyList));
 const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
@@ -225,6 +240,40 @@ describe("PreviewAutomationHosts open", () => {
 });
 
 describe("PreviewAutomationHosts ownership", () => {
+  it("reports minimized native content as hidden even while the main window is visible", async () => {
+    const runtimeTabId = previewRuntimeTabId(threadRef, null, snapshot.tabId);
+    const owner = Symbol();
+    await act(() => {
+      applyPreviewServerSnapshot(threadRef, snapshot);
+      useBrowserSurfaceStore.getState().claim(runtimeTabId, owner, false);
+      useBrowserSurfaceStore
+        .getState()
+        .present(runtimeTabId, owner, { x: 0, y: 0, width: 800, height: 600 }, true, 0, 1);
+      applyPreviewDesktopState(threadRef, snapshot.tabId, {
+        ...liveWindowOverlay,
+        separateWindowVisible: false,
+      });
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({ type: "connected", connectionId: "automation-connection" }),
+      );
+    });
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: false }],
+        }),
+      }),
+    );
+    await act(() => applyPreviewDesktopState(threadRef, snapshot.tabId, liveWindowOverlay));
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: true }],
+        }),
+      }),
+    );
+  });
   it("reports the live pop-out as visible while the main window is hidden", async () => {
     mocks.windowStatus.mockResolvedValue({ visible: true, viewportSetting: { _tag: "fill" } });
     mocks.evaluate.mockResolvedValue({ width: 1100, height: 708 });
@@ -251,6 +300,7 @@ describe("PreviewAutomationHosts ownership", () => {
         zoomFactor: 1,
         pictureInPicture: false,
         separateWindow: true,
+        separateWindowVisible: true,
         colorScheme: "system",
         audioMuted: false,
         audible: false,
@@ -324,6 +374,7 @@ describe("PreviewAutomationHosts ownership", () => {
         zoomFactor: 1,
         pictureInPicture: false,
         separateWindow: true,
+        separateWindowVisible: true,
         colorScheme: "system",
         audioMuted: false,
         audible: false,

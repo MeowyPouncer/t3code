@@ -119,6 +119,7 @@ export interface PreviewTabState {
   zoomFactor: number;
   pictureInPicture: boolean;
   separateWindow?: boolean;
+  separateWindowVisible?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   /** User intent to silence this tab. Re-applied to each guest that attaches. */
   audioMuted: boolean;
@@ -2262,6 +2263,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       zoomFactor: DEFAULT_ZOOM_FACTOR,
       pictureInPicture: false,
       separateWindow: false,
+      separateWindowVisible: false,
       colorScheme: "system",
       audioMuted: false,
       audible: false,
@@ -2501,11 +2503,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     )
       return;
     if (session.embedded.isDestroyed()) {
-      yield* update(tabId, { webContentsId: null, separateWindow: false });
+      yield* update(tabId, {
+        webContentsId: null,
+        separateWindow: false,
+        separateWindowVisible: false,
+      });
       return;
     }
     yield* registerWebviewUnlocked(tabId, session.embedded.id, session.generation, false);
-    yield* update(tabId, { separateWindow: false });
+    yield* update(tabId, { separateWindow: false, separateWindowVisible: false });
     if (session.lastUrl && session.lastUrl !== "about:blank") {
       // Window transitions intentionally reload; cookies stay in the same session.
       runFork(
@@ -2603,12 +2609,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const operation = withTabLifecycleLock(
             tabId,
             Effect.suspend(() => {
-              if (interactiveWindows.get(tabId)?.presentation !== presentation)
+              const owner = interactiveWindows.get(tabId);
+              if (owner?.presentation !== presentation)
                 return new PreviewTabNotFoundError({ tabId });
+              if (action.kind !== "return" && presentation.webContents.isDestroyed())
+                return new PreviewWebContentsNotFoundError({
+                  tabId,
+                  webContentsId: owner.webContentsId,
+                });
               return action.kind === "return"
                 ? releaseInteractiveWindow(tabId, true)
                 : action.kind === "navigate"
-                  ? navigate(tabId, action.url)
+                  ? navigate(tabId, action.url, true)
                   : action.kind === "back"
                     ? goBack(tabId)
                     : action.kind === "forward"
@@ -2631,6 +2643,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             viewport,
             zoomFactor: tab.zoomFactor,
             onAction,
+            onVisibilityChange: (visible) => {
+              runFork(
+                withTabLifecycleLock(
+                  tabId,
+                  Effect.suspend(() =>
+                    interactiveWindows.get(tabId)?.presentation === presentation
+                      ? update(tabId, { separateWindowVisible: visible })
+                      : Effect.void,
+                  ),
+                ).pipe(Effect.ignore),
+              );
+            },
             onClosed: () => {
               runFork(
                 withTabLifecycleLock(
@@ -2657,7 +2681,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             embedded.setAudioMuted(true),
           );
           yield* registerWebviewUnlocked(tabId, presentation.webContents.id, generation, false);
-          yield* update(tabId, { separateWindow: true });
+          yield* update(tabId, { separateWindow: true, separateWindowVisible: false });
           yield* attemptPromise(
             { operation: "interactiveWindow.initialize", tabId },
             presentation.initialize,
@@ -2721,7 +2745,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
-  const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
+  const navigate = Effect.fn("PreviewManager.navigate")(function* (
+    tabId: string,
+    rawUrl: string,
+    lifecycleLockHeld = false,
+  ) {
     const url = yield* attempt({ operation: "navigate.normalizeUrl", tabId }, () =>
       normalizePreviewUrl(rawUrl),
     );
@@ -2742,6 +2770,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         zoomFactor: current?.zoomFactor ?? DEFAULT_ZOOM_FACTOR,
         pictureInPicture: current?.pictureInPicture ?? false,
         separateWindow: current?.separateWindow ?? false,
+        separateWindowVisible: current?.separateWindowVisible ?? false,
         colorScheme: current?.colorScheme ?? "system",
         // Both carry across navigation. Mute is user intent, and the old
         // document keeps playing until loadURL actually replaces it, so
@@ -2769,44 +2798,43 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const wc = webContents.fromId(webContentsId);
     if (!wc || wc.isDestroyed()) {
       const expectedAttachment = (yield* Ref.get(attachedRef)).get(webContentsId);
-      yield* withTabLifecycleLock(
-        tabId,
-        Effect.gen(function* () {
-          const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-          const currentAttachment = (yield* Ref.get(attachedRef)).get(webContentsId);
-          const currentWebContents = webContents.fromId(webContentsId);
-          if (
-            currentTab?.webContentsId !== webContentsId ||
-            currentAttachment !== expectedAttachment ||
-            (currentWebContents && !currentWebContents.isDestroyed())
-          ) {
-            return;
+      const detachDeadGuest = Effect.gen(function* () {
+        const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        const currentAttachment = (yield* Ref.get(attachedRef)).get(webContentsId);
+        const currentWebContents = webContents.fromId(webContentsId);
+        if (
+          currentTab?.webContentsId !== webContentsId ||
+          currentAttachment !== expectedAttachment ||
+          (currentWebContents && !currentWebContents.isDestroyed())
+        ) {
+          return;
+        }
+        yield* Effect.all(
+          [
+            detachControlSession(webContentsId),
+            detachListeners(webContentsId),
+            cancelPickElement(tabId),
+          ],
+          { concurrency: 3, discard: true },
+        );
+        const detached = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+          const current = tabs.get(tabId);
+          if (current?.webContentsId !== webContentsId) {
+            return [Option.none<PreviewTabState>(), tabs] as const;
           }
-          yield* Effect.all(
-            [
-              detachControlSession(webContentsId),
-              detachListeners(webContentsId),
-              cancelPickElement(tabId),
-            ],
-            { concurrency: 3, discard: true },
-          );
-          const detached = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
-            const current = tabs.get(tabId);
-            if (current?.webContentsId !== webContentsId) {
-              return [Option.none<PreviewTabState>(), tabs] as const;
-            }
-            const { favicon: _favicon, ...currentWithoutFavicon } = current;
-            const next: PreviewTabState = { ...currentWithoutFavicon, webContentsId: null };
-            return [
-              Option.some(next),
-              replaceMap(tabs, (copy) => {
-                copy.set(tabId, next);
-              }),
-            ] as const;
-          });
-          if (Option.isSome(detached)) yield* emitIfCurrent(tabId, detached.value);
-        }),
-      );
+          const { favicon: _favicon, ...currentWithoutFavicon } = current;
+          const next: PreviewTabState = { ...currentWithoutFavicon, webContentsId: null };
+          return [
+            Option.some(next),
+            replaceMap(tabs, (copy) => {
+              copy.set(tabId, next);
+            }),
+          ] as const;
+        });
+        if (Option.isSome(detached)) yield* emitIfCurrent(tabId, detached.value);
+      });
+      // Native chrome commands already own this non-reentrant lock.
+      yield* lifecycleLockHeld ? detachDeadGuest : withTabLifecycleLock(tabId, detachDeadGuest);
       return;
     }
     // URL-bar navigation hands the page back to the human. The agent's own

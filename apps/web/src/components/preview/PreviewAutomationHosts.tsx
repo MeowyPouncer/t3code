@@ -363,6 +363,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             threadId: ref.threadId,
             tabId: tab.tabId,
             nativeWindow: state.desktopByTabId[tab.tabId]?.separateWindow ?? false,
+            nativeWindowVisible: state.desktopByTabId[tab.tabId]?.separateWindowVisible ?? false,
             visible: visibleRuntimeTabIds.includes(
               previewRuntimeTabId(ref, state.serverEpoch, tab.tabId),
             ),
@@ -897,9 +898,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         environmentId,
         connectionId: automationConnectionId,
         focused: document.hasFocus() && document.visibilityState === "visible",
-        liveTabs: liveTabs.map(({ nativeWindow, ...tab }) => ({
+        liveTabs: liveTabs.map(({ nativeWindow, nativeWindowVisible, ...tab }) => ({
           ...tab,
-          visible: nativeWindow || (tab.visible && document.visibilityState === "visible"),
+          visible: nativeWindow
+            ? nativeWindowVisible
+            : tab.visible && document.visibilityState === "visible",
         })),
       };
       const reportKey = JSON.stringify(input);

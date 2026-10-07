@@ -20,6 +20,7 @@ function setup() {
   const handlers = new Map<string, (event: unknown, action: unknown) => unknown>();
   let fullscreen = false,
     destroyed = false;
+  let minimized = false;
   let contentSize = [1100, 760];
   const chrome = {
     mainFrame: {},
@@ -39,6 +40,8 @@ function setup() {
     id: 84,
     isDestroyed: () => false,
     close: vi.fn(),
+    enableDeviceEmulation: vi.fn(),
+    disableDeviceEmulation: vi.fn(),
     focus: vi.fn(),
     on: vi.fn((name: string, fn: (...args: unknown[]) => void) => pageListeners.set(name, fn)),
   };
@@ -51,7 +54,11 @@ function setup() {
     getContentSize: () => contentSize,
     isDestroyed: () => destroyed,
     isVisible: () => true,
-    isMinimized: () => false,
+    isMinimized: () => minimized,
+    restore: vi.fn(() => {
+      minimized = false;
+      listeners.get("restore")?.();
+    }),
     isFullScreen: () => fullscreen,
     setFullScreen: vi.fn((value: boolean) => {
       fullscreen = value;
@@ -65,7 +72,10 @@ function setup() {
       listeners.get("closed")?.();
     }),
   };
-  const view = { webContents: page, setBounds: vi.fn() };
+  const view = {
+    webContents: page,
+    setBounds: vi.fn<(bounds: { x: number; y: number; width: number; height: number }) => void>(),
+  };
   constructors.window.mockReturnValue(window);
   constructors.view.mockReturnValue(view);
   const onAction = vi.fn(async () => undefined);
@@ -77,6 +87,7 @@ function setup() {
     viewport: { _tag: "fill" as const },
     zoomFactor: 1,
     onAction,
+    onVisibilityChange: vi.fn(),
     onClosed: vi.fn(),
   };
   const create = () => createInteractivePreviewWindow(options);
@@ -96,8 +107,12 @@ function setup() {
     pageListeners,
     onAction,
     action,
-    resize: () => {
-      contentSize = [1440, 900];
+    minimize: () => {
+      minimized = true;
+      listeners.get("minimize")?.();
+    },
+    resize: (next = [1440, 900]) => {
+      contentSize = next;
       listeners.get("resize")?.();
     },
   };
@@ -166,11 +181,53 @@ it("resizes the live page in fill mode and honors explicit CSS viewport sizes", 
     height: 848,
   });
   preview.setViewport({ _tag: "freeform", width: 800, height: 600 });
-  expect(fixture.view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 52, width: 800, height: 600 });
+  expect(fixture.view.setBounds).toHaveBeenLastCalledWith({
+    x: 320,
+    y: 176,
+    width: 800,
+    height: 600,
+  });
   expect(preview.status()).toEqual({
     visible: true,
     viewportSetting: { _tag: "freeform", width: 800, height: 600 },
   });
+});
+
+it("fits a larger fixed viewport into a smaller window without clipping the page", () => {
+  const fixture = setup();
+  const preview = fixture.create();
+  preview.setViewport({ _tag: "freeform", width: 1440, height: 900 });
+  fixture.resize([500, 400]);
+  const bounds = fixture.view.setBounds.mock.lastCall?.[0];
+  expect(bounds).toBeDefined();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(52);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(500);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(400);
+  expect(fixture.page.enableDeviceEmulation).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      viewSize: { width: 1440, height: 900 },
+      scale: expect.any(Number),
+    }),
+  );
+  expect(preview.status().viewportSetting).toEqual({ _tag: "freeform", width: 1440, height: 900 });
+  preview.setViewport({ _tag: "fill" });
+  expect(fixture.page.disableDeviceEmulation).toHaveBeenCalled();
+  expect(fixture.view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 52, width: 500, height: 348 });
+});
+
+it("reports a minimized page as hidden and restores it when focused", async () => {
+  const fixture = setup();
+  const preview = fixture.create();
+  await preview.initialize();
+  expect(fixture.options.onVisibilityChange).toHaveBeenLastCalledWith(true);
+  fixture.minimize();
+  expect(preview.status().visible).toBe(false);
+  expect(fixture.options.onVisibilityChange).toHaveBeenLastCalledWith(false);
+  preview.focus();
+  expect(fixture.window.restore).toHaveBeenCalledOnce();
+  expect(preview.status().visible).toBe(true);
+  expect(fixture.options.onVisibilityChange).toHaveBeenLastCalledWith(true);
 });
 
 it("exits fullscreen with Escape from the live page or its toolbar", async () => {
