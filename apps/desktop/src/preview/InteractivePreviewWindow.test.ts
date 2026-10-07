@@ -196,6 +196,7 @@ it("resizes the live page in fill mode and honors explicit CSS viewport sizes", 
 it("fits a larger fixed viewport into a smaller window without clipping the page", () => {
   const fixture = setup();
   const preview = fixture.create();
+  fixture.pageListeners.get("did-navigate")?.();
   preview.setViewport({ _tag: "freeform", width: 1440, height: 900 });
   fixture.resize([500, 400]);
   const bounds = fixture.view.setBounds.mock.lastCall?.[0];
@@ -214,6 +215,31 @@ it("fits a larger fixed viewport into a smaller window without clipping the page
   preview.setViewport({ _tag: "fill" });
   expect(fixture.page.disableDeviceEmulation).toHaveBeenCalled();
   expect(fixture.view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 52, width: 500, height: 348 });
+});
+
+it("emulates the viewport only while the page has a renderer", () => {
+  const fixture = setup();
+  const preview = fixture.create();
+  preview.setViewport({ _tag: "freeform", width: 800, height: 600 });
+  preview.setViewport({ _tag: "fill" });
+  preview.setViewport({ _tag: "freeform", width: 800, height: 600 });
+  expect(fixture.view.setBounds).toHaveBeenLastCalledWith({
+    x: 150,
+    y: 106,
+    width: 800,
+    height: 600,
+  });
+  expect(fixture.page.enableDeviceEmulation).not.toHaveBeenCalled();
+  expect(fixture.page.disableDeviceEmulation).not.toHaveBeenCalled();
+  fixture.pageListeners.get("did-navigate")?.();
+  expect(fixture.page.enableDeviceEmulation).toHaveBeenCalledOnce();
+  fixture.pageListeners.get("render-process-gone")?.();
+  fixture.resize();
+  preview.setViewport({ _tag: "fill" });
+  expect(fixture.page.enableDeviceEmulation).toHaveBeenCalledOnce();
+  expect(fixture.page.disableDeviceEmulation).not.toHaveBeenCalled();
+  fixture.pageListeners.get("did-navigate")?.();
+  expect(fixture.page.disableDeviceEmulation).toHaveBeenCalledOnce();
 });
 
 it("reports a minimized page as hidden and restores it when focused", async () => {
