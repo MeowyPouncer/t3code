@@ -50,6 +50,7 @@ export function HostedBrowserWebview(props: {
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly pictureInPicture: boolean;
+  readonly separateWindow?: boolean;
   /**
    * Fixed for the tab's lifetime: Electron only honours `partition` before the
    * guest attaches, so a live change here would not move the tab anyway.
@@ -64,6 +65,7 @@ export function HostedBrowserWebview(props: {
     initialUrl,
     viewport,
     pictureInPicture,
+    separateWindow = false,
     zoomFactor,
     profileId,
   } = props;
@@ -94,6 +96,11 @@ export function HostedBrowserWebview(props: {
   );
   const recordingActive = useActiveBrowserRecordingTabIds().has(runtimeTabId);
   usePreviewBridge({ threadRef, tabId, runtimeTabId });
+
+  useEffect(() => {
+    if (!separateWindow || !previewBridge?.separateWindow) return;
+    void previewBridge.separateWindow.setViewport(runtimeTabId, viewport).catch(() => undefined);
+  }, [runtimeTabId, separateWindow, viewport]);
 
   useEffect(() => {
     if (!clientSettingsHydrated) return;

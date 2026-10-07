@@ -1,7 +1,8 @@
 "use client";
 
 import { FILL_PREVIEW_VIEWPORT, type ScopedThreadRef } from "@t3tools/contracts";
-import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
+import { MaximizeIcon, PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -61,6 +62,7 @@ interface PointerGesture {
 interface Props {
   readonly threadRef: ScopedThreadRef;
   readonly miniPlayer: PreviewMiniPlayerState;
+  readonly allowExpand?: boolean | undefined;
 }
 
 const frameCornerRadius = () => PREVIEW_MINI_PLAYER_CORNER_RADIUS;
@@ -81,7 +83,7 @@ const RESIZE_HANDLES: ReadonlyArray<{
 ];
 
 /** Floats the thread's browser tab or device stream over chat. */
-export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
+export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer, allowExpand }: Props) {
   const { source } = miniPlayer;
   return source.kind === "browser" ? (
     <BrowserMiniPlayer
@@ -89,6 +91,7 @@ export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
       threadRef={threadRef}
       tabId={source.tabId}
       miniPlayer={miniPlayer}
+      allowExpand={allowExpand}
     />
   ) : (
     <DeviceMiniPlayer
@@ -100,7 +103,13 @@ export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
   );
 }
 
-function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly tabId: string }) {
+function BrowserMiniPlayer({
+  threadRef,
+  tabId,
+  miniPlayer,
+  allowExpand = true,
+}: Props & { readonly tabId: string }) {
+  const navigate = useNavigate();
   const previewState = useThreadPreviewState(threadRef);
   const snapshot = previewState.sessions[tabId] ?? null;
   const runtimeTabId = previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId);
@@ -124,11 +133,14 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
   };
 
   const toggleNativePictureInPicture = () => {
-    if (!previewBridge) return;
-    const operation = desktopOverlay?.pictureInPicture
-      ? previewBridge.pictureInPicture.close
-      : previewBridge.pictureInPicture.open;
-    void operation(runtimeTabId).catch((error) => {
+    if (!previewBridge?.separateWindow) return;
+    const operation = desktopOverlay?.separateWindow
+      ? previewBridge.separateWindow.close(runtimeTabId)
+      : previewBridge.separateWindow.open(
+          runtimeTabId,
+          snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT,
+        );
+    void operation.catch((error) => {
       toastManager.add({
         type: "error",
         title: "Unable to update popped-out preview",
@@ -148,47 +160,82 @@ function BrowserMiniPlayer({ threadRef, tabId, miniPlayer }: Props & { readonly 
       recording={recording}
       onOpenInPanel={openInPanel}
       pillActions={
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant={desktopOverlay?.pictureInPicture ? "secondary" : "ghost"}
-                size="icon-xs"
-                aria-label={
-                  desktopOverlay?.pictureInPicture
-                    ? "Close popped-out preview"
-                    : "Pop preview into separate window"
+        <>
+          {allowExpand ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Expand preview"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() =>
+                      void navigate({
+                        to: "/preview",
+                        search: {
+                          environmentId: threadRef.environmentId,
+                          threadId: threadRef.threadId,
+                          tabId,
+                        },
+                      })
+                    }
+                  />
                 }
-                disabled={!desktopOverlay?.hasWebContents}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={toggleNativePictureInPicture}
-              />
-            }
-          >
-            <PictureInPicture2 />
-          </TooltipTrigger>
-          <TooltipPopup side="top">
-            {desktopOverlay?.pictureInPicture
-              ? "Close separate window"
-              : "Pop into separate window"}
-          </TooltipPopup>
-        </Tooltip>
+              >
+                <MaximizeIcon />
+              </TooltipTrigger>
+              <TooltipPopup side="top">Expand preview</TooltipPopup>
+            </Tooltip>
+          ) : null}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant={desktopOverlay?.separateWindow ? "secondary" : "ghost"}
+                  size="icon-xs"
+                  aria-label={
+                    desktopOverlay?.separateWindow
+                      ? "Return preview to T3"
+                      : "Pop preview into separate window"
+                  }
+                  disabled={
+                    !desktopOverlay?.hasWebContents || !previewBridge?.separateWindow || recording
+                  }
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={toggleNativePictureInPicture}
+                />
+              }
+            >
+              <PictureInPicture2 />
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {recording
+                ? "Stop recording before opening a separate window"
+                : desktopOverlay?.separateWindow
+                  ? "Return preview to T3"
+                  : "Open in separate window"}
+            </TooltipPopup>
+          </Tooltip>
+        </>
       }
     >
       {(frame) => (
         <>
           <BrowserSurfaceSlot
             tabId={runtimeTabId}
-            visible={Boolean(desktopOverlay?.hasWebContents)}
+            visible={Boolean(desktopOverlay?.hasWebContents) && !desktopOverlay?.separateWindow}
             cornerRadius={PREVIEW_MINI_PLAYER_CORNER_RADIUS}
             zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
             fitSourceContent
             layoutVersion={`${frame.x}:${frame.y}`}
             className="absolute inset-0"
           />
-          {!desktopOverlay?.hasWebContents ? (
+          {!desktopOverlay?.hasWebContents || desktopOverlay?.separateWindow ? (
             <div className="pointer-events-none absolute inset-0 z-[49] flex items-center justify-center rounded-[inherit] bg-muted text-xs text-muted-foreground">
-              Reconnecting preview…
+              {desktopOverlay?.separateWindow
+                ? "Preview is in a separate window"
+                : "Reconnecting preview…"}
             </div>
           ) : null}
         </>

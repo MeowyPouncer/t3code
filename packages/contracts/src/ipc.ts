@@ -11,6 +11,7 @@ import {
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import { SnapShotSource } from "./chatAttachment.ts";
+import { PreviewViewportSetting } from "./preview.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import type {
@@ -624,6 +625,10 @@ export interface DesktopPreviewTabState {
   zoomFactor: number;
   /** Whether this tab is currently mirrored into a desktop picture-in-picture window. */
   pictureInPicture: boolean;
+  /** Whether the live tab is hosted in an interactive desktop window. */
+  separateWindow?: boolean;
+  /** Actual visibility of the native page window, including minimization. */
+  separateWindowVisible?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   /**
    * Whether the user has silenced this tab. Per tab rather than per origin, so
@@ -1015,6 +1020,18 @@ export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
 });
 
+export const DesktopPreviewWindowInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  viewport: PreviewViewportSetting,
+});
+
+export const DesktopPreviewWindowStatusSchema = Schema.NullOr(
+  Schema.Struct({
+    visible: Schema.Boolean,
+    viewportSetting: PreviewViewportSetting,
+  }),
+);
+
 /**
  * Tab creation carries the client's configured browser defaults so the guest
  * is born already zoomed and color-scheme-emulated. Applying them after
@@ -1325,6 +1342,13 @@ export interface DesktopPreviewBridge {
   pictureInPicture: {
     open: (tabId: string) => Promise<void>;
     close: (tabId: string) => Promise<void>;
+  };
+  /** Optional so clients can recognize an older desktop shell. */
+  separateWindow?: {
+    open: (tabId: string, viewport: PreviewViewportSetting) => Promise<void>;
+    close: (tabId: string) => Promise<void>;
+    setViewport: (tabId: string, viewport: PreviewViewportSetting) => Promise<void>;
+    status: (tabId: string) => Promise<typeof DesktopPreviewWindowStatusSchema.Type>;
   };
   recording: {
     onInput: (listener: (event: DesktopPreviewRecordingInputEvent) => void) => () => void;

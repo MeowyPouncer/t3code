@@ -343,6 +343,14 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.PREVIEW_REVEAL_ARTIFACT_CHANNEL, { path }),
     copyArtifactToClipboard: (path) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_COPY_ARTIFACT_CHANNEL, { path }),
+    separateWindow: {
+      open: (tabId, viewport) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_WINDOW_OPEN_CHANNEL, { tabId, viewport }),
+      close: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_WINDOW_CLOSE_CHANNEL, { tabId }),
+      setViewport: (tabId, viewport) =>
+        ipcRenderer.invoke(IpcChannels.PREVIEW_WINDOW_VIEWPORT_CHANNEL, { tabId, viewport }),
+      status: (tabId) => ipcRenderer.invoke(IpcChannels.PREVIEW_WINDOW_STATUS_CHANNEL, { tabId }),
+    },
     pictureInPicture: {
       open: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_PICTURE_IN_PICTURE_OPEN_CHANNEL, { tabId }),

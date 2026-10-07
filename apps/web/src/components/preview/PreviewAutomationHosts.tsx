@@ -92,6 +92,7 @@ import {
 import { resolveHostWaitBudgetMs, waitForHostReadiness } from "./previewAutomationHostBudget";
 import { runPreviewClickKeepingHostFocus } from "./previewClickFocus";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
+import { browserViewportSettingKey } from "~/browser/browserViewportLayout";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
@@ -118,7 +119,10 @@ const waitForDesktopOverlay = async (
       operation,
       requestId,
     });
-    if (state.desktopByTabId[tabId] && previewBridge && isPreviewWebviewRendering(runtimeTabId)) {
+    const rendering =
+      isPreviewWebviewRendering(runtimeTabId) ||
+      Boolean(await previewBridge?.separateWindow?.status(runtimeTabId));
+    if (state.desktopByTabId[tabId] && previewBridge && rendering) {
       const status = await previewBridge.automation.status(runtimeTabId);
       return status.available;
     }
@@ -168,6 +172,22 @@ const readWebviewViewport = async (
 const readRenderedViewport = async (
   runtimeTabId: string,
 ): Promise<PreviewRenderedViewportSize | null> => {
+  const nativeWindow = await previewBridge?.separateWindow?.status(runtimeTabId);
+  if (nativeWindow && previewBridge) {
+    const value = await previewBridge.automation.evaluate(runtimeTabId, {
+      expression: "({ width: window.innerWidth, height: window.innerHeight })",
+    });
+    if (typeof value !== "object" || value === null) return null;
+    const size = value as { width?: unknown; height?: unknown };
+    return typeof size.width === "number" &&
+      Number.isInteger(size.width) &&
+      size.width > 0 &&
+      typeof size.height === "number" &&
+      Number.isInteger(size.height) &&
+      size.height > 0
+      ? { width: size.width, height: size.height }
+      : null;
+  }
   const webview = findPreviewWebview(runtimeTabId);
   if (!webview) return null;
   return await readWebviewViewport(webview);
@@ -200,6 +220,28 @@ const waitForRenderedViewport = async (
   while (Date.now() <= deadline) {
     assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, context);
     try {
+      const nativeWindow = await previewBridge?.separateWindow?.status(runtimeTabId);
+      if (nativeWindow) {
+        const rendered = await readRenderedViewport(runtimeTabId);
+        if (
+          isPreviewViewportReady({
+            setting,
+            appliedSettingKey: browserViewportSettingKey(nativeWindow.viewportSetting),
+            declaredViewport:
+              nativeWindow.viewportSetting._tag === "fill"
+                ? rendered
+                : {
+                    width: nativeWindow.viewportSetting.width,
+                    height: nativeWindow.viewportSetting.height,
+                  },
+            renderedViewport: rendered,
+          }) &&
+          rendered
+        )
+          return rendered;
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+        continue;
+      }
       const webview = findPreviewWebview(runtimeTabId);
       const appliedSettingKey = webview?.getAttribute("data-preview-viewport-key") ?? null;
       const declaredViewport = readDeclaredViewport(webview);
@@ -235,11 +277,19 @@ const currentStatus = async (
   const state = readThreadPreviewState(threadRef);
   const { snapshot, tabId } = resolvePreviewAutomationTarget(state, requestedTabId);
   const runtimeTabId = tabId ? previewRuntimeTabId(threadRef, state.serverEpoch, tabId) : null;
-  const visible = runtimeTabId
-    ? (useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible ?? false)
-    : false;
-  const renderingActive = runtimeTabId ? isPreviewWebviewRendering(runtimeTabId) : false;
-  const viewportSetting = snapshot ? (snapshot.viewport ?? FILL_PREVIEW_VIEWPORT) : undefined;
+  const nativeWindow = runtimeTabId
+    ? await previewBridge?.separateWindow?.status(runtimeTabId)
+    : null;
+  const visible =
+    nativeWindow?.visible ??
+    (runtimeTabId
+      ? (useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible ?? false)
+      : false);
+  const renderingActive =
+    Boolean(nativeWindow) || (runtimeTabId ? isPreviewWebviewRendering(runtimeTabId) : false);
+  const viewportSetting =
+    nativeWindow?.viewportSetting ??
+    (snapshot ? (snapshot.viewport ?? FILL_PREVIEW_VIEWPORT) : undefined);
   const viewport =
     runtimeTabId && renderingActive
       ? await readRenderedViewport(runtimeTabId).catch(() => null)
@@ -312,6 +362,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           .map((tab) => ({
             threadId: ref.threadId,
             tabId: tab.tabId,
+            nativeWindow: state.desktopByTabId[tab.tabId]?.separateWindow ?? false,
+            nativeWindowVisible: state.desktopByTabId[tab.tabId]?.separateWindowVisible ?? false,
             visible: visibleRuntimeTabIds.includes(
               previewRuntimeTabId(ref, state.serverEpoch, tab.tabId),
             ),
@@ -617,6 +669,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 return raiseAtomCommandFailure(result);
               }
               updatePreviewServerSnapshot(threadRef, result.value);
+              if (await previewBridge?.separateWindow?.status(ready.runtimeTabId))
+                await previewBridge?.separateWindow?.setViewport(ready.runtimeTabId, setting);
               return {
                 previousSetting,
                 serverEpoch: operationState.serverEpoch,
@@ -661,6 +715,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                   });
                   if (rollback._tag !== "Failure") {
                     updatePreviewServerSnapshot(threadRef, rollback.value);
+                    if (await previewBridge?.separateWindow?.status(ready.runtimeTabId))
+                      await previewBridge?.separateWindow?.setViewport(
+                        ready.runtimeTabId,
+                        applied.previousSetting,
+                      );
                   }
                 }
               });
@@ -839,9 +898,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         environmentId,
         connectionId: automationConnectionId,
         focused: document.hasFocus() && document.visibilityState === "visible",
-        liveTabs: liveTabs.map((tab) => ({
+        liveTabs: liveTabs.map(({ nativeWindow, nativeWindowVisible, ...tab }) => ({
           ...tab,
-          visible: tab.visible && document.visibilityState === "visible",
+          visible: nativeWindow
+            ? nativeWindowVisible
+            : tab.visible && document.visibilityState === "visible",
         })),
       };
       const reportKey = JSON.stringify(input);

@@ -14,6 +14,7 @@ interface Props {
   tabId?: string | null;
   configuredUrls?: ReadonlyArray<string> | undefined;
   visible: boolean;
+  allowExpand?: boolean | undefined;
   onSendAnnotation?: (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -26,6 +27,7 @@ export function PreviewPanel({
   tabId,
   configuredUrls,
   visible,
+  allowExpand,
   onSendAnnotation,
 }: Props) {
   if (!isPreviewSupportedInRuntime()) {
@@ -47,6 +49,7 @@ export function PreviewPanel({
         {...(tabId !== undefined ? { tabId } : {})}
         configuredUrls={configuredUrls}
         visible={visible}
+        allowExpand={allowExpand}
         {...(onSendAnnotation ? { onSendAnnotation } : {})}
       />
     </PreviewPanelShell>

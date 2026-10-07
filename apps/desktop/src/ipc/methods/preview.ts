@@ -22,6 +22,8 @@ import {
   DesktopPreviewImportCookiesInputSchema,
   DesktopPreviewCreateTabInputSchema,
   DesktopPreviewTabInputSchema,
+  DesktopPreviewWindowInputSchema,
+  DesktopPreviewWindowStatusSchema,
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationSubmissionResultSchema,
   PreviewAutomationSnapshot,
@@ -210,6 +212,41 @@ export const openPictureInPicture = tabMethod(
   "desktop.ipc.preview.openPictureInPicture",
   (manager, tabId) => manager.openPictureInPicture(tabId),
 );
+export const openInteractiveWindow = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_WINDOW_OPEN_CHANNEL,
+  payload: DesktopPreviewWindowInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.openInteractiveWindow")(function* ({ tabId, viewport }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.openInteractiveWindow(tabId, viewport);
+  }),
+});
+export const closeInteractiveWindow = tabMethod(
+  IpcChannels.PREVIEW_WINDOW_CLOSE_CHANNEL,
+  "desktop.ipc.preview.closeInteractiveWindow",
+  (manager, tabId) => manager.closeInteractiveWindow(tabId),
+);
+export const setInteractiveWindowViewport = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_WINDOW_VIEWPORT_CHANNEL,
+  payload: DesktopPreviewWindowInputSchema,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.preview.setInteractiveWindowViewport")(function* ({
+    tabId,
+    viewport,
+  }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    yield* manager.setInteractiveWindowViewport(tabId, viewport);
+  }),
+});
+export const interactiveWindowStatus = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PREVIEW_WINDOW_STATUS_CHANNEL,
+  payload: DesktopPreviewTabInputSchema,
+  result: DesktopPreviewWindowStatusSchema,
+  handler: Effect.fn("desktop.ipc.preview.interactiveWindowStatus")(function* ({ tabId }) {
+    const manager = yield* PreviewManager.PreviewManager;
+    return yield* manager.interactiveWindowStatus(tabId);
+  }),
+});
 export const closePictureInPicture = tabMethod(
   IpcChannels.PREVIEW_PICTURE_IN_PICTURE_CLOSE_CHANNEL,
   "desktop.ipc.preview.closePictureInPicture",
@@ -507,6 +544,10 @@ export const methods = [
   revealArtifact,
   copyArtifactToClipboard,
   openPictureInPicture,
+  openInteractiveWindow,
+  closeInteractiveWindow,
+  setInteractiveWindowViewport,
+  interactiveWindowStatus,
   closePictureInPicture,
   automationStatus,
   automationSnapshot,
