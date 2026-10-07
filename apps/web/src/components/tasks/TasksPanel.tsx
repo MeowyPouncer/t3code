@@ -31,7 +31,7 @@ interface TasksPanelProps {
   visible?: boolean;
   onUseInChat: (card: TodoBoardCard) => void;
   onOpenFile: (snapshot: TodoBoardSnapshot, card: TodoBoardCard) => void;
-  onExpand?: () => void;
+  onExpand?: (() => void) | undefined;
 }
 
 function TaskFilter(props: {
@@ -166,8 +166,10 @@ export function TasksPanel({
   const configs = useServerConfigs();
   const config = configs.get(project.environmentId);
   const supported = config?.environment.capabilities.todoBoard === true;
+  // Keep the scroll container and snapshot while a source file covers the board.
+  // Only visible panels poll for updates.
   const query = useEnvironmentQuery(
-    visible && supported
+    supported
       ? projectTodoBoard({ environmentId: project.environmentId, input: { projectId: project.id } })
       : null,
   );

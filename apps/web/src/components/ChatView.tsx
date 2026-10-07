@@ -10571,19 +10571,23 @@ export default function ChatView(props: ChatViewProps) {
                   card.line,
                 );
           }}
-          onExpand={() => {
-            void navigate({
-              to: "/tasks",
-              search: {
-                environmentId: activeProject.environmentId,
-                projectId: activeProject.id,
-                threadId: activeThreadRef.threadId,
-                ...(typeof composerDraftTarget === "string"
-                  ? { draftId: composerDraftTarget }
-                  : {}),
-              },
-            });
-          }}
+          onExpand={
+            editingQueuedRun === null
+              ? () => {
+                  void navigate({
+                    to: "/tasks",
+                    search: {
+                      environmentId: activeProject.environmentId,
+                      projectId: activeProject.id,
+                      threadId: activeThreadRef.threadId,
+                      ...(typeof composerDraftTarget === "string"
+                        ? { draftId: composerDraftTarget }
+                        : {}),
+                    },
+                  });
+                }
+              : undefined
+          }
         />
       </Suspense>
     ) : renderedRightPanelSurface?.kind === "preview" ? (

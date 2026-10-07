@@ -174,6 +174,15 @@ export function TasksPage({ search }: { search: TasksPageSearch }) {
             </div>
           ) : null}
           <div className="min-h-0 flex-1">
+            <div hidden={selectedFile !== null} className="h-full">
+              <TasksPanel
+                key={projectKey}
+                project={project}
+                visible={selectedFile === null}
+                onUseInChat={stageCard}
+                onOpenFile={openFile}
+              />
+            </div>
             {selectedFile ? (
               <div className="h-full overflow-auto p-5">
                 {selectedFile.note === null && fileQuery.isPending ? (
@@ -197,14 +206,7 @@ export function TasksPage({ search }: { search: TasksPageSearch }) {
                   </>
                 )}
               </div>
-            ) : (
-              <TasksPanel
-                key={projectKey}
-                project={project}
-                onUseInChat={stageCard}
-                onOpenFile={openFile}
-              />
-            )}
+            ) : null}
           </div>
         </>
       )}
