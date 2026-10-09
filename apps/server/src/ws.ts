@@ -189,6 +189,10 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as TodoBoard from "./project/TodoBoard.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
+import {
+  claudeSessionIdsForThread,
+  readBackgroundTaskOutput,
+} from "./orchestration-v2/backgroundTaskOutputQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -1859,6 +1863,23 @@ const layerWsRpc = (
           ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
+        [ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput]: (input) =>
+          threadManagement.getThreadRecords(input.threadId, ["providerThreads"]).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationV2GetThreadProjectionError({
+                  threadId: input.threadId,
+                  message: "Failed to load thread",
+                  cause,
+                }),
+            ),
+            Effect.flatMap((projection) =>
+              readBackgroundTaskOutput({
+                taskId: input.taskId,
+                sessionIds: claudeSessionIdsForThread(projection.providerThreads),
+              }),
+            ),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
           threadManagement.getTurnItem(input).pipe(
             Effect.mapError(

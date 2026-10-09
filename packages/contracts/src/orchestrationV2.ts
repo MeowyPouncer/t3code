@@ -3153,6 +3153,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getTurnItem: "orchestration.getTurnItem",
+  getBackgroundTaskOutput: "orchestration.getBackgroundTaskOutput",
   launchThread: "orchestration.launchThread",
   subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
@@ -3463,6 +3464,48 @@ export const OrchestrationV2GetTurnItemResult = Schema.Struct({
 });
 export type OrchestrationV2GetTurnItemResult = typeof OrchestrationV2GetTurnItemResult.Type;
 
+export const OrchestrationV2GetBackgroundTaskOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  /** A Claude background task id (a Bash or Monitor task). The server finds
+   * its output file under Claude's task directory; no path is accepted. */
+  taskId: TrimmedNonEmptyString,
+});
+export type OrchestrationV2GetBackgroundTaskOutputInput =
+  typeof OrchestrationV2GetBackgroundTaskOutputInput.Type;
+
+/** The end of a background task's output file, secrets masked, never stored. */
+export const OrchestrationV2GetBackgroundTaskOutputResult = Schema.Struct({
+  /** False when no output file exists: not started, cleaned up, or another machine's. */
+  found: Schema.Boolean,
+  contents: Schema.String,
+  /** True when the file is longer than the tail returned. */
+  truncated: Schema.Boolean,
+  sizeBytes: NonNegativeInt,
+  modifiedAt: Schema.optional(IsoDateTime),
+});
+export type OrchestrationV2GetBackgroundTaskOutputResult =
+  typeof OrchestrationV2GetBackgroundTaskOutputResult.Type;
+
+export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedError<OrchestrationGetBackgroundTaskOutputError>()(
+  "OrchestrationGetBackgroundTaskOutputError",
+  {
+    reason: Schema.Literals(["invalid-task-id", "outside-root", "read-failed"]),
+    taskId: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "invalid-task-id":
+        return "Not a background task id.";
+      case "outside-root":
+        return "Task output is outside Claude's task directory.";
+      case "read-failed":
+        return "Task output read failed.";
+    }
+  }
+}
+
 const WORKFLOW_SCRIPT_ERROR_MESSAGES = {
   "invalid-path": "Workflow scripts must be absolute .js paths.",
   "root-unavailable": "Script root unavailable.",
@@ -3524,6 +3567,10 @@ export const OrchestrationV2RpcSchemas = {
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,
     output: OrchestrationV2GetTurnItemResult,
+  },
+  getBackgroundTaskOutput: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: OrchestrationV2GetBackgroundTaskOutputResult,
   },
   launchThread: {
     input: OrchestrationV2ThreadLaunchInput,
