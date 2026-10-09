@@ -1,6 +1,7 @@
 // FORK: which T3 thread and project a provider process belongs to, for the hooks it runs.
 import { describe, expect, it } from "vite-plus/test";
 
+import type { LocalStdioMcpServer } from "./LocalMcpServers.ts";
 import {
   codexThreadEnvironmentConfig,
   threadEnvironment,
@@ -82,9 +83,10 @@ describe("codexThreadEnvironmentConfig", () => {
 
 describe("withThreadEnvironmentInMcpServers", () => {
   it("adds the variables to each server and keeps the server's own", () => {
-    const servers = {
-      plain: { type: "stdio" as const, command: "a" },
-      own: { type: "stdio" as const, command: "b", env: { TOKEN: "x", T3CODE_THREAD_ID: "mine" } },
+    const ownEnv = { TOKEN: "x", T3CODE_THREAD_ID: "mine" };
+    const servers: Record<string, LocalStdioMcpServer> = {
+      plain: { type: "stdio", command: "a" },
+      own: { type: "stdio", command: "b", env: ownEnv },
     };
     expect(withThreadEnvironmentInMcpServers(servers, input)).toEqual({
       plain: {
@@ -102,6 +104,6 @@ describe("withThreadEnvironmentInMcpServers", () => {
         },
       },
     });
-    expect(servers.own.env).toEqual({ TOKEN: "x", T3CODE_THREAD_ID: "mine" });
+    expect(ownEnv).toEqual({ TOKEN: "x", T3CODE_THREAD_ID: "mine" });
   });
 });
