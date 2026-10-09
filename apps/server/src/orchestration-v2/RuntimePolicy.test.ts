@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -198,6 +199,47 @@ it.layer(layerCappedTest)("RuntimePolicyV2 hard cap", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "approval-required");
       // An uncapped instance runs as stored.
       assert.equal(yield* modeFor(providerInstanceId, "full-access"), "full-access");
+    }),
+  );
+
+  it.effect("tells the adapter when the instance declines file changes", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const declineFor = (instanceId: ProviderInstanceId) =>
+        policy
+          .resolve({
+            thread: makeThread({ now, worktreePath: null }),
+            modelSelection: { instanceId, model: "test-model" },
+          })
+          .pipe(Effect.map((resolved) => resolved.declineFileChanges));
+      assert.isTrue(yield* declineFor(antigravityInstanceId));
+      assert.isUndefined(yield* declineFor(grokInstanceId));
+      assert.isUndefined(yield* declineFor(providerInstanceId));
+    }),
+  );
+});
+
+const layerUnreadableTest = layerTest.pipe(
+  Layer.provide(
+    Layer.mock(ServerSettings.ServerSettingsService)({
+      getSettings: Effect.fail(
+        new ServerSettingsError({ settingsPath: "/settings.json", operation: "read-file" }),
+      ),
+    }),
+  ),
+);
+
+it.layer(layerUnreadableTest)("RuntimePolicyV2 without readable caps", (it) => {
+  it.effect("runs Supervised with file changes declined", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now: yield* DateTime.now, worktreePath: null }),
+        modelSelection,
+      });
+      assert.equal(resolved.runtimeMode, "approval-required");
+      assert.isTrue(resolved.declineFileChanges);
     }),
   );
 });

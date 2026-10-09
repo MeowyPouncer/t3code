@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 
 import {
   clampRuntimeModeToHardCap,
-  readProviderInstanceHardCap,
+  providerInstanceHardCapInForce,
 } from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -107,27 +107,23 @@ export const layerFromProjectStore: Layer.Layer<
     /**
      * The instance's hard cap holds for every run, however the thread got its
      * mode (the composer, `t3_thread_send`, a schedule, a thread created
-     * before the cap). Unreadable settings run Supervised rather than uncapped.
+     * before the cap). A cap that cannot be read runs Supervised with file
+     * changes declined rather than uncapped.
      */
-    const hardCappedRuntimeMode = (
+    const hardCapped = (
       runtimeMode: RuntimeMode,
       instanceId: ProviderInstanceId,
-    ): Effect.Effect<RuntimeMode> =>
+    ): Effect.Effect<{
+      readonly runtimeMode: RuntimeMode;
+      readonly declineFileChanges: boolean;
+    }> =>
       Option.isNone(serverSettings)
-        ? Effect.succeed(runtimeMode)
-        : serverSettings.value.getSettings.pipe(
-            Effect.map((settings) =>
-              clampRuntimeModeToHardCap(
-                runtimeMode,
-                readProviderInstanceHardCap(settings.providerInstances, instanceId),
-              ),
-            ),
-            Effect.catch((cause) =>
-              Effect.logWarning(
-                "Could not read the provider instance's hard cap; running Supervised.",
-                { instanceId, cause },
-              ).pipe(Effect.as<RuntimeMode>("approval-required")),
-            ),
+        ? Effect.succeed({ runtimeMode, declineFileChanges: false })
+        : providerInstanceHardCapInForce(serverSettings.value, instanceId).pipe(
+            Effect.map((cap) => ({
+              runtimeMode: clampRuntimeModeToHardCap(runtimeMode, cap),
+              declineFileChanges: cap?.declineFileChanges === true,
+            })),
           );
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
@@ -136,10 +132,8 @@ export const layerFromProjectStore: Layer.Layer<
           instance === undefined
             ? undefined
             : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
-        const runtimeMode = providerRuntimeMode(
-          yield* hardCappedRuntimeMode(input.thread.runtimeMode, input.modelSelection.instanceId),
-          supportedRuntimeModes,
-        );
+        const capped = yield* hardCapped(input.thread.runtimeMode, input.modelSelection.instanceId);
+        const runtimeMode = providerRuntimeMode(capped.runtimeMode, supportedRuntimeModes);
         const cwd =
           input.thread.worktreePath ??
           (yield* projects.get(input.thread.projectId).pipe(
@@ -169,6 +163,7 @@ export const layerFromProjectStore: Layer.Layer<
           runtimeMode,
           interactionMode: input.thread.interactionMode,
           cwd,
+          ...(capped.declineFileChanges ? { declineFileChanges: true } : {}),
         });
       }),
     });
