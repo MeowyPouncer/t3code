@@ -410,7 +410,7 @@ export const layerWithOptions = (
             return withheldMcpCapabilities({
               cap: readProviderInstanceHardCap(settings.providerInstances, providerInstanceId),
               thread,
-              delegatedTaskPrompt: delegatedTask?.prompt ?? undefined,
+              delegatedTaskPrompt: delegatedTask?.prompt,
               childAgentBrowserAccess: settings.enableChildAgentBrowserAccess,
             });
           }).pipe(

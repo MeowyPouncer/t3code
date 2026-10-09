@@ -3,6 +3,7 @@ import {
   type ModelSelection,
   type OrchestrationV2AppThread,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
@@ -16,6 +17,7 @@ import * as Stream from "effect/Stream";
 
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -151,6 +153,51 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       // A provider that advertises no restriction runs every mode as stored.
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+});
+
+const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+const layerCappedTest = layerTest.pipe(
+  Layer.provide(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [antigravityInstanceId]: {
+          driver: ProviderDriverKind.make("antigravity"),
+          hardCap: { maxRuntimeMode: "approval-required", declineFileChanges: true },
+        },
+        // Capped at a mode Grok does not offer: the cap applies first, then
+        // the provider's own fallback.
+        [grokInstanceId]: {
+          driver: ProviderDriverKind.make("grok"),
+          hardCap: { maxRuntimeMode: "auto-accept-edits" },
+        },
+      },
+    }).pipe(Layer.orDie),
+  ),
+);
+
+it.layer(layerCappedTest)("RuntimePolicyV2 hard cap", (it) => {
+  it.effect("runs every thread on a capped instance within its cap, whatever it stores", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const modeFor = (instanceId: ProviderInstanceId, runtimeMode: RuntimeMode) =>
+        policy
+          .resolve({
+            thread: makeThread({ now, worktreePath: null, runtimeMode }),
+            modelSelection: { instanceId, model: "test-model" },
+          })
+          .pipe(Effect.map((resolved) => resolved.runtimeMode));
+
+      // A thread stored as full access (the composer, t3_thread_send, a
+      // schedule, or created before the cap) still runs Supervised on agy.
+      assert.equal(yield* modeFor(antigravityInstanceId, "full-access"), "approval-required");
+      assert.equal(yield* modeFor(antigravityInstanceId, "auto"), "approval-required");
+      assert.equal(yield* modeFor(antigravityInstanceId, "approval-required"), "approval-required");
+      assert.equal(yield* modeFor(grokInstanceId, "full-access"), "approval-required");
+      // An uncapped instance runs as stored.
+      assert.equal(yield* modeFor(providerInstanceId, "full-access"), "full-access");
     }),
   );
 });

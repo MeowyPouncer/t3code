@@ -107,6 +107,30 @@ describe("ProviderInstanceConfig", () => {
     expect(decoded.config).toEqual(opaqueConfig);
   });
 
+  it("decodes a hard cap and rejects a capability the server does not know", () => {
+    const hardCap = {
+      maxRuntimeMode: "approval-required",
+      declineFileChanges: true,
+      withheldCapabilities: ["orchestration", "pull-requests"],
+    };
+    expect(decodeProviderInstanceConfig({ driver: "antigravity", hardCap }).hardCap).toEqual(
+      hardCap,
+    );
+    expect(decodeProviderInstanceConfig({ driver: "antigravity" }).hardCap).toBeUndefined();
+    expect(() =>
+      decodeProviderInstanceConfig({
+        driver: "antigravity",
+        hardCap: { withheldCapabilities: ["browser"] },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeProviderInstanceConfig({
+        driver: "antigravity",
+        hardCap: { maxRuntimeMode: "supervised" },
+      }),
+    ).toThrow();
+  });
+
   it("trims provider instance envelope fields", () => {
     const decoded = decodeProviderInstanceConfig({
       driver: "  codex  ",

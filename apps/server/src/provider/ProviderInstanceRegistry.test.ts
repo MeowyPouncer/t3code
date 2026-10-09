@@ -338,6 +338,39 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.live("keeps a live instance when only its hard cap changes", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("codex_capped");
+      const entry = {
+        driver: ProviderDriverKind.make("codex"),
+        enabled: false,
+        config: makeCodexConfig({}),
+      };
+      const { registry, mutator } = yield* makeProviderInstanceRegistry({
+        drivers: [CodexDriver],
+        configMap: { [instanceId]: entry },
+      });
+      const before = yield* registry.getInstance(instanceId);
+      expect(before).toBeDefined();
+
+      // The cap is read where it applies, so live sessions survive the edit.
+      yield* mutator.reconcile({
+        [instanceId]: { ...entry, hardCap: { maxRuntimeMode: "approval-required" } },
+      });
+      expect(yield* registry.getInstance(instanceId)).toBe(before);
+
+      // Any other envelope change still rebuilds the instance.
+      yield* mutator.reconcile({
+        [instanceId]: {
+          ...entry,
+          displayName: "Codex (capped)",
+          hardCap: { maxRuntimeMode: "approval-required" },
+        },
+      });
+      expect(yield* registry.getInstance(instanceId)).not.toBe(before);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.live("reports Codex's answer when a redemption changed nothing", () =>
     Effect.gen(function* () {
       if (yield* isHostWindows) return;

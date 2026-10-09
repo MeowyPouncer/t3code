@@ -36,6 +36,7 @@ import { buildUnavailableProviderSnapshot } from "../provider/unavailableProvide
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -1806,4 +1807,363 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
   });
+});
+
+describe("OrchestratorMcpService provider instance hard cap", () => {
+  const parentThreadId = ThreadId.make("thread:mcp-hard-cap-parent");
+  const childThreadId = ThreadId.make("thread:mcp-hard-cap-child");
+  const parentRunId = RunId.make("run:mcp-hard-cap-parent");
+  const parentNodeId = NodeId.make("node:mcp-hard-cap-root");
+  const taskId = NodeId.make("node:mcp-hard-cap-task");
+  const projectId = ProjectId.make("project:mcp-hard-cap");
+  const claudeInstanceId = ProviderInstanceId.make("ClaudeProton");
+  const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+  const parentModelSelection = { instanceId: claudeInstanceId, model: "claude-opus" } as const;
+
+  // A full-access parent: the cap must hold whatever the parent's own mode.
+  const scope: McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment:mcp-hard-cap"),
+    requestNamespace: "provider-session:mcp-hard-cap",
+    thread: {
+      threadId: parentThreadId,
+      providerSessionId: "provider-session:mcp-hard-cap",
+      providerInstanceId: claudeInstanceId,
+    },
+    client: undefined,
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 1,
+  };
+
+  const providerSnapshot = (instanceId: ProviderInstanceId, driver: string, model: string) =>
+    ({
+      instanceId,
+      driver: ProviderDriverKind.make(driver),
+      enabled: true,
+      installed: true,
+      version: "test",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-10-09T00:00:00.000Z",
+      models: [{ slug: model, name: model, isCustom: false, capabilities: null }],
+      slashCommands: [],
+      skills: [],
+    }) satisfies ServerProvider;
+
+  const task = {
+    id: taskId,
+    threadId: parentThreadId,
+    runId: parentRunId,
+    parentNodeId,
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: ProviderDriverKind.make("antigravity"),
+    providerInstanceId: antigravityInstanceId,
+    providerThreadId: null,
+    childThreadId,
+    nativeTaskRef: null,
+    prompt: "Say hello",
+    title: null,
+    model: "ant-model",
+    status: "running",
+    result: null,
+    startedAt: null,
+    completedAt: null,
+  };
+
+  const parentProjection = (subagents: ReadonlyArray<unknown>) =>
+    ({
+      thread: {
+        id: parentThreadId,
+        projectId,
+        title: "Hard cap parent",
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection: parentModelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+      runs: [
+        {
+          id: parentRunId,
+          ordinal: 1,
+          status: "running",
+          rootNodeId: parentNodeId,
+          providerInstanceId: claudeInstanceId,
+          modelSelection: parentModelSelection,
+        },
+      ],
+      contextTransfers: [],
+      subagents,
+    }) as unknown as OrchestrationV2ThreadProjection;
+
+  const childProjection = {
+    thread: { id: childThreadId },
+    runs: [],
+    contextTransfers: [],
+    messages: [],
+    subagents: [],
+    providerThreads: [],
+    turnItems: [],
+  } as unknown as OrchestrationV2ThreadProjection;
+
+  /** The settings mp's machine needs: agy capped, Claude uncapped. */
+  const cappedSettings = ServerSettings.layerTest({
+    providerInstances: {
+      [antigravityInstanceId]: {
+        driver: ProviderDriverKind.make("antigravity"),
+        hardCap: {
+          maxRuntimeMode: "approval-required",
+          declineFileChanges: true,
+          withheldCapabilities: ["orchestration", "pull-requests"],
+        },
+      },
+    },
+  }).pipe(Layer.orDie);
+
+  const run = <A, E>(
+    dispatched: Ref.Ref<ReadonlyArray<unknown>>,
+    settings: Layer.Layer<ServerSettings.ServerSettingsService> | undefined,
+    body: Effect.Effect<A, E, OrchestratorMcpService.OrchestratorMcpService>,
+  ) => {
+    let delegated = false;
+    const layerDependencies = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: (threadId) =>
+          Effect.succeed(
+            threadId === parentThreadId
+              ? parentProjection(delegated ? [task] : [])
+              : childProjection,
+          ),
+        dispatch: (command) =>
+          Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                delegated = true;
+              }),
+            ),
+            Effect.as({
+              sequence: 1,
+              storedEvents: [
+                {
+                  sequence: 1,
+                  commandId: null,
+                  event: { type: "subagent.updated", payload: task },
+                },
+              ],
+            } as never),
+          ),
+      }),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({
+        getProviders: Effect.succeed([
+          providerSnapshot(claudeInstanceId, "claudeAgent", "claude-opus"),
+          providerSnapshot(antigravityInstanceId, "antigravity", "ant-model"),
+        ]),
+      }),
+      Layer.succeed(
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+          list: () => Effect.succeed([claudeInstanceId, antigravityInstanceId]),
+          get: (instanceId) => Effect.succeed({ instanceId } as unknown as ProviderAdapterV2Shape),
+        }),
+      ),
+      Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      settings ?? Layer.empty,
+    );
+    return body.pipe(
+      Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(layerDependencies))),
+    );
+  };
+
+  const delegatedRuntimeMode = (commands: ReadonlyArray<unknown>) =>
+    (commands[0] as { readonly type: string; readonly runtimeMode: string }).runtimeMode;
+
+  it.effect("gives a full-access parent's inheriting child the instance's cap", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.delegateTask(scope, {
+            task: "Say hello",
+            target: { providerInstanceId: antigravityInstanceId },
+            mode: "async",
+            clientRequestId: "hard-cap-inherit",
+          });
+        }),
+      );
+      const commands = yield* Ref.get(dispatched);
+      assert.equal(commands.length, 1);
+      assert.equal((commands[0] as { readonly type: string }).type, "delegated_task.request");
+      assert.equal(delegatedRuntimeMode(commands), "approval-required");
+    }),
+  );
+
+  it.effect("refuses a full-access parent's request for full access on agy (D′ probe)", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const error = yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service
+            .delegateTask(scope, {
+              task: "Say hello",
+              title: "D′ · ceiling probe",
+              target: { providerInstanceId: antigravityInstanceId },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              mode: "wait",
+              clientRequestId: "hard-cap-d-prime",
+            })
+            .pipe(Effect.flip);
+        }),
+      );
+      assert.equal(error.code, "runtime_mode_escalation_denied");
+      assert.equal(
+        error.message,
+        "Child runtime mode full-access is broader than antigravity's hard cap approval-required.",
+      );
+      // Refused before any child exists.
+      assert.deepEqual(yield* Ref.get(dispatched), []);
+    }),
+  );
+
+  it.effect("refuses create_threads above the cap the same way", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const error = yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* service
+            .createThreads(scope, {
+              threads: [
+                {
+                  prompt: "Say hello",
+                  target: { providerInstanceId: antigravityInstanceId },
+                  runtimeMode: "auto-accept-edits",
+                },
+              ],
+              clientRequestId: "hard-cap-create-threads",
+            })
+            .pipe(Effect.flip);
+        }),
+      );
+      assert.equal(error.code, "runtime_mode_escalation_denied");
+      assert.deepEqual(yield* Ref.get(dispatched), []);
+    }),
+  );
+
+  it.effect("allows an explicit mode within the cap", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.delegateTask(scope, {
+            task: "Say hello",
+            target: { providerInstanceId: antigravityInstanceId },
+            runtimeMode: "approval-required",
+            mode: "async",
+            clientRequestId: "hard-cap-within",
+          });
+        }),
+      );
+      assert.equal(delegatedRuntimeMode(yield* Ref.get(dispatched)), "approval-required");
+    }),
+  );
+
+  it.effect("leaves an uncapped instance at the parent's mode", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.delegateTask(scope, {
+            task: "Review the diff.",
+            role: "review",
+            target: { providerInstanceId: claudeInstanceId },
+            runtimeMode: "full-access",
+            mode: "async",
+            clientRequestId: "hard-cap-uncapped",
+          });
+        }),
+      );
+      const commands = yield* Ref.get(dispatched);
+      assert.equal(delegatedRuntimeMode(commands), "full-access");
+      // The role line the review child's capability trim reads back.
+      assert.equal(
+        (commands[0] as { readonly task: string }).task,
+        "Act as the review sub-agent for this task.\n\nReview the diff.",
+      );
+    }),
+  );
+
+  it.effect("refuses delegate_task and create_threads to a review child's credential", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      // What ProviderSessionManagerV2 mints for a review child.
+      const reviewScope: McpInvocationScope = {
+        ...scope,
+        capabilities: new Set(["preview", "worktree", "pull-requests"]),
+      };
+      const [delegateError, createError] = yield* run(
+        dispatched,
+        cappedSettings,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return [
+            yield* service
+              .delegateTask(reviewScope, {
+                task: "Get a second opinion.",
+                target: { providerInstanceId: claudeInstanceId },
+                mode: "async",
+                clientRequestId: "review-child-delegate",
+              })
+              .pipe(Effect.flip),
+            yield* service
+              .createThreads(reviewScope, {
+                threads: [{ prompt: "Get a second opinion." }],
+                clientRequestId: "review-child-create",
+              })
+              .pipe(Effect.flip),
+          ] as const;
+        }),
+      );
+      assert.equal(delegateError.code, "capability_denied");
+      assert.equal(createError.code, "capability_denied");
+      assert.deepEqual(yield* Ref.get(dispatched), []);
+    }),
+  );
+
+  it.effect("applies no cap when no settings service is present", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      yield* run(
+        dispatched,
+        undefined,
+        Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.delegateTask(scope, {
+            task: "Say hello",
+            target: { providerInstanceId: antigravityInstanceId },
+            mode: "async",
+            clientRequestId: "hard-cap-no-settings",
+          });
+        }),
+      );
+      assert.equal(delegatedRuntimeMode(yield* Ref.get(dispatched)), "full-access");
+    }),
+  );
 });
