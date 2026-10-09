@@ -1684,6 +1684,125 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  // FORK (T3MIG-FORK-013)
+  it.effect(
+    "names the thread that launched a thread, recorded or read off its launch message",
+    () =>
+      Effect.gen(function* () {
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const orchestratorId = ThreadId.make("thread:launch:orchestrator");
+        const projectId = ProjectId.make("project:launch");
+        const createThread = (
+          id: ThreadId,
+          fields: Partial<{
+            createdBy: "user" | "agent";
+            creationSource: "web" | "mcp";
+            launchedByThreadId: ThreadId;
+            lineage: {
+              parentThreadId: ThreadId | null;
+              relationshipToParent: "fork" | null;
+              rootThreadId: ThreadId;
+            };
+          }> = {},
+        ) =>
+          projectionStore.apply({
+            id: EventId.make(`event:launch:${id}`),
+            type: "thread.created",
+            threadId: id,
+            occurredAt: now,
+            payload: {
+              createdBy: fields.createdBy ?? "agent",
+              creationSource: fields.creationSource ?? "mcp",
+              id,
+              projectId,
+              title: id,
+              providerInstanceId,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: null,
+              lineage: fields.lineage ?? {
+                parentThreadId: null,
+                relationshipToParent: null,
+                rootThreadId: id,
+              },
+              forkedFrom: null,
+              ...(fields.launchedByThreadId === undefined
+                ? {}
+                : { launchedByThreadId: fields.launchedByThreadId }),
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+          });
+        const sendUserMessage = (threadId: ThreadId, seconds: number, sender?: ThreadId) =>
+          projectionStore.apply({
+            id: EventId.make(`event:launch:${threadId}:message:${seconds}`),
+            type: "message.updated",
+            threadId,
+            occurredAt: DateTime.add(now, { seconds }),
+            payload: {
+              createdBy: sender === undefined ? "user" : "agent",
+              creationSource: sender === undefined ? "web" : "mcp",
+              ...(sender === undefined ? {} : { senderThreadId: sender }),
+              id: MessageId.make(`message:launch:${threadId}:${seconds}`),
+              threadId,
+              runId: null,
+              nodeId: null,
+              role: "user",
+              text: "Go",
+              attachments: [],
+              streaming: false,
+              createdAt: DateTime.add(now, { seconds }),
+              updatedAt: DateTime.add(now, { seconds }),
+            },
+          });
+        const recorded = ThreadId.make("thread:launch:recorded");
+        const older = ThreadId.make("thread:launch:older");
+        const humanThread = ThreadId.make("thread:launch:human");
+        const fork = ThreadId.make("thread:launch:fork");
+        yield* createThread(orchestratorId, { createdBy: "user", creationSource: "web" });
+        yield* createThread(recorded, { launchedByThreadId: orchestratorId });
+        yield* createThread(older);
+        yield* sendUserMessage(older, 1, orchestratorId);
+        // A later message from someone else does not change who launched it.
+        yield* sendUserMessage(older, 2);
+        yield* createThread(humanThread, { createdBy: "user", creationSource: "web" });
+        yield* sendUserMessage(humanThread, 1, orchestratorId);
+        yield* createThread(fork, {
+          lineage: {
+            parentThreadId: orchestratorId,
+            relationshipToParent: "fork",
+            rootThreadId: orchestratorId,
+          },
+        });
+        yield* sendUserMessage(fork, 1, orchestratorId);
+
+        const launchers = new Map(
+          (yield* projectionStore.getShellSnapshot()).threads.map((thread) => [
+            thread.id,
+            thread.launchedByThreadId,
+          ]),
+        );
+        assert.strictEqual(launchers.get(recorded), orchestratorId);
+        assert.strictEqual(launchers.get(older), orchestratorId);
+        assert.isUndefined(launchers.get(humanThread));
+        assert.isUndefined(launchers.get(fork));
+        assert.isUndefined(launchers.get(orchestratorId));
+        const memoryShell = ProjectionStore.threadShellFromProjection(
+          yield* projectionStore.getThreadProjection(older),
+        );
+        assert.strictEqual(memoryShell.launchedByThreadId, orchestratorId);
+      }),
+  );
+
   it.effect("does not treat visited or marked-unread state as thread activity", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
