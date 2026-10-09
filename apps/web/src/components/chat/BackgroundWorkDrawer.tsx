@@ -15,6 +15,7 @@ import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
 import { Button, InlineButton } from "../ui/button";
 import {
+  createReadWhenShown,
   markBackgroundWorkRead,
   nextBackgroundWorkHistory,
   type BackgroundWorkEntry,
@@ -28,6 +29,16 @@ const histories = new Map<string, BackgroundWorkHistory>();
 const listeners = new Set<() => void>();
 const NO_FINISHED: ReadonlyArray<FinishedBackgroundWorkEntry> = [];
 const OUTPUT_REFRESH_MS = 2_000;
+/** How long finished rows must stay on screen to count as read. */
+const READ_AFTER_SHOWN_MS = 600;
+
+/** On screen as far as layout can tell: sized, not hidden, page not in the background. */
+function isElementShown(element: HTMLElement): boolean {
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return false;
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return false;
+  return element.checkVisibility?.({ opacityProperty: true, visibilityProperty: true }) ?? true;
+}
 
 function setHistory(key: string, next: BackgroundWorkHistory): void {
   if (histories.get(key) === next) return;
@@ -277,10 +288,32 @@ export function BackgroundWorkDrawer({
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly onRead: () => void;
 }) {
-  // Open is reading: finished rows shown here go after the next run.
+  // Seeing is reading: finished rows count as read once they have been on
+  // screen, not merely mounted (a drawer behind another notice is unseen).
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const hasUnread = finished.some((entry) => !entry.read);
   useEffect(() => {
-    if (finished.some((entry) => !entry.read)) onRead();
-  }, [finished, onRead]);
+    const element = rowsRef.current;
+    if (!hasUnread || element === null || typeof IntersectionObserver === "undefined") return;
+    const reader = createReadWhenShown({
+      delayMs: READ_AFTER_SHOWN_MS,
+      isShown: () => isElementShown(element),
+      onRead,
+      setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) reader.intersect(entry.isIntersecting);
+      },
+      { threshold: [0, 0.5, 1] },
+    );
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      reader.dispose();
+    };
+  }, [hasUnread, onRead]);
   const [openOutputIds, setOpenOutputIds] = useState<ReadonlySet<string>>(() => new Set());
   const toggleOutput = useCallback((taskId: string) => {
     setOpenOutputIds((current) => {
@@ -306,10 +339,12 @@ export function BackgroundWorkDrawer({
 
   return (
     <ComposerBanner.Scroll className="max-h-[min(28rem,50dvh)]" data-background-work-drawer="true">
-      <ComposerBanner.Children render={<ul role="list" />} aria-label="Background work">
-        {rows(running, false)}
-        {rows(finished, true)}
-      </ComposerBanner.Children>
+      <div ref={rowsRef}>
+        <ComposerBanner.Children render={<ul role="list" />} aria-label="Background work">
+          {rows(running, false)}
+          {rows(finished, true)}
+        </ComposerBanner.Children>
+      </div>
     </ComposerBanner.Scroll>
   );
 }

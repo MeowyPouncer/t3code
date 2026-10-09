@@ -155,3 +155,44 @@ export function finishedBackgroundWorkTitle(
     groups.length <= 1 ? groups.join("") : `${groups.slice(0, -1).join(", ")} and ${groups.at(-1)}`;
   return `${joined} finished`;
 }
+
+/**
+ * Calls `onRead` once the drawer's rows have stayed on screen for `delayMs`.
+ * A drawer can be mounted yet unseen (behind another notice in the collapsed
+ * stack, or scrolled away), and unseen rows must not count as read. While the
+ * rows intersect but are not shown (`visibility`/`opacity` hide them), the
+ * check repeats, since showing them may not change their geometry.
+ */
+export function createReadWhenShown(input: {
+  readonly delayMs: number;
+  readonly isShown: () => boolean;
+  readonly onRead: () => void;
+  readonly setTimer: (callback: () => void, delayMs: number) => unknown;
+  readonly clearTimer: (handle: unknown) => void;
+}): { readonly intersect: (intersecting: boolean) => void; readonly dispose: () => void } {
+  let timer: unknown = null;
+  let intersecting = false;
+  const clear = () => {
+    if (timer !== null) input.clearTimer(timer);
+    timer = null;
+  };
+  const arm = () => {
+    timer = input.setTimer(() => {
+      timer = null;
+      if (!intersecting) return;
+      if (input.isShown()) input.onRead();
+      else arm();
+    }, input.delayMs);
+  };
+  return {
+    intersect: (next) => {
+      intersecting = next;
+      clear();
+      if (next) arm();
+    },
+    dispose: () => {
+      intersecting = false;
+      clear();
+    },
+  };
+}

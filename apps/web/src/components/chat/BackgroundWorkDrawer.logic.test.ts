@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   backgroundWorkOutputTaskIds,
+  createReadWhenShown,
   finishedBackgroundWorkTitle,
   markBackgroundWorkRead,
   nextBackgroundWorkHistory,
@@ -211,5 +212,64 @@ describe("finishedBackgroundWorkTitle", () => {
         { kindLabel: "Subagent", label: "c" },
       ]),
     ).toBe("2 commands and 1 subagent finished");
+  });
+});
+
+describe("createReadWhenShown", () => {
+  function harness(shown: { value: boolean }) {
+    const timers: Array<{ callback: () => void; cleared: boolean }> = [];
+    let reads = 0;
+    const reader = createReadWhenShown({
+      delayMs: 600,
+      isShown: () => shown.value,
+      onRead: () => {
+        reads += 1;
+      },
+      setTimer: (callback) => {
+        const timer = { callback, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimer: (handle) => {
+        (handle as { cleared: boolean }).cleared = true;
+      },
+    });
+    const fire = () => {
+      for (const timer of timers.splice(0)) if (!timer.cleared) timer.callback();
+    };
+    return { reader, fire, reads: () => reads };
+  }
+
+  it("never reads rows that are not on screen", () => {
+    const { fire, reads } = harness({ value: true });
+    fire();
+    expect(reads()).toBe(0);
+  });
+
+  it("reads rows that stayed on screen for the delay", () => {
+    const { reader, fire, reads } = harness({ value: true });
+    reader.intersect(true);
+    fire();
+    expect(reads()).toBe(1);
+  });
+
+  it("does not read rows that left the screen before the delay", () => {
+    const { reader, fire, reads } = harness({ value: true });
+    reader.intersect(true);
+    reader.intersect(false);
+    fire();
+    expect(reads()).toBe(0);
+  });
+
+  it("waits while intersecting rows are hidden, then reads once they show", () => {
+    const shown = { value: false };
+    const { reader, fire, reads } = harness(shown);
+    reader.intersect(true);
+    fire();
+    fire();
+    expect(reads()).toBe(0);
+    shown.value = true;
+    fire();
+    expect(reads()).toBe(1);
   });
 });

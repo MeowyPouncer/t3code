@@ -186,11 +186,8 @@ export function maskBackgroundTaskOutput(text: string): string {
  * may be the end of a credential whose start was cut away.
  */
 function tailStart(text: string, tailChars: number, startsAtFileStart: boolean): number {
-  let start = Math.max(0, text.length - tailChars);
-  if (!startsAtFileStart) {
-    const firstBreak = text.indexOf("\n");
-    if (firstBreak !== -1) start = Math.max(start, firstBreak + 1);
-  }
+  const start = Math.max(0, text.length - tailChars);
+  // Offset 0 is a line start only when the window starts the file.
   if (start === 0 ? startsAtFileStart : text[start - 1] === "\n") return start;
   const nextBreak = text.indexOf("\n", start);
   if (nextBreak !== -1 && nextBreak < text.length - 1) return nextBreak + 1;
