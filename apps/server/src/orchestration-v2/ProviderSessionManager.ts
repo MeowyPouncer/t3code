@@ -43,6 +43,13 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import {
+  isDelegatedTaskThread,
+  UNREADABLE_TRIM_WITHHELD,
+  withheldMcpCapabilities,
+} from "../mcp/McpCapabilityTrim.ts";
+import type { McpCapability } from "../mcp/McpInvocationContext.ts";
+import { readProviderInstanceHardCap } from "../provider/ProviderInstanceHardCap.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -378,6 +385,44 @@ export const layerWithOptions = (
           );
         },
       );
+      /**
+       * Capabilities the thread's credential is minted without: its provider
+       * instance's hard cap, `orchestration` for a review child, and `preview`
+       * for agent-started threads when child browser access is off. Fails
+       * closed like browser access: unreadable settings or thread state
+       * withhold what a hard cap typically withholds.
+       */
+      const withheldCapabilities = Effect.fn("ProviderSessionManagerV2.withheldCapabilities")(
+        function* (threadId: ThreadId, providerInstanceId: ProviderInstanceId) {
+          if (Option.isNone(serverSettings)) return new Set<McpCapability>();
+          return yield* Effect.gen(function* () {
+            const settings = yield* serverSettings.value.getSettings;
+            const thread = yield* projectionStore.getThread(threadId);
+            const parentThreadId = thread.lineage.parentThreadId;
+            const delegatedTask =
+              parentThreadId !== null && isDelegatedTaskThread(thread)
+                ? (yield* projectionStore.getThreadRecords(parentThreadId, [
+                    "subagents",
+                  ])).subagents.find(
+                    (task) => task.origin === "app_owned" && task.childThreadId === threadId,
+                  )
+                : undefined;
+            return withheldMcpCapabilities({
+              cap: readProviderInstanceHardCap(settings.providerInstances, providerInstanceId),
+              thread,
+              delegatedTaskPrompt: delegatedTask?.prompt ?? undefined,
+              childAgentBrowserAccess: settings.enableChildAgentBrowserAccess,
+            });
+          }).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not resolve the thread's MCP capability limits; withholding orchestration and pull requests.",
+                { threadId, cause },
+              ).pipe(Effect.as(UNREADABLE_TRIM_WITHHELD)),
+            ),
+          );
+        },
+      );
       const layerScope = yield* Effect.scope;
       // Ctrl+C, or a stop that signals the whole process group, reaches the
       // provider CLIs with the server. They report their own background work
@@ -469,13 +514,16 @@ export const layerWithOptions = (
                 // the credential it started with, so a thread that detaches and
                 // re-attaches across a workspace handoff must come back to the
                 // same token or the process's tool calls fail auth.
-                const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                const access = yield* agentAccessSettings(threadId);
+                const withheld = yield* withheldCapabilities(threadId, providerInstanceId);
+                const browserToolsAvailable = access.browser && !withheld.has("preview");
+                const deviceToolsAvailable = access.device && !withheld.has("device");
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
+                for (const capability of withheld) capabilities.delete(capability);
                 const existing = McpProviderSession.readMcpProviderSession(threadId);
                 if (existing !== undefined) {
                   // Reserve before the async resolve so a release cannot
@@ -497,10 +545,11 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
-                    // A flipped browser-access setting must not survive through
-                    // credential reuse: rotate so the new scope reflects it.
-                    resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable
+                    // A flipped access setting or hard cap must not survive
+                    // through credential reuse: rotate so the new scope
+                    // reflects it.
+                    resolved.capabilities.size === capabilities.size &&
+                    [...capabilities].every((capability) => resolved.capabilities.has(capability))
                   ) {
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
@@ -512,6 +561,7 @@ export const layerWithOptions = (
                   providerInstanceId,
                   browserToolsAvailable,
                   capabilities,
+                  withheldCapabilities: withheld,
                 });
                 McpProviderSession.setMcpProviderSession(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);

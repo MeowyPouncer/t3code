@@ -36,6 +36,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { RuntimeMode } from "./providerPolicy.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
@@ -113,6 +114,40 @@ export const ProviderInstanceEnvironment = Schema.Array(ProviderInstanceEnvironm
 export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Type;
 
 /**
+ * T3 MCP capabilities a provider instance's hard cap can withhold. Mirrors the
+ * server's `McpCapability`; the server checks the two stay in step.
+ */
+export const ProviderInstanceCappedCapability = Schema.Literals([
+  "orchestration",
+  "pull-requests",
+  "worktree",
+  "preview",
+  "device",
+]);
+export type ProviderInstanceCappedCapability = typeof ProviderInstanceCappedCapability.Type;
+
+/**
+ * The most any thread on this instance may be granted, whoever starts it and
+ * whatever its parent's own mode. Every field is optional and an absent cap
+ * changes nothing.
+ *
+ *   - `maxRuntimeMode`: threads on the instance run at most this mode; a
+ *     delegation that asks for more is refused, one that inherits more is
+ *     lowered.
+ *   - `declineFileChanges`: file-change approvals are declined without asking
+ *     the user. Only Supervised asks before edits, so it also caps the mode
+ *     at `approval-required`.
+ *   - `withheldCapabilities`: T3 MCP capabilities the instance's sessions
+ *     never get (e.g. `orchestration`: no `delegate_task` or thread control).
+ */
+export const ProviderInstanceHardCap = Schema.Struct({
+  maxRuntimeMode: Schema.optionalKey(RuntimeMode),
+  declineFileChanges: Schema.optionalKey(Schema.Boolean),
+  withheldCapabilities: Schema.optionalKey(Schema.Array(ProviderInstanceCappedCapability)),
+});
+export type ProviderInstanceHardCap = typeof ProviderInstanceHardCap.Type;
+
+/**
  * Envelope shape for a provider instance configuration in `ServerSettings`.
  *
  * `driver` is intentionally accepted as any well-formed slug (see module
@@ -128,6 +163,7 @@ export const ProviderInstanceConfig = Schema.Struct({
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
   config: Schema.optionalKey(Schema.Unknown),
+  hardCap: Schema.optionalKey(ProviderInstanceHardCap),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;
 

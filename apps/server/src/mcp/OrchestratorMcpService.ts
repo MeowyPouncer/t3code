@@ -48,6 +48,7 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestratorMcpThreadWaitInput,
   type OrchestratorMcpThreadWaitResult,
+  type ProviderInstanceId,
   type ProviderInteractionMode,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -81,8 +82,14 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import {
+  readProviderInstanceHardCap,
+  resolveHardCappedChildRuntimeMode,
+} from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { delegatedTaskPrompt } from "./McpCapabilityTrim.ts";
 import {
   clientRuntimeModeCeiling,
   type McpInvocationScope,
@@ -601,12 +608,6 @@ function threadTitle(input: {
   return detail.length > 80 ? `${detail.slice(0, 77)}...` : detail;
 }
 
-function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.role === undefined || input.role === "general"
-    ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
-}
-
 function threadSettlement(
   thread: Pick<OrchestrationV2ThreadShell, "settledOverride" | "settledAt">,
 ): Pick<OrchestratorMcpThreadListItem, "settled" | "settledAt"> {
@@ -811,6 +812,42 @@ const make = Effect.gen(function* () {
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
+  // Optional like ProviderSessionManagerV2's, so the focused tests that build
+  // this layer by hand need no settings stub; production always provides it.
+  const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+
+  /**
+   * The mode a thread an agent starts on `instanceId` gets, after the parent's
+   * ceiling (`resolved`) and the instance's hard cap. Unreadable settings
+   * refuse the start rather than skip the cap.
+   */
+  const hardCappedChildRuntimeMode = (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly requested: OrchestratorMcpRuntimeMode | undefined;
+    readonly resolved: RuntimeMode;
+  }): Effect.Effect<RuntimeMode, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (Option.isNone(serverSettings)) return input.resolved;
+      const settings = yield* serverSettings.value.getSettings.pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to read the provider instance's limits: ${error.message}`,
+          ),
+        ),
+      );
+      const outcome = resolveHardCappedChildRuntimeMode({
+        resolved: input.resolved,
+        explicit: input.requested !== undefined && input.requested !== "inherit",
+        cap: readProviderInstanceHardCap(settings.providerInstances, input.instanceId),
+      });
+      return outcome._tag === "allowed"
+        ? outcome.runtimeMode
+        : yield* failure(
+            "runtime_mode_escalation_denied",
+            `Child runtime mode ${outcome.runtimeMode} is broader than ${input.instanceId}'s hard cap ${outcome.ceiling}.`,
+          );
+    });
 
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
@@ -1810,7 +1847,11 @@ const make = Effect.gen(function* () {
           target: input.target,
           providers,
         });
-        const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+        const runtimeMode = yield* hardCappedChildRuntimeMode({
+          instanceId: target.modelSelection.instanceId,
+          requested: input.runtimeMode,
+          resolved: yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode),
+        });
         const interactionMode = yield* resolveInteractionMode(
           parent.thread.interactionMode,
           input.interactionMode,
@@ -1830,7 +1871,7 @@ const make = Effect.gen(function* () {
             parentThreadId: scope.thread.threadId,
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
-            task: taskPrompt(input),
+            task: delegatedTaskPrompt(input),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
@@ -2092,10 +2133,11 @@ const make = Effect.gen(function* () {
                 target: request.target,
                 providers,
               });
-              const runtimeMode = yield* resolveRuntimeMode(
-                parent.thread.runtimeMode,
-                request.runtimeMode,
-              );
+              const runtimeMode = yield* hardCappedChildRuntimeMode({
+                instanceId: target.modelSelection.instanceId,
+                requested: request.runtimeMode,
+                resolved: yield* resolveRuntimeMode(parent.thread.runtimeMode, request.runtimeMode),
+              });
               const interactionMode = yield* resolveInteractionMode(
                 parent.thread.interactionMode,
                 request.interactionMode,

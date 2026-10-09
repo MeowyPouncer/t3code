@@ -11,7 +11,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import {
+  clampRuntimeModeToHardCap,
+  readProviderInstanceHardCap,
+} from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2RuntimePolicy as ProviderAdapterV2RuntimePolicyType,
@@ -96,6 +101,34 @@ export const layerFromProjectStore: Layer.Layer<
   Effect.gen(function* () {
     const projects = yield* ProjectStore.ProjectStoreV2;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    // Optional so tests that build this layer by hand need no settings stub;
+    // production always provides it.
+    const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+    /**
+     * The instance's hard cap holds for every run, however the thread got its
+     * mode (the composer, `t3_thread_send`, a schedule, a thread created
+     * before the cap). Unreadable settings run Supervised rather than uncapped.
+     */
+    const hardCappedRuntimeMode = (
+      runtimeMode: RuntimeMode,
+      instanceId: ProviderInstanceId,
+    ): Effect.Effect<RuntimeMode> =>
+      Option.isNone(serverSettings)
+        ? Effect.succeed(runtimeMode)
+        : serverSettings.value.getSettings.pipe(
+            Effect.map((settings) =>
+              clampRuntimeModeToHardCap(
+                runtimeMode,
+                readProviderInstanceHardCap(settings.providerInstances, instanceId),
+              ),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not read the provider instance's hard cap; running Supervised.",
+                { instanceId, cause },
+              ).pipe(Effect.as<RuntimeMode>("approval-required")),
+            ),
+          );
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
@@ -103,6 +136,10 @@ export const layerFromProjectStore: Layer.Layer<
           instance === undefined
             ? undefined
             : (yield* instance.snapshot.getSnapshot).supportedRuntimeModes;
+        const runtimeMode = providerRuntimeMode(
+          yield* hardCappedRuntimeMode(input.thread.runtimeMode, input.modelSelection.instanceId),
+          supportedRuntimeModes,
+        );
         const cwd =
           input.thread.worktreePath ??
           (yield* projects.get(input.thread.projectId).pipe(
@@ -129,7 +166,7 @@ export const layerFromProjectStore: Layer.Layer<
             ),
           ));
         return ProviderAdapterV2RuntimePolicy.make({
-          runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
+          runtimeMode,
           interactionMode: input.thread.interactionMode,
           cwd,
         });

@@ -22,6 +22,11 @@ export interface McpCredentialRequest {
    */
   readonly browserToolsAvailable?: boolean;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
+  /**
+   * Capabilities the credential never carries, base ones included: a
+   * provider instance's hard cap, or a review child's `orchestration`.
+   */
+  readonly withheldCapabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
 export interface McpIssuedCredential {
@@ -137,12 +142,14 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         },
         client: undefined,
-        capabilities: new Set<McpInvocationContext.McpCapability>([
-          "orchestration",
-          "worktree",
-          "pull-requests",
-          ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
-        ]),
+        capabilities: new Set<McpInvocationContext.McpCapability>(
+          [
+            "orchestration" as const,
+            "worktree" as const,
+            "pull-requests" as const,
+            ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
+          ].filter((capability) => request.withheldCapabilities?.has(capability) !== true),
+        ),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {
