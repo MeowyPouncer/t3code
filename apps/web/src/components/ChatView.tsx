@@ -578,6 +578,17 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button, InlineButton } from "./ui/button";
+import { BackgroundWorkDetails } from "./chat/BackgroundWorkDetails";
+import {
+  BackgroundWorkDrawer,
+  BackgroundWorkDrawerToggle,
+  useBackgroundWorkHistory,
+} from "./chat/BackgroundWorkDrawer";
+import {
+  backgroundWorkOutputTaskIds,
+  finishedBackgroundWorkTitle,
+  type BackgroundWorkEntry,
+} from "./chat/BackgroundWorkDrawer.logic";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -7554,10 +7565,72 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [activeGoal, activeThread, isWorking, sendStandaloneCommand]);
 
+  // FORK-010: the strip opens a drawer with each item's elapsed time and
+  // Claude's output tail; finished work stays until the turn after it was read.
+  const backgroundWorkPresentation = useMemo(
+    () => presentPendingBackgroundWork(activeBackgroundTasks),
+    [activeBackgroundTasks],
+  );
+  const backgroundWorkOutputIds = useMemo(
+    () => backgroundWorkOutputTaskIds(serverProjection?.providerThreads ?? []),
+    [serverProjection?.providerThreads],
+  );
+  const backgroundWorkEntries = useMemo(
+    () =>
+      (backgroundWorkPresentation?.items ?? []).map((item): BackgroundWorkEntry => ({
+        ...item,
+        hasOutput: backgroundWorkOutputIds.has(item.taskId),
+      })),
+    [backgroundWorkOutputIds, backgroundWorkPresentation],
+  );
+  const backgroundWorkKey = activeThread ? `${environmentId}:${activeThread.id}` : null;
+  const { finished: finishedBackgroundWork, markRead: markBackgroundWorkRead } =
+    useBackgroundWorkHistory({
+      key: backgroundWorkKey,
+      running: backgroundWorkEntries,
+      latestRunId: serverLatestRun?.runId ?? null,
+      settled: !isWorking && serverProjection !== null,
+    });
+  const [backgroundWorkExpandedKey, setBackgroundWorkExpandedKey] = useState<string | null>(null);
+  const backgroundWorkExpanded =
+    backgroundWorkKey !== null && backgroundWorkExpandedKey === backgroundWorkKey;
+  const toggleBackgroundWorkDrawer = useCallback(() => {
+    setBackgroundWorkExpandedKey((current) =>
+      current === backgroundWorkKey ? null : backgroundWorkKey,
+    );
+  }, [backgroundWorkKey]);
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
-    if (presentation === null || !activeThread) {
+    const presentation = backgroundWorkPresentation;
+    const finished = isWorking ? [] : finishedBackgroundWork;
+    if ((presentation === null && finished.length === 0) || !activeThread) {
       return null;
+    }
+    const drawer = backgroundWorkExpanded ? (
+      <BackgroundWorkDrawer
+        environmentId={environmentId}
+        threadId={activeThread.id}
+        running={backgroundWorkEntries}
+        finished={finished}
+        onOpenThread={onOpenRelatedThread}
+        onRead={markBackgroundWorkRead}
+      />
+    ) : undefined;
+    const toggle = (
+      <BackgroundWorkDrawerToggle
+        expanded={backgroundWorkExpanded}
+        onToggle={toggleBackgroundWorkDrawer}
+      />
+    );
+    if (presentation === null) {
+      return {
+        id: `background-work:${activeThread.id}`,
+        variant: "default",
+        priority: "activity",
+        icon: <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />,
+        title: finishedBackgroundWorkTitle(finished),
+        actions: toggle,
+        children: drawer,
+      };
     }
     return {
       id: `background-work:${activeThread.id}`,
@@ -7598,24 +7671,38 @@ export default function ChatView(props: ChatViewProps) {
                 </Fragment>
               );
             }),
-      actions: (
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={!canOperateThread || isStoppingBackgroundWork}
-          onClick={() => void handleStopBackgroundWork()}
-        >
-          {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
-        </Button>
+      details: (
+        <BackgroundWorkDetails items={presentation.items} onOpenThread={onOpenRelatedThread} />
       ),
+      actions: (
+        <>
+          {toggle}
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!canOperateThread || isStoppingBackgroundWork}
+            onClick={() => void handleStopBackgroundWork()}
+          >
+            {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+          </Button>
+        </>
+      ),
+      children: drawer,
     };
   }, [
-    activeBackgroundTasks,
     activeThread,
+    backgroundWorkEntries,
+    backgroundWorkExpanded,
+    backgroundWorkPresentation,
     canOperateThread,
+    environmentId,
+    finishedBackgroundWork,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
+    isWorking,
+    markBackgroundWorkRead,
     onOpenRelatedThread,
+    toggleBackgroundWorkDrawer,
   ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the

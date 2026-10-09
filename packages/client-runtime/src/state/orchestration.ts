@@ -51,6 +51,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       idleTtlMs: 60_000,
     }),
+    // A live file: the drawer refreshes it while its output is open.
+    backgroundTaskOutput: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:background-task-output",
+      tag: ORCHESTRATION_V2_WS_METHODS.getBackgroundTaskOutput,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",
       tag: ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,

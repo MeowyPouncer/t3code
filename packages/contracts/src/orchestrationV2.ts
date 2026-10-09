@@ -804,6 +804,10 @@ const PendingBackgroundTaskFields = {
   taskId: TrimmedNonEmptyString,
   /** The work's name: a subagent's title, a command's description, a monitor's. */
   description: Schema.optional(TrimmedNonEmptyString),
+  /** The shell command a command or monitor runs, capped by the adapter. */
+  command: Schema.optional(TrimmedNonEmptyString),
+  /** When the work started, as far as the adapter saw. */
+  startedAt: Schema.optional(IsoDateTime),
 };
 
 /**
@@ -826,9 +830,11 @@ export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
     Schema.Struct({ ...PendingBackgroundTaskFields, kind: Schema.Literal("background_task") }),
   ],
   (kind) => Schema.Struct({ ...PendingBackgroundTaskFields, kind }),
-  ({ taskId, description }) => ({
+  ({ taskId, description, command, startedAt }) => ({
     taskId,
     ...(description === undefined ? {} : { description }),
+    ...(command === undefined ? {} : { command }),
+    ...(startedAt === undefined ? {} : { startedAt }),
     kind: "background_task",
   }),
 );
@@ -3161,6 +3167,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getThreadProjection: "orchestration.getThreadProjection",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getTurnItem: "orchestration.getTurnItem",
+  getBackgroundTaskOutput: "orchestration.getBackgroundTaskOutput",
   launchThread: "orchestration.launchThread",
   subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
@@ -3471,6 +3478,58 @@ export const OrchestrationV2GetTurnItemResult = Schema.Struct({
 });
 export type OrchestrationV2GetTurnItemResult = typeof OrchestrationV2GetTurnItemResult.Type;
 
+export const OrchestrationV2GetBackgroundTaskOutputInput = Schema.Struct({
+  threadId: ThreadId,
+  /** A Claude background task id (a Bash or Monitor task). The server finds
+   * its output file under Claude's task directory; no path is accepted. */
+  taskId: TrimmedNonEmptyString,
+});
+export type OrchestrationV2GetBackgroundTaskOutputInput =
+  typeof OrchestrationV2GetBackgroundTaskOutputInput.Type;
+
+/** The end of a background task's output file, secrets masked, never stored. */
+export const OrchestrationV2GetBackgroundTaskOutputResult = Schema.Struct({
+  /** False when no output file exists: not started, cleaned up, or another machine's. */
+  found: Schema.Boolean,
+  contents: Schema.String,
+  /** True when the file is longer than the tail returned. */
+  truncated: Schema.Boolean,
+  sizeBytes: NonNegativeInt,
+  modifiedAt: Schema.optional(IsoDateTime),
+});
+export type OrchestrationV2GetBackgroundTaskOutputResult =
+  typeof OrchestrationV2GetBackgroundTaskOutputResult.Type;
+
+export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedError<OrchestrationGetBackgroundTaskOutputError>()(
+  "OrchestrationGetBackgroundTaskOutputError",
+  {
+    reason: Schema.Literals([
+      "invalid-task-id",
+      "outside-root",
+      "changed-during-read",
+      "unverifiable",
+      "read-failed",
+    ]),
+    taskId: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "invalid-task-id":
+        return "Not a background task id.";
+      case "outside-root":
+        return "Task output is outside this thread's Claude session.";
+      case "changed-during-read":
+        return "Task output changed while it was opened.";
+      case "unverifiable":
+        return "Task output is not shown: the server cannot check the opened file (no /proc/self/fd).";
+      case "read-failed":
+        return "Task output read failed.";
+    }
+  }
+}
+
 const WORKFLOW_SCRIPT_ERROR_MESSAGES = {
   "invalid-path": "Workflow scripts must be absolute .js paths.",
   "root-unavailable": "Script root unavailable.",
@@ -3532,6 +3591,10 @@ export const OrchestrationV2RpcSchemas = {
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,
     output: OrchestrationV2GetTurnItemResult,
+  },
+  getBackgroundTaskOutput: {
+    input: OrchestrationV2GetBackgroundTaskOutputInput,
+    output: OrchestrationV2GetBackgroundTaskOutputResult,
   },
   launchThread: {
     input: OrchestrationV2ThreadLaunchInput,
