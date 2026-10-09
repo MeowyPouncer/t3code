@@ -254,6 +254,9 @@ function recorderThreadConfigKeys(transcript: CodexAppServerReplayTranscript): R
   return new Set(Array.isArray(keys) ? keys.filter((key) => typeof key === "string") : []);
 }
 
+/** FORK: `config` keys the T3 fork sets so a thread's shell commands see `T3CODE_THREAD_ID` and `T3CODE_PROJECT_ROOT`. */
+const THREAD_ENVIRONMENT_CONFIG_PREFIX = "shell_environment_policy.set.T3CODE_";
+
 /**
  * Thread requests must match on the `config` the client owns. `cwd`, `model`
  * and host-supplied MCP servers (machine-local URLs, short-lived authorization
@@ -275,6 +278,10 @@ function normalizeThreadRequest(frame: unknown, ignoredConfigKeys: ReadonlySet<s
   if (typeof config !== "object" || config === null) return { ...record, params };
   const { mcp_servers: _mcpServers, ...owned } = config as Record<string, unknown>;
   for (const key of ignoredConfigKeys) delete owned[key];
+  // FORK: the thread's own T3CODE_* shell variables (thread id, project root) differ per run.
+  for (const key of Object.keys(owned)) {
+    if (key.startsWith(THREAD_ENVIRONMENT_CONFIG_PREFIX)) delete owned[key];
+  }
   return { ...record, params: { ...params, config: owned } };
 }
 

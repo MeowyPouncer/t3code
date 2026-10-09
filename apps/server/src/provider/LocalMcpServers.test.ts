@@ -100,12 +100,14 @@ describe("local MCP servers", () => {
     write({ mcpServers: { "aihub-workflow": { command: "/opt/aihub/bin/server", args: [] } } });
     const threadId = ThreadId.make("thread-cursor-local-mcp");
     expect(cursorMcpServers(threadId)).toBeUndefined();
-    expect(cursorRunMcpServers(threadId, "/workspace")).toEqual({
+    expect(cursorRunMcpServers(threadId, "/workspace", "/projects/aihub")).toEqual({
       "aihub-workflow": {
         type: "stdio",
         command: "/opt/aihub/bin/server",
         args: [],
         cwd: "/workspace",
+        // FORK: the server starts in this run, so it learns the thread and the project's root.
+        env: { T3CODE_THREAD_ID: threadId, T3CODE_PROJECT_ROOT: "/projects/aihub" },
       },
     });
 
@@ -125,12 +127,16 @@ describe("local MCP servers", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: "/workspace",
+          projectRoot: "/projects/aihub",
         },
         threadId,
       });
       expect(Object.keys(options.mcpServers ?? {}).sort()).toEqual(["aihub-workflow", "t3-code"]);
       expect(options.mcpServers?.["t3-code"]).toEqual(cursorMcpServers(threadId)?.["t3-code"]);
-      expect(options.mcpServers?.["aihub-workflow"]).toMatchObject({ cwd: "/workspace" });
+      expect(options.mcpServers?.["aihub-workflow"]).toMatchObject({
+        cwd: "/workspace",
+        env: { T3CODE_THREAD_ID: threadId, T3CODE_PROJECT_ROOT: "/projects/aihub" },
+      });
     } finally {
       McpProviderSession.clearMcpProviderSession(threadId);
     }

@@ -128,10 +128,26 @@ export const layerFromProjectStore: Layer.Layer<
               }),
             ),
           ));
+        // FORK: the project's root checkout reaches the provider's hooks as T3CODE_PROJECT_ROOT.
+        // Without a worktree it is the cwd; with one, a project that cannot be read leaves it out
+        // rather than failing a thread that runs fine.
+        const projectRoot =
+          input.thread.worktreePath === null
+            ? cwd
+            : yield* projects.get(input.thread.projectId).pipe(
+                Effect.map(
+                  Option.match({
+                    onNone: () => undefined,
+                    onSome: (project) => project.workspaceRoot,
+                  }),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              );
         return ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,
+          ...(projectRoot === undefined ? {} : { projectRoot }),
         });
       }),
     });
