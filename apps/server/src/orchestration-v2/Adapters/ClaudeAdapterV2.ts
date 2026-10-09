@@ -115,6 +115,10 @@ import type { ServerProviderShape } from "../../provider/ServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
+import {
+  type ThreadEnvironmentInput,
+  withThreadEnvironment,
+} from "../../provider/ThreadEnvironment.logic.ts";
 import { mcpToolPresentation, normalizeMcpText } from "../../provider/McpToolPresentation.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as IdAllocator from "../IdAllocator.ts";
@@ -821,6 +825,8 @@ export function makeClaudeQueryOptions(input: {
   readonly settings?: ClaudeSettings;
   readonly sdkSettings?: string | ClaudeSdkSettings;
   readonly environment?: NodeJS.ProcessEnv;
+  /** FORK: the thread this query works for; its variables reach the `claude` process and its hooks. */
+  readonly threadEnvironment?: ThreadEnvironmentInput;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
@@ -864,6 +870,10 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const environment =
+    input.threadEnvironment === undefined
+      ? input.environment
+      : withThreadEnvironment(input.environment ?? process.env, input.threadEnvironment);
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -907,7 +917,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.settings?.binaryPath
       ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
       : {}),
-    ...(input.environment === undefined ? {} : { env: input.environment }),
+    ...(environment === undefined ? {} : { env: environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
     systemPrompt: {
       type: "preset" as const,
@@ -7163,6 +7173,10 @@ export function makeClaudeAdapterV2(
             attachmentsDir,
             settings: adapterOptions.settings,
             environment: adapterOptions.environment,
+            threadEnvironment: {
+              threadId: turnInput.threadId,
+              projectRoot: turnInput.runtimePolicy.projectRoot,
+            },
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...mcpOverrides,
             permissionMode: queryPolicy.permissionMode,

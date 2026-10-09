@@ -76,38 +76,36 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
     },
   }) as ProviderInstance;
 
-const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(
-    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-      getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
-      listInstances: Effect.succeed([]),
-      listUnavailable: Effect.succeed([]),
-      streamChanges: Stream.empty,
-      subscribeChanges: Effect.never,
-    }),
-  ),
-  Layer.provide(
-    Layer.mock(ProjectStore.ProjectStoreV2)({
-      get: () =>
-        Effect.succeed(
-          Option.some({
-            projectId,
-            title: "Project",
-            workspaceRoot: "/project-root",
-            defaultModelSelection: null,
-            defaultThreadEnvMode: null,
-            autoPull: false,
-            faviconPath: null,
-            projectIcon: null,
-            scripts: [],
-            createdAt: "2026-06-21T00:00:00.000Z",
-            updatedAt: "2026-06-21T00:00:00.000Z",
-            deletedAt: null,
-          }),
-        ),
-    }),
-  ),
-);
+const projectRow = {
+  projectId,
+  title: "Project",
+  workspaceRoot: "/project-root",
+  defaultModelSelection: null,
+  defaultThreadEnvMode: null,
+  autoPull: false,
+  faviconPath: null,
+  projectIcon: null,
+  scripts: [],
+  createdAt: "2026-06-21T00:00:00.000Z",
+  updatedAt: "2026-06-21T00:00:00.000Z",
+  deletedAt: null,
+};
+
+const layerWithProjectGet = (get: ProjectStore.ProjectStoreV2["Service"]["get"]) =>
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
+        listInstances: Effect.succeed([]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.never,
+      }),
+    ),
+    Layer.provide(Layer.mock(ProjectStore.ProjectStoreV2)({ get })),
+  );
+
+const layerTest = layerWithProjectGet(() => Effect.succeed(Option.some(projectRow)));
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
   it.effect("uses the project root for local-checkout threads", () =>
@@ -119,6 +117,8 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         modelSelection,
       });
       assert.equal(resolved.cwd, "/project-root");
+      // FORK: the root checkout also reaches the provider's hooks as T3CODE_PROJECT_ROOT.
+      assert.equal(resolved.projectRoot, "/project-root");
     }),
   );
 
@@ -131,6 +131,8 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
         modelSelection,
       });
       assert.equal(resolved.cwd, "/project-worktree");
+      // FORK: a worktree thread still names the project's root checkout, not its worktree.
+      assert.equal(resolved.projectRoot, "/project-root");
     }),
   );
 
@@ -151,6 +153,36 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       // A provider that advertises no restriction runs every mode as stored.
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+});
+
+it.layer(
+  layerWithProjectGet(() =>
+    Effect.fail(new ProjectStore.ProjectStoreV2Error({ operation: "get", cause: "offline" })),
+  ),
+)("RuntimePolicyV2 with an unreadable project", (it) => {
+  it.effect("keeps a worktree thread running without its project root", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now, worktreePath: "/project-worktree" }),
+        modelSelection,
+      });
+      assert.equal(resolved.cwd, "/project-worktree");
+      assert.isUndefined(resolved.projectRoot);
+    }),
+  );
+
+  it.effect("still fails a local-checkout thread, which has no other cwd", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const error = yield* policy
+        .resolve({ thread: makeThread({ now, worktreePath: null }), modelSelection })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "RuntimePolicyResolveError");
     }),
   );
 });

@@ -632,6 +632,7 @@ describe("CodexAdapterV2 process spawning", () => {
             runtimeMode: "full-access",
             interactionMode: "default",
             cwd: "/workspace/thread-codex-mcp",
+            projectRoot: "/projects/codex-mcp",
           },
         }),
         {
@@ -639,6 +640,9 @@ describe("CodexAdapterV2 process spawning", () => {
           model: "gpt-5.4",
           config: {
             "tools.update_plan.enabled": true,
+            // FORK: the thread's shell commands see the thread and the project's root checkout.
+            "shell_environment_policy.set.T3CODE_THREAD_ID": "thread-codex-mcp",
+            "shell_environment_policy.set.T3CODE_PROJECT_ROOT": "/projects/codex-mcp",
             mcp_servers: {
               "t3-code": {
                 url: "http://127.0.0.1:43123/mcp",

@@ -48,6 +48,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
+  /** FORK: the project's root checkout (`cwd` is the worktree when the thread has one). */
+  projectRoot: Schema.optional(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),

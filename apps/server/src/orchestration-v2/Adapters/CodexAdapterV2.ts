@@ -106,6 +106,7 @@ import {
 import { ProviderEventLoggers } from "../../provider/ProviderEventLoggers.ts";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
+import { codexThreadEnvironmentConfig } from "../../provider/ThreadEnvironment.logic.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterDriverCreateError,
@@ -1293,6 +1294,14 @@ export function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      // FORK: one shared app-server serves every thread, so the thread's variables go in as its own
+      // shell environment, not as the server's. Codex hooks do not see them.
+      ...(input.threadId === null
+        ? {}
+        : codexThreadEnvironmentConfig({
+            threadId: input.threadId,
+            projectRoot: input.runtimePolicy?.projectRoot,
+          })),
       ...(mcpSession === undefined
         ? {}
         : {

@@ -171,6 +171,57 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.include(options.settings, { showThinkingSummaries: true });
   });
 
+  it("gives the claude process, and so its hooks, the thread and project", () => {
+    const environment = {
+      PATH: "/usr/bin",
+      T3CODE_LOCAL_INSTRUCTIONS_FILE: "/home/mp/.config/t3code/instructions.md",
+      T3CODE_LOCAL_MCP_SERVERS_FILE: "/home/mp/.config/t3code/mcp-servers.json",
+      T3CODE_PROJECT_ROOT: "/inherited/project",
+    };
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-env",
+      resume: false,
+      cwd: "/worktrees/card-1",
+      environment,
+      threadEnvironment: { threadId: "thread:env-1", projectRoot: "/projects/aihub" },
+    });
+    assert.deepEqual(options.env, {
+      PATH: "/usr/bin",
+      T3CODE_LOCAL_INSTRUCTIONS_FILE: "/home/mp/.config/t3code/instructions.md",
+      T3CODE_LOCAL_MCP_SERVERS_FILE: "/home/mp/.config/t3code/mcp-servers.json",
+      T3CODE_THREAD_ID: "thread:env-1",
+      T3CODE_PROJECT_ROOT: "/projects/aihub",
+    });
+    assert.equal(options.cwd, "/worktrees/card-1");
+    // The adapter's own environment is not changed for the next thread.
+    assert.equal(environment.T3CODE_PROJECT_ROOT, "/inherited/project");
+    assert.notProperty(environment, "T3CODE_THREAD_ID");
+  });
+
+  it("starts from the host environment when the adapter has none of its own", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-env-default",
+      resume: false,
+      cwd: "/workspace",
+      threadEnvironment: { threadId: "thread:env-2" },
+    });
+    assert.equal(options.env?.T3CODE_THREAD_ID, "thread:env-2");
+    assert.equal(options.env?.PATH, process.env.PATH);
+    assert.notProperty(options.env ?? {}, "T3CODE_PROJECT_ROOT");
+  });
+
+  it("leaves the environment as it was when no thread is named", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-env-none",
+      resume: false,
+      cwd: "/workspace",
+    });
+    assert.notProperty(options, "env");
+  });
+
   it("preserves an explicit omitted thinking display", () => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -2218,6 +2269,43 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("opens each turn's query with the thread and project in the process environment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        environment: {
+          CLAUDE_CONFIG_DIR: "/synthetic/claude",
+          T3CODE_LOCAL_INSTRUCTIONS_FILE: "/synthetic/instructions.md",
+          T3CODE_LOCAL_MCP_SERVERS_FILE: "/synthetic/mcp-servers.json",
+        },
+      });
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("thread-environment"),
+          text: "Which thread is this?",
+          attachments: [],
+          runtimePolicy: ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: "/worktrees/card-1",
+            projectRoot: "/projects/aihub",
+          }),
+        }),
+      );
+      const options = harness.getOpenedOptions();
+      assert.equal(options?.cwd, "/worktrees/card-1");
+      assert.deepEqual(options?.env, {
+        CLAUDE_CONFIG_DIR: "/synthetic/claude",
+        T3CODE_LOCAL_INSTRUCTIONS_FILE: "/synthetic/instructions.md",
+        T3CODE_LOCAL_MCP_SERVERS_FILE: "/synthetic/mcp-servers.json",
+        T3CODE_THREAD_ID: harness.threadId,
+        T3CODE_PROJECT_ROOT: "/projects/aihub",
+      });
+    }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
 
   it.effect.each([
     { isError: false, title: "Check weather" },
