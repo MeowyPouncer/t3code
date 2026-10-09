@@ -3493,6 +3493,7 @@ export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedErro
       "invalid-task-id",
       "outside-root",
       "changed-during-read",
+      "unverifiable",
       "read-failed",
     ]),
     taskId: Schema.String,
@@ -3507,6 +3508,8 @@ export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedErro
         return "Task output is outside this thread's Claude session.";
       case "changed-during-read":
         return "Task output changed while it was opened.";
+      case "unverifiable":
+        return "Task output is not shown: the server cannot check the opened file (no /proc/self/fd).";
       case "read-failed":
         return "Task output read failed.";
     }

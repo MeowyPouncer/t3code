@@ -14,12 +14,16 @@
  *   <task>.output` for one of this thread's own sessions: a link anywhere
  *   below the root (a symlinked `tasks` dir, another thread's session, a
  *   subagent's `.output` pointing at its transcript) is refused;
- * - the file is opened without following a final link, and after opening the
- *   path must still name exactly the opened inode, a regular file with one
- *   link, so a swap between the check and the open is refused;
+ * - the file is opened without following a final link, and the opened
+ *   descriptor itself must be that file: the kernel's path for it
+ *   (`/proc/self/fd/<fd>`, so Linux only) must be exactly the expected path,
+ *   and it must be a regular file with one link. Path checks after the open
+ *   could see a different directory state than the open did; the descriptor
+ *   cannot. Where `/proc/self/fd` is missing the read is refused;
  * - only the tail is shown, cleaned of terminal control codes; secrets are
  *   masked over a wider window than is shown, so a cut cannot strip the
- *   context (a key's BEGIN line, a `token=`) that marks them. Nothing is stored.
+ *   context (a key's BEGIN line, a `token=`) that marks them, and the end of
+ *   a line whose start the window lacks is not shown at all. Nothing is stored.
  */
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -114,7 +118,11 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBearer\s+([A-Za-z0-9._~+/=-]{8,})/dgu,
   // A Basic credential is base64; "Basic authentication" is prose.
   /\bBasic\s+((?=[A-Za-z0-9+/]*(?:[0-9+/=]|[a-z][A-Z]))[A-Za-z0-9+/]{8,}={0,2})/dgu,
-  new RegExp(`["']?\\b${SECRET_KEY}\\b["']?\\s*[:=]\\s*("[^"\\n]*"|'[^'\\n]*'|[^\\s,;]+)`, "dgiu"),
+  // A quote not closed on its line runs to the line's end: its value may hold spaces.
+  new RegExp(
+    `["']?\\b${SECRET_KEY}\\b["']?\\s*[:=]\\s*("[^"\\n]*"?|'[^'\\n]*'?|[^\\s,;]+)`,
+    "dgiu",
+  ),
   /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/dgu,
 ];
 
@@ -179,18 +187,26 @@ export function maskBackgroundTaskOutput(text: string): string {
   return applySecretRanges(text, backgroundTaskOutputSecretRanges(text), 0);
 }
 
+/** Shown instead of the end of a line whose start the read window does not hold. */
+export const BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG = "[line too long to show]";
+
 /**
  * Where the shown tail starts: at most `tailChars` from the end, at a whole
  * line. A window read from mid-file never shows its first, partial line.
- * With no whole line left, the partial word at the cut is dropped, since it
- * may be the end of a credential whose start was cut away.
+ * With no whole line left, the tail is the end of one line: it is shown only
+ * when the window holds that line's start (and so the key that names a
+ * credential in it), less the partial word at the cut; otherwise null.
  */
-function tailStart(text: string, tailChars: number, startsAtFileStart: boolean): number {
-  const start = Math.max(0, text.length - tailChars);
+function tailStart(text: string, tailChars: number, startsAtFileStart: boolean): number | null {
   // Offset 0 is a line start only when the window starts the file.
-  if (start === 0 ? startsAtFileStart : text[start - 1] === "\n") return start;
+  const isLineStart = (offset: number) =>
+    offset === 0 ? startsAtFileStart : text[offset - 1] === "\n";
+  const start = Math.max(0, text.length - tailChars);
+  if (isLineStart(start)) return start;
   const nextBreak = text.indexOf("\n", start);
   if (nextBreak !== -1 && nextBreak < text.length - 1) return nextBreak + 1;
+  const lineStart = start === 0 ? 0 : text.lastIndexOf("\n", start - 1) + 1;
+  if (!isLineStart(lineStart)) return null;
   const space = text.slice(start).search(/\s/u);
   return space === -1 ? text.length : start + space + 1;
 }
@@ -205,6 +221,7 @@ export function presentBackgroundTaskOutput(
 ): { readonly contents: string; readonly cut: boolean } {
   const text = cleanBackgroundTaskOutput(raw);
   const start = tailStart(text, input.tailChars, input.startsAtFileStart);
+  if (start === null) return { contents: BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG, cut: true };
   return {
     contents: applySecretRanges(text, backgroundTaskOutputSecretRanges(text), start),
     cut: start > 0 || !input.startsAtFileStart,
@@ -265,8 +282,11 @@ type OpenTaskOutput = (path: string, flags: number) => Promise<NodeFSP.FileHandl
 const OPEN_FLAGS =
   NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK;
 
+/** Where Linux names the file behind each of this process's descriptors. */
+const PROC_SELF_FD = "/proc/self/fd";
+
 type TaskOutputRead =
-  | { readonly failure: "outside-root" | "changed-during-read" }
+  | { readonly failure: "outside-root" | "changed-during-read" | "unverifiable" }
   | {
       readonly contents: string;
       readonly truncated: boolean;
@@ -275,9 +295,22 @@ type TaskOutputRead =
     };
 
 /**
+ * The kernel's path of the file an open descriptor refers to, or null where
+ * this platform has no `/proc/self/fd` to ask.
+ */
+async function openedFilePath(fd: number, procFdDir: string): Promise<string | null> {
+  try {
+    return await NodeFSP.readlink(NodePath.join(procFdDir, String(fd)));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reads a task's output only from this thread's own session directory. The
- * check before opening refuses links; the check after opening proves the
- * path still names exactly the opened inode, so a swap in between fails.
+ * check before opening gives a link its reason and keeps the usual open
+ * inside the root; what decides is the opened descriptor itself, whose path
+ * the kernel reports, so no swap of a directory around the open gets through.
  */
 async function readContainedTaskOutput(input: {
   readonly root: string;
@@ -285,6 +318,7 @@ async function readContainedTaskOutput(input: {
   readonly taskId: string;
   readonly tailBytes: number;
   readonly open: OpenTaskOutput;
+  readonly procFdDir: string;
 }): Promise<TaskOutputRead> {
   const realRoot = await NodeFSP.realpath(input.root);
   // Exactly the lexical path under the real root: no link at any level below it.
@@ -310,20 +344,13 @@ async function readContainedTaskOutput(input: {
   }
   try {
     const opened = await handle.stat();
-    const [realAfter, pathAfter] = await Promise.all([
-      NodeFSP.realpath(expected),
-      NodeFSP.lstat(expected),
-    ]);
-    if (
-      !opened.isFile() ||
-      // A hard link could bring another file in under this name.
-      opened.nlink !== 1 ||
-      realAfter !== expected ||
-      pathAfter.dev !== opened.dev ||
-      pathAfter.ino !== opened.ino
-    ) {
-      return { failure: "changed-during-read" };
-    }
+    // A hard link could bring another file in under this name.
+    if (!opened.isFile() || opened.nlink !== 1) return { failure: "changed-during-read" };
+    const openedPath = await openedFilePath(handle.fd, input.procFdDir);
+    if (openedPath === null) return { failure: "unverifiable" };
+    // A directory relinked for the open shows here as the other file's path,
+    // and a file removed since as "<path> (deleted)".
+    if (openedPath !== expected) return { failure: "changed-during-read" };
     const windowLength = Math.min(
       opened.size,
       input.tailBytes + BACKGROUND_TASK_OUTPUT_LEAD_IN_BYTES,
@@ -354,6 +381,8 @@ export const readBackgroundTaskOutput = Effect.fn("orchestration.readBackgroundT
     readonly tailBytes?: number;
     /** Tests only: stands in for the open, to swap the file around it. */
     readonly open?: OpenTaskOutput;
+    /** Tests only: stands in for `/proc/self/fd`. */
+    readonly procFdDir?: string;
   }) {
     if (!isPlainBackgroundTaskId(input.taskId)) {
       return yield* new OrchestrationGetBackgroundTaskOutputError({
@@ -381,6 +410,7 @@ export const readBackgroundTaskOutput = Effect.fn("orchestration.readBackgroundT
           taskId: input.taskId,
           tailBytes: input.tailBytes ?? BACKGROUND_TASK_OUTPUT_TAIL_BYTES,
           open: input.open ?? ((path, flags) => NodeFSP.open(path, flags)),
+          procFdDir: input.procFdDir ?? PROC_SELF_FD,
         });
       },
       catch: (cause) =>

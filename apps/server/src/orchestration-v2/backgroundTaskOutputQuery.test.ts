@@ -6,10 +6,11 @@ import * as NodePath from "node:path";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { afterAll, assert, describe, it } from "vite-plus/test";
+import { afterAll, assert, describe, it, vi } from "vite-plus/test";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 import {
+  BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG,
   claudeSessionIdsForThread,
   claudeTaskOutputRoot,
   cleanBackgroundTaskOutput,
@@ -18,6 +19,13 @@ import {
   presentBackgroundTaskOutput,
   readBackgroundTaskOutput,
 } from "./backgroundTaskOutputQuery.ts";
+
+// Path checks can be steered to replay a race; they pass through otherwise.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFSP>();
+  return { ...actual, realpath: vi.fn(actual.realpath), lstat: vi.fn(actual.lstat) };
+});
+const actualFsp = await vi.importActual<typeof NodeFSP>("node:fs/promises");
 
 // <base>/root is Claude's temp root; <base>/outside is everything else.
 const base = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "bg-task-output-"));
@@ -163,6 +171,29 @@ describe("presentBackgroundTaskOutput", () => {
       startsAtFileStart: false,
     });
     assert.equal(shown.contents, "line two\n");
+  });
+
+  it("shows no part of a line whose start the window does not hold", () => {
+    // The end of PASSWORD="…": its key was cut away with the line's start.
+    const raw = `${"padding words ".repeat(20)}secret tail words"`;
+    const fromMidFile = presentBackgroundTaskOutput(raw, {
+      tailChars: 40,
+      startsAtFileStart: false,
+    });
+    assert.equal(fromMidFile.contents, BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG);
+    assert.isTrue(fromMidFile.cut);
+    const wholeWindow = presentBackgroundTaskOutput(`${raw}\n`, {
+      tailChars: 1_000,
+      startsAtFileStart: false,
+    });
+    assert.equal(wholeWindow.contents, BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG);
+  });
+
+  it("masks a quoted value whose closing quote is not on its line", () => {
+    const masked = maskBackgroundTaskOutput(`PASSWORD="first second third\napi_key='one two\nok`);
+    assert.notInclude(masked, "second");
+    assert.notInclude(masked, "two");
+    assert.include(masked, "\nok");
   });
 });
 
@@ -340,6 +371,95 @@ describe("readBackgroundTaskOutput", () => {
         }),
       );
       assert.equal(failureReason(exit), "changed-during-read");
+    }),
+  );
+
+  effectIt.effect("returns no part of a line longer than the read window", () =>
+    Effect.gen(function* () {
+      // Codex round 2: a spaced PASSWORD value past the 80 KB window.
+      const value = "word ".repeat(20_000);
+      makeSession("aaaa0009", "blong0002", `export PASSWORD="${value}secret tail words"`);
+      const result = yield* readBackgroundTaskOutput({
+        taskId: "blong0002",
+        sessionIds: ["aaaa0009"],
+        root,
+      });
+      assert.isTrue(result.truncated);
+      assert.equal(result.contents, BACKGROUND_TASK_OUTPUT_LINE_TOO_LONG);
+    }),
+  );
+
+  effectIt.effect.skipIf(!symlinksSupported)(
+    "refuses a file opened through a relinked tasks dir that later path checks would pass",
+    () =>
+      Effect.gen(function* () {
+        const dir = makeSession("aaaa0007", "brace0001", "inside\n");
+        const elsewhere = makeOutsideTasks("race-dir", "brace0001");
+        const expected = NodePath.join(NodeFS.realpathSync(dir), "brace0001.output");
+        const relink = async () => {
+          await actualFsp.rename(dir, `${dir}.real`);
+          await actualFsp.symlink(elsewhere, dir);
+        };
+        const restore = async () => {
+          await actualFsp.rm(dir);
+          await actualFsp.rename(`${dir}.real`, dir);
+        };
+        // Codex round 2's sequence: linked for the open, restored for a
+        // realpath of the path, linked again for an lstat of it.
+        let realpathDone: Promise<unknown> = Promise.resolve();
+        const realpath = async (target: string) => {
+          if (target !== expected) return actualFsp.realpath(target);
+          await restore();
+          try {
+            return await actualFsp.realpath(target);
+          } finally {
+            await relink();
+          }
+        };
+        const lstat = async (target: string) => {
+          if (target === expected) await realpathDone.catch(() => undefined);
+          return actualFsp.lstat(target);
+        };
+        try {
+          const exit = yield* Effect.exit(
+            readBackgroundTaskOutput({
+              taskId: "brace0001",
+              sessionIds: ["aaaa0007"],
+              root,
+              open: async (path, flags) => {
+                await relink();
+                const handle = await actualFsp.open(path, flags);
+                vi.mocked(NodeFSP.realpath).mockImplementation(((target: string) => {
+                  const done = realpath(target);
+                  if (target === expected) realpathDone = done;
+                  return done;
+                }) as never);
+                vi.mocked(NodeFSP.lstat).mockImplementation(lstat as never);
+                return handle;
+              },
+            }),
+          );
+          assert.equal(failureReason(exit), "changed-during-read");
+        } finally {
+          vi.mocked(NodeFSP.realpath).mockImplementation(actualFsp.realpath as never);
+          vi.mocked(NodeFSP.lstat).mockImplementation(actualFsp.lstat as never);
+        }
+      }),
+  );
+
+  effectIt.effect("refuses to read where the opened file cannot be checked", () =>
+    Effect.gen(function* () {
+      makeSession("aaaa0008", "bproc0001", "inside\n");
+      const exit = yield* Effect.exit(
+        readBackgroundTaskOutput({
+          taskId: "bproc0001",
+          sessionIds: ["aaaa0008"],
+          root,
+          // As on a platform with no /proc/self/fd.
+          procFdDir: NodePath.join(base, "no-proc-self-fd"),
+        }),
+      );
+      assert.equal(failureReason(exit), "unverifiable");
     }),
   );
 
