@@ -450,6 +450,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "new-threads-start-in-plan",
+    title: "New threads start in Plan",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["plan mode default permission mode first turn read only claude codex"],
+  },
+  {
     id: "new-threads",
     title: "New threads",
     to: "/settings/general",

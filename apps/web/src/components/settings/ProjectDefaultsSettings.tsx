@@ -74,6 +74,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const activeEntry = entries.find((entry) => entry.instanceId === selection?.instanceId);
   const mixedModel = useScopedSettingsMixed(["defaultModelSelection"]);
   const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
+  const mixedStartInPlan = useScopedSettingsMixed(["newThreadsStartInPlan"]);
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
   const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
@@ -248,6 +249,41 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     />
   );
 
+  const startInPlanRow = (
+    <SettingsRow
+      serverScoped
+      settingKeys={["newThreadsStartInPlan"]}
+      mixed={mixedStartInPlan}
+      {...searchableSetting("new-threads-start-in-plan")}
+      description={
+        isProjectScope
+          ? "Threads you start here open in Plan. Providers without a plan mode ignore it. Plan controls show in this project even when Plan mode (legacy) is off."
+          : "Threads you start open in Plan. Providers without a plan mode ignore it. Plan controls show even when Plan mode (legacy) is off. Projects can override it."
+      }
+      resetAction={
+        settings.newThreadsStartInPlan !== DEFAULT_SERVER_SETTINGS.newThreadsStartInPlan ? (
+          <SettingResetButton
+            label="new threads start in Plan"
+            tooltip="Reset to off"
+            onClick={() =>
+              updateSettings({
+                newThreadsStartInPlan: DEFAULT_SERVER_SETTINGS.newThreadsStartInPlan,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          aria-label="New threads start in Plan"
+          mixed={mixedStartInPlan}
+          checked={mixedStartInPlan ? false : settings.newThreadsStartInPlan}
+          onCheckedChange={(enabled) => updateSettings({ newThreadsStartInPlan: enabled })}
+        />
+      }
+    />
+  );
+
   return (
     <SettingsSection
       id={
@@ -269,6 +305,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         <>
           {modelRow}
           {workspaceRow}
+          {startInPlanRow}
         </>
       ) : category === "general" ? (
         <>
@@ -334,6 +371,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               </Select>
             }
           />
+          {startInPlanRow}
           {workspaceRow}
           <SettingsRow
             serverScoped

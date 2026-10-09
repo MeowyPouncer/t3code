@@ -39,7 +39,7 @@ import {
 } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { newThreadStartsInPlan, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 // Menu value for "No project"; real entries are keyed by logical project key.
 const NO_PROJECT_VALUE = "no-project";
@@ -185,16 +185,26 @@ export function DraftHeroHeadline({
       scratchTargetEnvironmentId: project.environmentId,
     };
     const currentDraft = getComposerDraft(draftId);
+    const environmentSettings = environments.find(
+      (environment) => environment.environmentId === project.environmentId,
+    )?.serverConfig?.settings;
+    // A project whose new threads start in Plan opens the draft in Plan, unless
+    // the user already picked a mode in this composer.
+    const startsInPlan =
+      environmentSettings !== undefined &&
+      currentDraft?.interactionMode == null &&
+      newThreadStartsInPlan(
+        resolveProjectSettings(environmentSettings, project.id, project).settings,
+        "ui",
+      );
     setLogicalProjectDraftThreadId(
       logicalProjectKey,
       scopeProjectRef(project.environmentId, project.id),
       draftId,
+      startsInPlan ? { interactionMode: "plan" } : undefined,
     );
     if (!hasExplicitComposerModelSelection(currentDraft)) {
       applyStickyState(draftId);
-      const environmentSettings = environments.find(
-        (environment) => environment.environmentId === project.environmentId,
-      )?.serverConfig?.settings;
       const defaultModelSelection = environmentSettings
         ? resolveProjectSettings(environmentSettings, project.id, project).settings
             .defaultModelSelection

@@ -1166,6 +1166,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "worktreeCleanup",
   "defaultModelSelection",
   "defaultRuntimeMode",
+  "newThreadsStartInPlan",
   "defaultThreadEnvMode",
   "newWorktreesStartFromOrigin",
   "worktreeSubmodules",
@@ -1197,6 +1198,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  newThreadsStartInPlan: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   worktreeSubmodules: ForwardCompatibleOptional(WorktreeSubmodules),
@@ -1307,6 +1309,13 @@ export const ServerSettings = Schema.Struct({
   defaultRuntimeMode: RuntimeMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
+  /**
+   * Whether threads the user starts from the UI open in Plan: the first turn
+   * is sent in plan mode, and after it the thread follows the composer as
+   * usual. Providers without a plan mode ignore it. Threads launched through
+   * the orchestrator MCP tools keep their explicit mode.
+   */
+  newThreadsStartInPlan: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
    * Per-project overrides of the keys in `PROJECT_SCOPED_SERVER_SETTING_KEYS`.
    * The source of truth for project settings; `projectAgentBrowserAccessOverrides`,
@@ -1691,6 +1700,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  newThreadsStartInPlan: Schema.optionalKey(Schema.Boolean),
   /**
    * Per-project entry replacement: each entry replaces that project's whole
    * override set and `null` removes it. Clearing one override means resending

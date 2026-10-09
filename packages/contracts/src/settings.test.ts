@@ -1134,3 +1134,23 @@ describe("ServerSettings.removeAgentCreditsOnMerge", () => {
     ).toBe(true);
   });
 });
+
+describe("ServerSettings.newThreadsStartInPlan", () => {
+  it("is off by default and accepts environment and project values", () => {
+    expect(decodeServerSettings({}).newThreadsStartInPlan).toBe(false);
+    expect(DEFAULT_SERVER_SETTINGS.newThreadsStartInPlan).toBe(false);
+    expect(decodeServerSettingsPatch({ newThreadsStartInPlan: true }).newThreadsStartInPlan).toBe(
+      true,
+    );
+    expect(
+      decodeServerSettings({
+        projectSettingsOverrides: { project: { newThreadsStartInPlan: true } },
+      }).projectSettingsOverrides["project" as ProjectId]?.newThreadsStartInPlan,
+    ).toBe(true);
+    expect(() =>
+      decodeServerSettings({
+        projectSettingsOverrides: { project: { newThreadsStartInPlan: "plan" } },
+      }),
+    ).toThrow();
+  });
+});

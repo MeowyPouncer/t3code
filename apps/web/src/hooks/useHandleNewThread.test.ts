@@ -9,6 +9,7 @@ const testState = vi.hoisted(() => {
     newWorktreesStartFromOrigin: false,
     defaultModelSelection: null,
     defaultRuntimeMode: "full-access" as RuntimeMode,
+    newThreadsStartInPlan: false as boolean,
   };
   let storedDraft: {
     readonly draftId: string;
@@ -58,6 +59,7 @@ const testState = vi.hoisted(() => {
         newWorktreesStartFromOrigin: workspaceDefaults.startFromOrigin,
         defaultModelSelection: null,
         defaultRuntimeMode: "full-access",
+        newThreadsStartInPlan: false,
       };
       router.state.location.href = "/";
       router.navigate.mockClear();
@@ -98,6 +100,8 @@ vi.mock("@t3tools/contracts", () => ({
   DEFAULT_SERVER_SETTINGS: {},
 }));
 vi.mock("@t3tools/shared/projectSettings", () => ({
+  newThreadStartsInPlan: (settings: { newThreadsStartInPlan?: boolean }, origin: string) =>
+    settings.newThreadsStartInPlan === true && origin === "ui",
   // Environment settings pass through; the tests set project fields on the
   // project record, which the hook still honors until the server folds them.
   // With a file argument the env mode resolves like the real chain.
@@ -215,6 +219,43 @@ describe.each([
       );
     },
   );
+
+  it("opens the draft in Plan when the project starts new threads in Plan", async () => {
+    testState.reset(draft);
+    testState.targetSettings.newThreadsStartInPlan = true;
+    const projectRef = { environmentId: "environment-ssh", projectId: "project-remote" } as never;
+    const pendingOpen = useNewThreadHandler()(projectRef);
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      projectRef,
+      opened!.draftId,
+      expect.objectContaining({ interactionMode: "plan" }),
+    );
+    if (draft) {
+      expect(testState.draftStore.setDraftThreadContext).toHaveBeenCalledWith(
+        draft.draftId,
+        expect.objectContaining({ interactionMode: "plan" }),
+      );
+    }
+  });
+
+  it("leaves the interaction mode alone when the project does not start in Plan", async () => {
+    testState.reset(draft);
+    const projectRef = { environmentId: "environment-ssh", projectId: "project-remote" } as never;
+    const pendingOpen = useNewThreadHandler()(projectRef);
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      projectRef,
+      opened!.draftId,
+      expect.not.objectContaining({ interactionMode: expect.anything() }),
+    );
+  });
 
   it("abandons a delayed draft open when the user navigates elsewhere", async () => {
     testState.reset(draft);

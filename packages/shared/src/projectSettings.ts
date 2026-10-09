@@ -188,6 +188,33 @@ function resolveProjectOverrides(
   return { settings: effective as ServerSettings, sources, overrides };
 }
 
+/**
+ * Who started a thread. "New threads start in Plan" is read for `ui` only: a
+ * thread the human opens from the app. Threads an orchestrator launches over
+ * MCP (t3_thread_launch, create_threads, delegate_task) keep the mode they ask
+ * for or inherit from their parent, and the server never calls this for them.
+ */
+export type NewThreadOrigin = "ui" | "orchestrator";
+
+/**
+ * The one switch point for who the setting reaches. To start orchestrator
+ * launches in Plan too, add "orchestrator" here and call
+ * `newThreadStartsInPlan(settings, "orchestrator")` where the MCP launch
+ * resolves its interaction mode (McpToolAccess.startsThreads).
+ */
+const NEW_THREAD_PLAN_ORIGINS: ReadonlySet<NewThreadOrigin> = new Set<NewThreadOrigin>(["ui"]);
+
+/**
+ * Whether a new thread from `origin` opens in Plan. `settings` is the project's
+ * effective settings (`resolveProjectSettings(...).settings`).
+ */
+export function newThreadStartsInPlan(
+  settings: Pick<ServerSettings, "newThreadsStartInPlan">,
+  origin: NewThreadOrigin,
+): boolean {
+  return settings.newThreadsStartInPlan && NEW_THREAD_PLAN_ORIGINS.has(origin);
+}
+
 /** Replace the project's entry, dropping it entirely when nothing is overridden. */
 export function withProjectSettingsOverrides(
   settings: Pick<ServerSettings, "projectSettingsOverrides">,
