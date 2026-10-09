@@ -922,6 +922,7 @@ type ShellThreadRow = {
   readonly pending_secret_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
+  readonly launch_message_sender_thread_id: string | null;
   readonly has_actionable_proposed_plan: number;
   readonly item_count: number;
   readonly runless_item_count: number;
@@ -1327,6 +1328,28 @@ function secretRequestAsPendingInput(
   };
 }
 
+/**
+ * FORK: the thread that launched this one, for the sidebar to nest it under.
+ * Launches record it on the thread. Threads launched before that are read off
+ * their launch message: t3_thread_launch and create_threads send it as the
+ * calling thread. Forks and subagents keep their lineage instead.
+ */
+export function launchedByThreadIdForShell(
+  thread: Pick<
+    OrchestrationV2ThreadProjection["thread"],
+    "id" | "lineage" | "createdBy" | "creationSource" | "launchedByThreadId"
+  >,
+  launchMessageSenderThreadId: ThreadId | null,
+): ThreadId | null {
+  if (thread.lineage.relationshipToParent !== null) return null;
+  const launcher =
+    thread.launchedByThreadId ??
+    (thread.createdBy === "agent" && thread.creationSource === "mcp"
+      ? launchMessageSenderThreadId
+      : null);
+  return launcher === thread.id ? null : launcher;
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1380,6 +1403,18 @@ export function threadShellFromProjection(
         DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
     );
   const latestUserMessage = userMessages[0] ?? null;
+  const launchMessage =
+    projection.messages
+      .filter((message) => message.role === "user")
+      .toSorted(
+        (left, right) =>
+          DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      )[0] ?? null;
+  const launchedByThreadId = launchedByThreadIdForShell(
+    projection.thread,
+    launchMessage?.senderThreadId ?? null,
+  );
   const pendingBackgroundTasks = derivePendingBackgroundWork({
     latestRun,
     providerThreads: projection.providerThreads,
@@ -1412,6 +1447,7 @@ export function threadShellFromProjection(
       : { activeOrderKey: projection.thread.activeOrderKey }),
     lineage: projection.thread.lineage,
     forkedFrom: projection.thread.forkedFrom,
+    ...(launchedByThreadId === null ? {} : { launchedByThreadId }),
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     ...(projection.thread.historyOrigin === undefined
       ? {}
@@ -1540,6 +1576,7 @@ type ShellThreadState = {
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+  readonly launchedByThreadId: ThreadId | null;
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
@@ -1680,6 +1717,9 @@ function shellFromState(input: {
       : { activeOrderKey: input.state.thread.activeOrderKey }),
     lineage: input.state.thread.lineage,
     forkedFrom: input.state.thread.forkedFrom,
+    ...(input.state.launchedByThreadId === null
+      ? {}
+      : { launchedByThreadId: input.state.launchedByThreadId }),
     activeProviderThreadId: input.state.thread.activeProviderThreadId,
     ...(input.state.thread.historyOrigin === undefined
       ? {}
@@ -5027,6 +5067,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at,
+              -- FORK: the launch message names the launcher of threads that
+              -- predate launchedByThreadId (launchedByThreadIdForShell).
+              CASE
+                WHEN json_extract(t.payload_json, '$.creationSource') = 'mcp'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NULL
+                THEN (
+                  SELECT json_extract(message.payload_json, '$.senderThreadId')
+                  FROM orchestration_v2_projection_messages message
+                  WHERE message.thread_id = t.thread_id
+                    AND message.role = 'user'
+                  ORDER BY message.created_at ASC, message.message_id ASC
+                  LIMIT 1
+                )
+                ELSE NULL
+              END AS launch_message_sender_thread_id,
               EXISTS (
                 SELECT 1
                 FROM orchestration_v2_projection_plans plan
@@ -5482,6 +5537,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.latest_user_authored_message_at === null
               ? null
               : DateTime.makeUnsafe(row.latest_user_authored_message_at),
+          launchedByThreadId: launchedByThreadIdForShell(
+            thread,
+            row.launch_message_sender_thread_id === null
+              ? null
+              : ThreadId.make(row.launch_message_sender_thread_id),
+          ),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({

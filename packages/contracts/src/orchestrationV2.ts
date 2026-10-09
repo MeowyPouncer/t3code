@@ -392,6 +392,13 @@ export const OrchestrationV2AppThread = Schema.Struct({
       }),
     ]),
   ),
+  /**
+   * FORK: the thread whose agent opened this one with t3_thread_launch or
+   * create_threads. Not lineage: the launched thread is an ordinary top-level
+   * conversation. Absent for threads a person made and on threads recorded
+   * before the field existed.
+   */
+  launchedByThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   createdAt: Schema.DateTimeUtc,
   updatedAt: Schema.DateTimeUtc,
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -1854,6 +1861,11 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
+  /**
+   * FORK: the thread that launched this one (recorded at launch, or read off
+   * the launch message of older threads); omitted for every other thread.
+   */
+  launchedByThreadId: Schema.optional(ThreadId),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   latestRunId: Schema.NullOr(RunId),
@@ -2624,6 +2636,8 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    /** FORK: the calling thread of t3_thread_launch / create_threads. */
+    launchedByThreadId: Schema.optional(ThreadId),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
