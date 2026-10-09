@@ -12,11 +12,13 @@ import * as Effect from "effect/Effect";
 import type { ServerSettingsService } from "../serverSettings.ts";
 import {
   clampRuntimeModeToHardCap,
+  hardCapFor,
   hardCapRuntimeModeCeiling,
   hardCapWithheldCapabilities,
   providerInstanceHardCapInForce,
   readProviderInstanceHardCap,
   refusesFileChangeResponse,
+  rememberedHardCapsInForce,
   rememberedHardCapsOf,
   resolveHardCappedChildRuntimeMode,
   shouldAutoDeclineRuntimeRequest,
@@ -187,12 +189,25 @@ describe("ProviderInstanceHardCap", () => {
   it("puts remembered caps back on default settings without inventing instances", () => {
     const antigravity = ProviderInstanceId.make("antigravity");
     const custom = ProviderInstanceId.make("agy-work");
+    const codex = ProviderInstanceId.make("codex");
     const remembered = rememberedHardCapsOf({
-      [antigravity]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
-      [custom]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
-      [ProviderInstanceId.make("codex")]: { driver: ProviderDriverKind.make("codex") },
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [antigravity]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
+        [custom]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
+        [codex]: { driver: ProviderDriverKind.make("codex") },
+      },
     });
-    assert.deepEqual(Object.keys(remembered.instances), [antigravity, custom]);
+    // Every instance the registry would build, uncapped ones and the
+    // built-in defaults that no entry names included.
+    assert.deepEqual(remembered.instances[codex], { driver: ProviderDriverKind.make("codex") });
+    for (const driver of Object.keys(DEFAULT_SERVER_SETTINGS.providers)) {
+      assert.isDefined(remembered.instances[driver], driver);
+    }
+    const inForce = rememberedHardCapsInForce(remembered);
+    assert.deepEqual(hardCapFor(inForce, custom), agyCap);
+    assert.deepEqual(hardCapFor(inForce, codex), {});
+    assert.deepEqual(hardCapFor(inForce, ProviderInstanceId.make("unknown")), UNKNOWN_HARD_CAP);
     const restored = withRememberedHardCaps(DEFAULT_SERVER_SETTINGS, remembered);
     // The built-in instance gets the entry the registry would build, with its cap.
     assert.deepEqual(restored.providerInstances[antigravity], {

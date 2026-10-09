@@ -143,17 +143,35 @@ export const UNKNOWN_HARD_CAP: ProviderInstanceHardCap = {
   withheldCapabilities: Object.keys(CAPPED_CAPABILITIES) as Array<ProviderInstanceCappedCapability>,
 };
 
-/** Every instance's hard cap by instance id; an instance without one is absent. */
-export type ProviderInstanceHardCaps = Readonly<Record<string, ProviderInstanceHardCap>>;
+/**
+ * The hard caps in force, looked up by instance id ({@link hardCapFor}).
+ * From valid settings, `byInstance` holds the capped instances and the rest
+ * cap nothing. From remembered caps (settings broken), `byInstance` holds
+ * every instance the last valid settings knew, an uncapped one as `{}`, and
+ * any other instance runs under the strictest cap.
+ */
+export interface ProviderInstanceHardCaps {
+  readonly byInstance: Readonly<Record<string, ProviderInstanceHardCap>>;
+  /** The cap of an instance `byInstance` does not name. */
+  readonly otherwise: ProviderInstanceHardCap | undefined;
+}
 
+export function hardCapFor(
+  caps: ProviderInstanceHardCaps,
+  instanceId: ProviderInstanceId,
+): ProviderInstanceHardCap | undefined {
+  return Object.hasOwn(caps.byInstance, instanceId) ? caps.byInstance[instanceId] : caps.otherwise;
+}
+
+/** The caps valid settings set. */
 export function providerInstanceHardCaps(
   providerInstances: ProviderInstanceConfigMap,
 ): ProviderInstanceHardCaps {
-  const caps: Record<string, ProviderInstanceHardCap> = {};
+  const byInstance: Record<string, ProviderInstanceHardCap> = {};
   for (const [instanceId, instance] of Object.entries(providerInstances)) {
-    if (instance.hardCap !== undefined) caps[instanceId] = instance.hardCap;
+    if (instance.hardCap !== undefined) byInstance[instanceId] = instance.hardCap;
   }
-  return caps;
+  return { byInstance, otherwise: undefined };
 }
 
 /**
@@ -181,7 +199,7 @@ export const providerInstanceHardCapInForce = (
   instanceId: ProviderInstanceId,
 ): Effect.Effect<ProviderInstanceHardCap | undefined> =>
   readProviderInstanceHardCaps(serverSettings).pipe(
-    Effect.map((caps): ProviderInstanceHardCap | undefined => caps[instanceId]),
+    Effect.map((caps) => hardCapFor(caps, instanceId)),
     Effect.catch((cause) =>
       Effect.logWarning("Could not read the provider instances' hard caps; failing closed.", {
         instanceId,
@@ -191,46 +209,65 @@ export const providerInstanceHardCapInForce = (
   );
 
 /**
- * The caps remembered beside the settings file, written whenever settings load
- * or save valid, so a settings file that later fails to decode or read keeps
- * its instances capped instead of falling back to defaults without any.
- * Each entry keeps its driver so a built-in instance that only the defaults
- * describe can carry its cap.
+ * The caps remembered beside the settings file, written before every save
+ * and whenever valid settings load, so a settings file that later fails to
+ * decode or read keeps its instances capped instead of falling back to
+ * defaults without any. It names every instance the settings knew, built-in
+ * default instances included, so an uncapped one stays uncapped and an
+ * unknown one is capped strictest. Each entry keeps its driver so a built-in
+ * instance that only the defaults describe can carry its cap.
  */
 export const RememberedHardCaps = Schema.Struct({
   instances: Schema.Record(
     Schema.String,
-    Schema.Struct({ driver: ProviderDriverKind, hardCap: ProviderInstanceHardCap }),
+    Schema.Struct({
+      driver: ProviderDriverKind,
+      hardCap: Schema.optionalKey(ProviderInstanceHardCap),
+    }),
   ),
 });
 export type RememberedHardCaps = typeof RememberedHardCaps.Type;
 
-export function rememberedHardCapsOf(
-  providerInstances: ProviderInstanceConfigMap,
-): RememberedHardCaps {
+/**
+ * Every instance the registry builds from these settings: each entry, and a
+ * built-in driver's default instance (id = driver) from `providers.<driver>`
+ * when no entry names it.
+ */
+export function rememberedHardCapsOf(settings: ServerSettings): RememberedHardCaps {
   const instances: Record<string, RememberedHardCaps["instances"][string]> = {};
-  for (const [instanceId, instance] of Object.entries(providerInstances)) {
-    if (instance.hardCap !== undefined) {
-      instances[instanceId] = { driver: instance.driver, hardCap: instance.hardCap };
+  for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+    instances[instanceId] =
+      instance.hardCap === undefined
+        ? { driver: instance.driver }
+        : { driver: instance.driver, hardCap: instance.hardCap };
+  }
+  for (const driver of Object.keys(settings.providers)) {
+    if (!Object.hasOwn(instances, driver)) {
+      instances[driver] = { driver: ProviderDriverKind.make(driver) };
     }
   }
   return { instances };
 }
 
-export function rememberedHardCapsMap(remembered: RememberedHardCaps): ProviderInstanceHardCaps {
-  const caps: Record<string, ProviderInstanceHardCap> = {};
+/** The caps in force from remembered ones: by id, the strictest for the rest. */
+export function rememberedHardCapsInForce(
+  remembered: RememberedHardCaps,
+): ProviderInstanceHardCaps {
+  const byInstance: Record<string, ProviderInstanceHardCap> = {};
   for (const [instanceId, entry] of Object.entries(remembered.instances)) {
-    caps[instanceId] = entry.hardCap;
+    byInstance[instanceId] = entry.hardCap ?? {};
   }
-  return caps;
+  return { byInstance, otherwise: UNKNOWN_HARD_CAP };
 }
 
 /**
- * Puts remembered caps back on settings that came from defaults. An instance
+ * Puts remembered caps back on settings that came from defaults, so the
+ * settings page shows them and a save from this state keeps them. An instance
  * the settings list gets its cap; a built-in driver's default instance, which
  * the registry builds from `providers.<driver>` when no entry names it, gets
  * the same entry the registry would build, with the cap. Other remembered
- * instances do not exist under these settings and are left out.
+ * instances are not added back; their caps still hold by id through
+ * {@link rememberedHardCapsInForce}.
  */
 export function withRememberedHardCaps(
   settings: ServerSettings,
@@ -240,6 +277,7 @@ export function withRememberedHardCaps(
     ...settings.providerInstances,
   };
   for (const [instanceId, { driver, hardCap }] of Object.entries(remembered.instances)) {
+    if (hardCap === undefined) continue;
     const existing = providerInstances[instanceId];
     if (existing !== undefined) {
       providerInstances[instanceId] = { ...existing, hardCap };

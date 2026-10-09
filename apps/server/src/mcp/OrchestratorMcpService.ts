@@ -83,6 +83,7 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import {
+  hardCapFor,
   readProviderInstanceHardCaps,
   resolveHardCappedChildRuntimeMode,
 } from "../provider/ProviderInstanceHardCap.ts";
@@ -839,7 +840,7 @@ const make = Effect.gen(function* () {
       const outcome = resolveHardCappedChildRuntimeMode({
         resolved: input.resolved,
         explicit: input.requested !== undefined && input.requested !== "inherit",
-        cap: caps[input.instanceId],
+        cap: hardCapFor(caps, input.instanceId),
       });
       return outcome._tag === "allowed"
         ? outcome.runtimeMode
