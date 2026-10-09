@@ -9,6 +9,7 @@ import { createModelSelection } from "./model.ts";
 import {
   clearProjectSettingsOverrides,
   hasProjectSettingsOverrides,
+  newThreadStartsInPlan,
   resolveProjectFileBackedSetting,
   resolveProjectSettings,
   resolveWorktreeCleanup,
@@ -389,4 +390,39 @@ it("inherits branch naming defaults and applies project overrides independently"
     },
   });
   expect(resolveProjectSettings(cleared, projectId).settings.branchNamingMode).toBe("static");
+});
+
+describe("newThreadsStartInPlan", () => {
+  it("is off by default and applies per project over the environment value", () => {
+    expect(DEFAULT_SERVER_SETTINGS.newThreadsStartInPlan).toBe(false);
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      projectSettingsOverrides: { [projectId]: { newThreadsStartInPlan: true } },
+    });
+    const resolved = resolveProjectSettings(settings, projectId);
+    expect(resolved.settings.newThreadsStartInPlan).toBe(true);
+    expect(resolved.sources.newThreadsStartInPlan).toBe("project");
+    expect(resolveProjectSettings(settings, otherProjectId).settings.newThreadsStartInPlan).toBe(
+      false,
+    );
+  });
+
+  it("lets a project turn off an environment-wide default", () => {
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      newThreadsStartInPlan: true,
+      projectSettingsOverrides: { [projectId]: { newThreadsStartInPlan: false } },
+    });
+    expect(resolveProjectSettings(settings, projectId).settings.newThreadsStartInPlan).toBe(false);
+    expect(resolveProjectSettings(settings, otherProjectId).settings.newThreadsStartInPlan).toBe(
+      true,
+    );
+  });
+
+  it("reaches threads the human starts from the UI and not orchestrator launches", () => {
+    const on = { newThreadsStartInPlan: true };
+    const off = { newThreadsStartInPlan: false };
+    expect(newThreadStartsInPlan(on, "ui")).toBe(true);
+    expect(newThreadStartsInPlan(on, "orchestrator")).toBe(false);
+    expect(newThreadStartsInPlan(off, "ui")).toBe(false);
+    expect(newThreadStartsInPlan(off, "orchestrator")).toBe(false);
+  });
 });

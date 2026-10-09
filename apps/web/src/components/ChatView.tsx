@@ -140,7 +140,7 @@ import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { newThreadStartsInPlan, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import { truncate } from "@t3tools/shared/String";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
@@ -165,6 +165,10 @@ import {
 import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
+import {
+  resolveNewThreadInteractionMode,
+  resolvePlanModeAvailable,
+} from "../lib/newThreadPlan.logic";
 import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import { useShallow } from "zustand/react/shallow";
@@ -2489,6 +2493,11 @@ export default function ChatView(props: ChatViewProps) {
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
     [activeProject, settings],
   );
+  // Legacy plan mode, or a project whose new threads start in Plan.
+  const planModeAvailable = resolvePlanModeAvailable({
+    legacyPlanModeEnabled: settings.planModeEnabled,
+    projectStartsInPlan: activeProjectSettings.settings.newThreadsStartInPlan,
+  });
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
     [activeProject, settings],
@@ -2896,12 +2905,20 @@ export default function ChatView(props: ChatViewProps) {
 
       const nextDraftId = newDraftId();
       const nextThreadId = newThreadId();
+      const nextProjectSettings = resolveProjectSettings(
+        settings,
+        activeProject.id,
+        activeProject,
+      ).settings;
       setLogicalProjectDraftThreadId(logicalProjectKey, activeProjectRef, nextDraftId, {
         threadId: nextThreadId,
         createdAt: new Date().toISOString(),
-        runtimeMode: resolveProjectSettings(settings, activeProject.id, activeProject).settings
-          .defaultRuntimeMode,
-        interactionMode: DEFAULT_INTERACTION_MODE,
+        runtimeMode: nextProjectSettings.defaultRuntimeMode,
+        interactionMode:
+          resolveNewThreadInteractionMode({
+            startsInPlan: newThreadStartsInPlan(nextProjectSettings, "ui"),
+            carried: null,
+          }) ?? DEFAULT_INTERACTION_MODE,
         ...input,
       });
       await navigate({
@@ -3285,7 +3302,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: planModeAvailable,
     provider: activeProviderStatus,
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
@@ -9301,7 +9318,7 @@ export default function ChatView(props: ChatViewProps) {
         models: provider.models,
         modelOptions: selection.options,
         promptInjectionState: getComposerPromptInjectionState(messageTextForSend),
-        planModeEnabled: settings.planModeEnabled,
+        planModeEnabled: planModeAvailable,
       });
       const text = formatOutgoingPrompt({
         provider: provider.driverKind,
@@ -9319,7 +9336,7 @@ export default function ChatView(props: ChatViewProps) {
         ),
         text,
         interactionMode: resolveComposerInteractionMode({
-          planModeEnabled: settings.planModeEnabled,
+          planModeEnabled: planModeAvailable,
           provider: provider.snapshot,
           interactionMode: sendInteractionMode,
         }).interactionMode,
@@ -11700,6 +11717,7 @@ export default function ChatView(props: ChatViewProps) {
                               compactDisabledReason={compactDisabledReason}
                               resolvedTheme={resolvedTheme}
                               settings={settings}
+                              planModeAvailable={planModeAvailable}
                               keybindings={keybindings}
                               terminalOpen={Boolean(terminalUiState.terminalOpen)}
                               gitCwd={gitCwd}

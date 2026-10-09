@@ -1603,6 +1603,8 @@ export interface ChatComposerProps {
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
+  /** Plan controls are live: legacy plan mode, or a project that starts new threads in Plan. */
+  planModeAvailable: boolean;
   keybindings: ResolvedKeybindingsConfig;
   terminalOpen: boolean;
   gitCwd: string | null;
@@ -1751,6 +1753,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     compactDisabledReason,
     resolvedTheme,
     settings,
+    planModeAvailable,
     keybindings,
     terminalOpen,
     gitCwd,
@@ -2307,7 +2310,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         models: selectedProviderModels,
         promptInjectionState: composerPromptInjectionState,
         modelOptions: composerModelOptions?.[selectedInstanceId],
-        planModeEnabled: settings.planModeEnabled,
+        planModeEnabled: planModeAvailable,
       }),
     [
       composerModelOptions,
@@ -2316,14 +2319,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedModel,
       selectedProvider,
       selectedProviderModels,
-      settings.planModeEnabled,
+      planModeAvailable,
     ],
   );
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
   const { enabled: planModeUiEnabled, interactionMode } = resolveComposerInteractionMode({
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: planModeAvailable,
     provider: selectedProviderStatus,
     interactionMode: requestedInteractionMode,
   });
@@ -2944,7 +2947,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportedModelSelection,
     prompt,
     onPromptChange: setPromptFromTraits,
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: planModeAvailable,
   });
   const providerTraitsPickerInput = {
     provider: selectedProvider,
@@ -2957,7 +2960,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportedModelSelection,
     prompt,
     onPromptChange: setPromptFromTraits,
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: planModeAvailable,
     isComposerOwned: true,
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
   const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);

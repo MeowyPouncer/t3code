@@ -22,13 +22,14 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { newThreadStartsInPlan, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { readProjects, readThreadShell, useProjects, useThreadShell } from "../state/entities";
 import {
   hasExplicitComposerModelSelection,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
+import { resolveNewThreadInteractionMode } from "../lib/newThreadPlan.logic";
 import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
@@ -137,6 +138,9 @@ export function useNewThreadHandler() {
       );
       const projectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
       const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
+      // "New threads start in Plan": a thread opened from the UI. Orchestrator
+      // launches never come through here (see newThreadStartsInPlan).
+      const startsInPlan = newThreadStartsInPlan(projectSettings.settings, "ui");
       const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
         resolveNewThreadModelSelectionOverride({
           projectDefaultSelection: projectDefaultModelSelection ?? null,
@@ -203,6 +207,12 @@ export function useNewThreadHandler() {
           const isDraftAlreadyOpen =
             currentRouteTarget?.kind === "draft" &&
             currentRouteTarget.draftId === emptyStoredDraftThread.draftId;
+          // A draft the user already has open keeps the mode they see; one
+          // being restarted follows the project's start mode.
+          const reusedInteractionMode = resolveNewThreadInteractionMode({
+            startsInPlan: startsInPlan && !isDraftAlreadyOpen,
+            carried: carryInteractionMode,
+          });
           const hasExplicitWorkspaceOption =
             hasBranchOption ||
             hasWorktreePathOption ||
@@ -263,7 +273,7 @@ export function useNewThreadHandler() {
             setDraftThreadContext(emptyStoredDraftThread.draftId, {
               ...workspaceContext,
               ...(!isDraftAlreadyOpen ? { runtimeMode: defaultRuntimeMode } : {}),
-              ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+              ...(reusedInteractionMode ? { interactionMode: reusedInteractionMode } : {}),
             });
           }
           // Model intent: an explicit human pick always stands. Seeds and
@@ -300,7 +310,7 @@ export function useNewThreadHandler() {
               threadId: emptyStoredDraftThread.threadId,
               ...workspaceContext,
               ...(!isDraftAlreadyOpen ? { runtimeMode: defaultRuntimeMode } : {}),
-              ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+              ...(reusedInteractionMode ? { interactionMode: reusedInteractionMode } : {}),
             },
           );
           const opened = {
@@ -359,6 +369,10 @@ export function useNewThreadHandler() {
       const draftId = newDraftId();
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
+      const newInteractionMode = resolveNewThreadInteractionMode({
+        startsInPlan,
+        carried: carryInteractionMode,
+      });
       return (async () => {
         const initialEnvMode = options?.envMode ?? (await resolveDefaultEnvMode());
         if (routeChangedSinceRequest()) {
@@ -413,7 +427,7 @@ export function useNewThreadHandler() {
               newWorktreesStartFromOrigin: projectSettings.settings.newWorktreesStartFromOrigin,
             }),
           runtimeMode: defaultRuntimeMode,
-          ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
+          ...(newInteractionMode ? { interactionMode: newInteractionMode } : {}),
         });
         applyStickyState(draftId);
         const modelSelectionOverride = resolveModelSelectionOverride(draftId);
