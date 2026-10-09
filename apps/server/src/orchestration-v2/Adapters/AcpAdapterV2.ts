@@ -5591,9 +5591,25 @@ export function makeAcpAdapterV2(
                 Effect.flatMap(({ policy }) => clientFileSystem.readTextFile(request, policy.cwd)),
               ),
             );
+            // A hard cap that declines file changes refuses the writes T3
+            // makes for the agent too: they need no approval to decline.
             yield* targetRuntime.handleWriteTextFile((request) =>
               clientPolicyContext.pipe(
-                Effect.flatMap(({ policy }) => clientFileSystem.writeTextFile(request, policy.cwd)),
+                Effect.flatMap(({ policy }) =>
+                  policy.declineFileChanges === true
+                    ? Effect.logWarning("ACP client file write refused by the instance's limits", {
+                        path: request.path,
+                      }).pipe(
+                        Effect.andThen(
+                          Effect.fail(
+                            EffectAcpErrors.AcpRequestError.internalError(
+                              "This T3 provider instance declines file changes, so fs/write_text_file is refused.",
+                            ),
+                          ),
+                        ),
+                      )
+                    : clientFileSystem.writeTextFile(request, policy.cwd),
+                ),
               ),
             );
           }
@@ -6218,6 +6234,41 @@ export function makeAcpAdapterV2(
           return activated;
         });
 
+        /**
+         * Puts the session in the native mode its turn's policy maps to,
+         * every turn: the policy (a hard cap lowered since the session
+         * started, a Supervised thread) is reconfigured without a model or
+         * Plan change, and the agent may have moved itself. Plan keeps the
+         * agent's plan mode where T3 selected one.
+         */
+        const assertPolicySessionMode = Effect.fnUntraced(function* (
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+        ) {
+          const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
+          if (policyMode === undefined) return;
+          // An agent whose mode is a config option reports it there; the mode
+          // state is not updated when that option is set directly.
+          const modeOption = (yield* runtime.getConfigOptions).find(
+            (option) => option.category === "mode" && option.type === "select",
+          );
+          const currentModeId =
+            modeOption?.type === "select"
+              ? modeOption.currentValue
+              : (yield* runtime.getModeState)?.currentModeId;
+          if (currentModeId === policyMode) return;
+          if (
+            runtimePolicy.interactionMode === "plan" &&
+            (currentModeId === "plan" || currentModeId === "architect")
+          ) {
+            return;
+          }
+          if (modeOption !== undefined) {
+            yield* runtime.setConfigOption(modeOption.id, policyMode);
+          } else {
+            yield* runtime.setMode(policyMode);
+          }
+        });
+
         const configureSession = Effect.fnUntraced(function* (
           startResult: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           modelSelection: ModelSelection,
@@ -6276,9 +6327,18 @@ export function makeAcpAdapterV2(
           const modeSelection = hasNativeConfigWithSyntheticModeId
             ? undefined
             : optionSelections.find((selection) => selection.id === ACP_SESSION_MODE_OPTION_ID);
-          const configSelections = hasNativeConfigWithSyntheticModeId
-            ? optionSelections
-            : optionSelections.filter((selection) => selection.id !== ACP_SESSION_MODE_OPTION_ID);
+          // A flavor that maps the runtime policy to a native mode (Antigravity's
+          // permission modes) runs in that mode only: a stored selection of the
+          // agent's mode option cannot widen what the policy allows.
+          const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
+          const isPolicyModeOption = (id: string) =>
+            policyMode !== undefined &&
+            configOptions.some((option) => option.id === id && option.category === "mode");
+          const configSelections = (
+            hasNativeConfigWithSyntheticModeId
+              ? optionSelections
+              : optionSelections.filter((selection) => selection.id !== ACP_SESSION_MODE_OPTION_ID)
+          ).filter((selection) => !isPolicyModeOption(selection.id));
           // Probe-time descriptors are a per-model union, so a stored
           // selection can reference an option the live session does not
           // expose (Kilo advertises per-model "effort" descriptors while its
@@ -6329,7 +6389,6 @@ export function makeAcpAdapterV2(
               }),
             );
           }
-          const policyMode = flavor.sessionModeForPolicy?.(runtimePolicy);
           if (policyMode !== undefined) {
             yield* runtime.setMode(policyMode);
           }
@@ -6338,6 +6397,7 @@ export function makeAcpAdapterV2(
           // agent no longer advertises it: mode sets are volatile across agent
           // versions and a stale persisted mode should not block the turn.
           if (
+            policyMode === undefined &&
             modeSelection !== undefined &&
             typeof modeSelection.value === "string" &&
             modeState?.availableModes.some((mode) => mode.id === modeSelection.value) === true &&
@@ -6389,7 +6449,10 @@ export function makeAcpAdapterV2(
           } else {
             const nativeBuild = nativeBuildConfigurationBySessionId.get(startResult.sessionId);
             if (nativeBuild !== undefined) {
+              // The mode saved on entering Plan was the policy's of that time;
+              // the policy now in force set its own mode above.
               if (
+                policyMode === undefined &&
                 nativeBuild.modeId !== undefined &&
                 effectiveModeState?.currentModeId !== nativeBuild.modeId &&
                 effectiveModeState?.availableModes.some(
@@ -6403,6 +6466,7 @@ export function makeAcpAdapterV2(
                   (candidate) => candidate.type === "select" && candidate.id === saved.id,
                 );
                 if (option === undefined || option.type !== "select") continue;
+                if (policyMode !== undefined && option.category === "mode") continue;
                 const choices = option.options.flatMap((entry) =>
                   "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
                 );
@@ -6868,6 +6932,7 @@ export function makeAcpAdapterV2(
                 yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
               }
             }
+            yield* assertPolicySessionMode(turnInput.runtimePolicy);
             yield* Ref.set(lastTurnRoute, {
               threadId: turnInput.threadId,
               providerThreadId: turnInput.providerThread.id,

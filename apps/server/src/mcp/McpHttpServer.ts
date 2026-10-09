@@ -20,6 +20,9 @@ import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { providerInstanceHardCapInForce } from "../provider/ProviderInstanceHardCap.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { scopeWithinHardCap } from "./McpCapabilityTrim.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -147,6 +150,7 @@ const looksLikeProviderToken = (token: string) => token.length > 0 && !token.inc
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const authorization = request.headers.authorization;
@@ -154,11 +158,21 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       authorization?.startsWith("Bearer ") === true
         ? authorization.slice("Bearer ".length).trim()
         : "";
+    const providerScope = yield* registry.resolve(token);
     const invocation =
-      (yield* registry.resolve(token)) ??
-      (Option.isSome(clients) && token.length > 0
-        ? yield* clients.value.authenticate(request)
-        : undefined);
+      providerScope === undefined
+        ? Option.isSome(clients) && token.length > 0
+          ? yield* clients.value.authenticate(request)
+          : undefined
+        : // A provider session's credential carries the instance's hard cap
+          // of when it was minted; the cap in force applies to each request.
+          scopeWithinHardCap(
+            providerScope,
+            yield* providerInstanceHardCapInForce(
+              serverSettings,
+              providerScope.thread.providerInstanceId,
+            ),
+          );
     if (!invocation) {
       // Without this the only symptom of a dead credential is the agent
       // quietly losing the whole `t3-code` toolkit for the rest of its

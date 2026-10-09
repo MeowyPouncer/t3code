@@ -62,12 +62,22 @@ import {
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import {
+  type ProviderInstanceHardCaps,
+  providerInstanceHardCaps,
+  RememberedHardCaps,
+  rememberedHardCapsInForce,
+  rememberedHardCapsOf,
+  withRememberedHardCaps,
+} from "./provider/ProviderInstanceHardCap.ts";
 
 export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const encodeRememberedHardCapsJson = Schema.encodeEffect(fromJsonStringPretty(RememberedHardCaps));
+const decodeRememberedHardCapsJson = Schema.decodeEffect(fromJsonStringPretty(RememberedHardCaps));
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -263,6 +273,15 @@ export class ServerSettingsService extends Context.Service<
     /** Read the current settings. */
     readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /**
+     * The provider instances' hard caps in force: from the settings when they
+     * are valid, else the caps remembered from the last valid ones. Fails when
+     * neither is known, so callers fail closed. Optional so hand-built stubs
+     * need not supply it; `readProviderInstanceHardCaps` falls back to
+     * `getSettings` for them.
+     */
+    readonly getHardCaps?: Effect.Effect<ProviderInstanceHardCaps, ServerSettingsError>;
+
     /** Patch settings and persist. Returns the new full settings object. */
     readonly updateSettings: (
       patch: ServerSettingsPatch,
@@ -346,6 +365,9 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
         ),
       withSettingsSnapshot: (use) =>
         writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
+      getHardCaps: getSettings.pipe(
+        Effect.map((settings) => providerInstanceHardCaps(settings.providerInstances)),
+      ),
       streamChanges: Stream.empty,
       subscribeChanges: Effect.succeed(Stream.empty),
     } satisfies ServerSettingsService["Service"];
@@ -646,6 +668,146 @@ const make = Effect.gen(function* () {
   const emitChange = (settings: ServerSettings) =>
     PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
 
+  // The provider instances' hard caps of the last valid settings, kept
+  // beside them so a file that later fails to decode or read cannot drop the
+  // caps by falling back to defaults (see `withLastValidHardCaps`).
+  const hardCapsPath = pathService.join(
+    pathService.dirname(settingsPath),
+    "provider-hard-caps.json",
+  );
+  // Set when the remembered caps may be older than the settings (a write
+  // failed): this process does not use them until a write succeeds.
+  const rememberedHardCapsStale = yield* Ref.make(false);
+  // The caps in force for a cached snapshot from a missing or invalid file:
+  // the remembered ones by instance id, or unknown (undefined) when nothing
+  // is remembered. `getHardCaps` answers with them for exactly that snapshot.
+  const fallbackHardCaps = yield* Ref.make<
+    | { readonly settings: ServerSettings; readonly caps: ProviderInstanceHardCaps | undefined }
+    | undefined
+  >(undefined);
+
+  const readRememberedHardCapsContents = Effect.gen(function* () {
+    if (!(yield* fs.exists(hardCapsPath))) return Option.none<string>();
+    return Option.some(yield* fs.readFileString(hardCapsPath));
+  });
+
+  const readRememberedHardCaps: Effect.Effect<Option.Option<RememberedHardCaps>> = Effect.gen(
+    function* () {
+      if (yield* Ref.get(rememberedHardCapsStale)) return Option.none();
+      const contents = yield* readRememberedHardCapsContents;
+      if (Option.isNone(contents)) return Option.none();
+      return Option.some(yield* decodeRememberedHardCapsJson(contents.value));
+    },
+  ).pipe(
+    Effect.catch((cause) =>
+      Effect.logError("failed to read the remembered provider hard caps", {
+        path: hardCapsPath,
+        cause,
+      }).pipe(Effect.as(Option.none())),
+    ),
+  );
+
+  const rememberedHardCapsContentsOf = (settings: ServerSettings) =>
+    encodeRememberedHardCapsJson(rememberedHardCapsOf(settings)).pipe(
+      Effect.map((json) => `${json}\n`),
+    );
+
+  /** Replaces the remembered caps atomically: a temp file, then a rename. */
+  const writeRememberedHardCapsContents = (contents: string) =>
+    writeFileStringAtomically({ filePath: hardCapsPath, contents }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, pathService),
+      Effect.andThen(Ref.set(rememberedHardCapsStale, false)),
+    );
+
+  const writeRememberedHardCaps = (settings: ServerSettings) =>
+    rememberedHardCapsContentsOf(settings).pipe(
+      Effect.flatMap(writeRememberedHardCapsContents),
+      Effect.mapError(
+        (cause) =>
+          new ServerSettingsError({ settingsPath: hardCapsPath, operation: "write-file", cause }),
+      ),
+    );
+
+  /**
+   * Remembered caps that may be older than the settings must not apply
+   * later: they are removed, and this process ignores them until a write
+   * succeeds.
+   */
+  const discardRememberedHardCaps = (cause: unknown) =>
+    Effect.gen(function* () {
+      yield* Ref.set(rememberedHardCapsStale, true);
+      yield* Effect.logError(
+        "failed to remember the provider hard caps; discarding the remembered ones, which may be older than the settings",
+        { path: hardCapsPath, cause },
+      );
+      yield* fs
+        .remove(hardCapsPath, { force: true })
+        .pipe(
+          Effect.catch((removeCause) =>
+            Effect.logError(
+              "failed to discard the remembered provider hard caps; this server ignores them, a restart with broken settings would not",
+              { path: hardCapsPath, cause: removeCause },
+            ),
+          ),
+        );
+    });
+
+  /** After a valid load, the remembered caps follow the settings. */
+  const rememberLoadedHardCaps = (settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const contents = yield* rememberedHardCapsContentsOf(settings);
+      const current = yield* readRememberedHardCapsContents;
+      if (
+        Option.isSome(current) &&
+        current.value === contents &&
+        !(yield* Ref.get(rememberedHardCapsStale))
+      ) {
+        return;
+      }
+      yield* writeRememberedHardCapsContents(contents);
+    }).pipe(Effect.catch(discardRememberedHardCaps));
+
+  /** Puts back what a failed save replaced, or discards it. */
+  const restoreRememberedHardCaps = (previous: Option.Option<string>) =>
+    Option.match(previous, {
+      onNone: () => fs.remove(hardCapsPath, { force: true }),
+      onSome: writeRememberedHardCapsContents,
+    }).pipe(Effect.catch(discardRememberedHardCaps));
+
+  /**
+   * Settings from a missing or invalid file are defaults, which cap nothing.
+   * The remembered caps hold instead, by instance id, logged: an instance the
+   * last valid settings named keeps its cap (none for an uncapped one), any
+   * other runs under the strictest cap. An invalid file with nothing
+   * remembered leaves the caps unknown, so every instance fails closed until
+   * the file is fixed; a missing one with nothing remembered is a fresh start.
+   */
+  const withLastValidHardCaps = (settings: ServerSettings, file: "missing" | "invalid") =>
+    Effect.gen(function* () {
+      const remembered = yield* readRememberedHardCaps;
+      if (Option.isSome(remembered)) {
+        yield* Effect.logWarning(
+          `settings.json is ${file}; keeping the provider hard caps of the last valid settings`,
+          { path: settingsPath, hardCapsPath },
+        );
+        const restored = withRememberedHardCaps(settings, remembered.value);
+        yield* Ref.set(fallbackHardCaps, {
+          settings: restored,
+          caps: rememberedHardCapsInForce(remembered.value),
+        });
+        return restored;
+      }
+      if (file === "invalid") {
+        yield* Effect.logError(
+          "settings.json is invalid and no provider hard caps are remembered; every provider instance runs under the strictest cap until it is fixed",
+          { path: settingsPath, hardCapsPath },
+        );
+        yield* Ref.set(fallbackHardCaps, { settings, caps: undefined });
+      }
+      return settings;
+    });
+
   const readConfigExists = fs.exists(settingsPath).pipe(
     Effect.mapError(
       (cause) =>
@@ -744,8 +906,9 @@ const make = Effect.gen(function* () {
     // A file that failed to decode must stay on disk for the user to repair;
     // the fold below only writes when it started from the file's real contents.
     let settingsFileTrusted = true;
+    const settingsFileExists = yield* readConfigExists;
 
-    if (yield* readConfigExists) {
+    if (settingsFileExists) {
       const raw = yield* readRawConfig;
       const decoded = decodeServerSettingsJsonExit(raw);
       const persistedSettings = decodePersistedOptionalProviderSettingsJsonExit(raw);
@@ -827,7 +990,11 @@ const make = Effect.gen(function* () {
     if (migrated !== loaded) {
       yield* writeSettingsAtomically(migrated);
     }
-    return migrated;
+    if (settingsFileExists && settingsFileTrusted) {
+      yield* rememberLoadedHardCaps(migrated);
+      return migrated;
+    }
+    return yield* withLastValidHardCaps(migrated, settingsFileExists ? "invalid" : "missing");
   });
 
   // A failed read is not kept: the next read retries instead of replaying the failure.
@@ -840,6 +1007,62 @@ const make = Effect.gen(function* () {
   );
 
   const getSettingsFromCache = Cache.get(settingsCache, cacheKey);
+
+  /** The caps a valid settings file sets, read from it; none when it is missing or invalid. */
+  const readHardCapsFromSettingsFile: Effect.Effect<Option.Option<ProviderInstanceHardCaps>> =
+    Effect.gen(function* () {
+      if (!(yield* fs.exists(settingsPath))) return Option.none<ProviderInstanceHardCaps>();
+      const decoded = decodeServerSettingsJsonExit(yield* fs.readFileString(settingsPath));
+      return decoded._tag === "Success"
+        ? Option.some(providerInstanceHardCaps(decoded.value.providerInstances))
+        : Option.none<ProviderInstanceHardCaps>();
+    }).pipe(Effect.orElseSucceed(() => Option.none<ProviderInstanceHardCaps>()));
+
+  const getHardCaps: Effect.Effect<ProviderInstanceHardCaps, ServerSettingsError> =
+    getSettingsFromCache.pipe(
+      Effect.flatMap((settings) =>
+        Ref.get(fallbackHardCaps).pipe(
+          Effect.flatMap((fallback) => {
+            if (fallback === undefined || fallback.settings !== settings) {
+              return Effect.succeed(providerInstanceHardCaps(settings.providerInstances));
+            }
+            return fallback.caps === undefined
+              ? Effect.fail(
+                  new ServerSettingsError({
+                    settingsPath: hardCapsPath,
+                    operation: "read-file",
+                    cause: "settings.json is invalid and no provider hard caps are remembered",
+                  }),
+                )
+              : Effect.succeed(fallback.caps);
+          }),
+        ),
+      ),
+      // Settings that cannot be loaded: a valid file's own caps first, so
+      // remembered caps never win over valid settings; then the remembered.
+      Effect.catch((error) =>
+        readHardCapsFromSettingsFile.pipe(
+          Effect.flatMap(
+            Option.match({
+              onSome: (caps) => Effect.succeed(caps),
+              onNone: () =>
+                readRememberedHardCaps.pipe(
+                  Effect.flatMap(
+                    Option.match({
+                      onNone: () => Effect.fail(error),
+                      onSome: (remembered) =>
+                        Effect.logWarning(
+                          "settings could not be read; applying the provider hard caps of the last valid settings",
+                          { path: settingsPath, hardCapsPath, operation: error.operation },
+                        ).pipe(Effect.as(rememberedHardCapsInForce(remembered))),
+                    }),
+                  ),
+                ),
+            }),
+          ),
+        ),
+      ),
+    );
 
   const materializeProviderEnvironmentSecrets = (
     settings: ServerSettings,
@@ -1233,9 +1456,25 @@ const make = Effect.gen(function* () {
               yield* rollbackSecretChanges;
               return yield* Effect.failCause(materializedExit.cause);
             }
+            // The caps are remembered before the settings that set them are
+            // written, so the remembered ones are never older than the file;
+            // a save whose caps cannot be remembered is not made.
+            const previousHardCaps = yield* readRememberedHardCapsContents.pipe(
+              Effect.orElseSucceed(() => Option.none<string>()),
+            );
+            const hardCapsExit = yield* Effect.exit(writeRememberedHardCaps(next));
+            if (Exit.isFailure(hardCapsExit)) {
+              yield* Effect.logError(
+                "failed to remember the provider hard caps; the settings were not saved",
+                { path: hardCapsPath },
+              );
+              yield* rollbackSecretChanges;
+              return yield* Effect.failCause(hardCapsExit.cause);
+            }
             const writeExit = yield* Effect.exit(writeSettingsAtomically(next));
             if (Exit.isFailure(writeExit)) {
               yield* rollbackSecretChanges;
+              yield* restoreRememberedHardCaps(previousHardCaps);
               return yield* Effect.failCause(writeExit.cause);
             }
             return materializedExit.value;
@@ -1369,6 +1608,7 @@ const make = Effect.gen(function* () {
       Effect.flatMap(materializeProviderEnvironmentSecrets),
       Effect.map(resolveTextGenerationProvider),
     ),
+    getHardCaps,
     updateSettings: (patch) =>
       updateAndPersistSettings((current) =>
         Effect.succeed(applyServerSettingsPatch(current, patch)),

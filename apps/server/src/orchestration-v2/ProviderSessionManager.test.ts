@@ -10,10 +10,12 @@ import {
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type Project,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -1896,6 +1898,187 @@ it.effect("ProviderSessionManagerV2 fails browser access closed for a missing th
     assert.isDefined(captured);
     assert.equal(captured?.browserToolsAvailable, false);
   }),
+);
+
+/**
+ * Opens a session for a thread and returns the capabilities its MCP
+ * credential resolves to. With `delegatedTaskPrompt`, the thread is a
+ * delegate_task child of a person's thread, with its task record on the parent.
+ */
+function runCapabilityTrimScenario(input: {
+  readonly settings: Parameters<typeof ServerSettings.layerTest>[0];
+  readonly delegatedTaskPrompt?: string;
+  readonly createdBy?: OrchestrationV2AppThread["createdBy"];
+  /** Replaces the settings built from `settings`. */
+  readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
+}) {
+  return Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const mcpConfigs = yield* Ref.make<
+      ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+    >([]);
+    const parentThreadId = ThreadId.make("thread-provider-session-manager-trim-parent");
+    const threadId = ThreadId.make("thread-provider-session-manager-trim-child");
+    return yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const now = yield* DateTime.now;
+      const parent = yield* makeThreadCreatedEvent({ idAllocator, threadId: parentThreadId, now });
+      const child = yield* makeThreadCreatedEvent({
+        idAllocator,
+        threadId,
+        now,
+        projectId: parent.payload.projectId,
+      });
+      const delegated = input.delegatedTaskPrompt !== undefined;
+      const events: Array<OrchestrationV2DomainEvent> = [
+        parent,
+        {
+          ...child,
+          payload: {
+            ...child.payload,
+            createdBy: delegated ? "agent" : (input.createdBy ?? "user"),
+            creationSource: delegated ? "mcp" : "web",
+            lineage: delegated
+              ? { parentThreadId, relationshipToParent: "subagent", rootThreadId: parentThreadId }
+              : child.payload.lineage,
+          },
+        },
+      ];
+      if (input.delegatedTaskPrompt !== undefined) {
+        const taskId = NodeId.make("node-provider-session-manager-trim-task");
+        events.push({
+          id: yield* idAllocator.allocate.event({ threadId: parentThreadId }),
+          type: "subagent.updated",
+          threadId: parentThreadId,
+          occurredAt: now,
+          payload: {
+            id: taskId,
+            threadId: parentThreadId,
+            runId: null,
+            parentNodeId: taskId,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            providerThreadId: null,
+            childThreadId: threadId,
+            nativeTaskRef: null,
+            prompt: input.delegatedTaskPrompt,
+            title: null,
+            model: modelSelection.model,
+            status: "running",
+            result: null,
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+          },
+        });
+      }
+      yield* eventSink.write({ events });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const captured = (yield* Ref.get(mcpConfigs))[0];
+      assert.isDefined(captured);
+      const resolved = yield* registry.resolve(
+        captured!.authorizationHeader.replace(/^Bearer\s+/, ""),
+      );
+      yield* manager.close(providerSessionId);
+      return { capabilities: resolved?.capabilities, config: captured! };
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1_000,
+          mcpConfigs,
+          serverSettingsLayer:
+            input.serverSettingsLayer ?? ServerSettings.layerTest(input.settings).pipe(Layer.orDie),
+        }),
+      ),
+    );
+  });
+}
+
+it.effect("ProviderSessionManagerV2 gives a review child no orchestration capability", () =>
+  Effect.gen(function* () {
+    const review = yield* runCapabilityTrimScenario({
+      settings: {},
+      delegatedTaskPrompt: "Act as the review sub-agent for this task.\n\nReview the diff.",
+    });
+    // One reviewer: no delegate_task or thread control, every other tool kept.
+    assert.deepEqual(review.capabilities, new Set(["preview", "worktree", "pull-requests"]));
+    const implementation = yield* runCapabilityTrimScenario({
+      settings: {},
+      delegatedTaskPrompt: "Act as the implementation sub-agent for this task.\n\nBuild it.",
+    });
+    assert.deepEqual(
+      implementation.capabilities,
+      new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 withholds a capped instance's capabilities", () =>
+  Effect.gen(function* () {
+    const capped = yield* runCapabilityTrimScenario({
+      settings: {
+        providerInstances: {
+          [modelSelection.instanceId]: {
+            driver: CODEX_DRIVER,
+            hardCap: {
+              maxRuntimeMode: "approval-required",
+              declineFileChanges: true,
+              withheldCapabilities: ["orchestration", "pull-requests"],
+            },
+          },
+        },
+      },
+    });
+    assert.deepEqual(capped.capabilities, new Set(["preview", "worktree"]));
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 withholds every cappable tool when no cap can be read", () =>
+  Effect.gen(function* () {
+    const unreadable = yield* runCapabilityTrimScenario({
+      settings: {},
+      serverSettingsLayer: Layer.mock(ServerSettings.ServerSettingsService)({
+        getSettings: Effect.fail(
+          new ServerSettingsError({ settingsPath: "/settings.json", operation: "read-file" }),
+        ),
+      }),
+    });
+    // Worktree tools too: an instance capped without them must not get them.
+    assert.deepEqual(unreadable.capabilities, new Set());
+  }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 trims the browser from agent-started threads but not the orchestrator",
+  () =>
+    Effect.gen(function* () {
+      const settings = { enableChildAgentBrowserAccess: false };
+      const child = yield* runCapabilityTrimScenario({
+        settings,
+        delegatedTaskPrompt: "Summarize the diff.",
+      });
+      // The child keeps the T3 MCP tools it still needs, delegate_task included.
+      assert.deepEqual(child.capabilities, new Set(["orchestration", "worktree", "pull-requests"]));
+      assert.equal(child.config.browserToolsAvailable, false);
+      const launched = yield* runCapabilityTrimScenario({ settings, createdBy: "agent" });
+      assert.isFalse(launched.capabilities?.has("preview"));
+      const orchestrator = yield* runCapabilityTrimScenario({ settings, createdBy: "user" });
+      assert.deepEqual(
+        orchestrator.capabilities,
+        new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+      );
+      assert.equal(orchestrator.config.browserToolsAvailable, true);
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 revokes MCP credentials when release persistence fails", () =>

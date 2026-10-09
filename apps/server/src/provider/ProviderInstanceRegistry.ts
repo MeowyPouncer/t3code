@@ -151,6 +151,13 @@ interface RegistryState {
 }
 
 /**
+ * The hard cap is read where it applies (each run's runtime policy, each MCP
+ * credential, each delegation), not by the driver, so changing it must not
+ * rebuild the instance and stop its live sessions.
+ */
+const withoutHardCap = ({ hardCap: _hardCap, ...entry }: ProviderInstanceConfig) => entry;
+
+/**
  * Structural equality on `ProviderInstanceConfig` envelopes. Used by
  * `reconcile` to skip rebuilds when settings arrive unchanged. Config
  * payloads are opaque `unknown` at the envelope layer; `Equal.equals`
@@ -158,7 +165,7 @@ interface RegistryState {
  * the schema decode output is constructed.
  */
 const entryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
-  Equal.equals(a, b);
+  Equal.equals(withoutHardCap(a), withoutHardCap(b));
 
 /**
  * Resolve an entry's enabled state. An explicit false on either the
