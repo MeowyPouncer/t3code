@@ -116,18 +116,22 @@ export function nextBackgroundWorkHistory(
   return { running: input.running, finished, readAtRunId };
 }
 
-/** The drawer showed the finished rows: they go after the next run. */
+/**
+ * The drawer showed these finished rows: they go after the next run. Rows it
+ * did not show (scrolled away, clipped) stay unread.
+ */
 export function markBackgroundWorkRead(
   history: BackgroundWorkHistory,
   latestRunId: string | null,
+  taskIds: ReadonlyArray<string>,
 ): BackgroundWorkHistory {
-  if (history.finished.every((entry) => entry.read) && history.readAtRunId !== null) {
-    return history;
-  }
-  if (history.finished.length === 0) return history;
+  const ids = new Set(taskIds);
+  if (!history.finished.some((entry) => !entry.read && ids.has(entry.taskId))) return history;
   return {
     ...history,
-    finished: history.finished.map((entry) => (entry.read ? entry : { ...entry, read: true })),
+    finished: history.finished.map((entry) =>
+      entry.read || !ids.has(entry.taskId) ? entry : { ...entry, read: true },
+    ),
     readAtRunId: latestRunId,
   };
 }
@@ -157,11 +161,11 @@ export function finishedBackgroundWorkTitle(
 }
 
 /**
- * Calls `onRead` once the drawer's rows have stayed on screen for `delayMs`.
- * A drawer can be mounted yet unseen (behind another notice in the collapsed
- * stack, or scrolled away), and unseen rows must not count as read. While the
- * rows intersect but are not shown (`visibility`/`opacity` hide them), the
- * check repeats, since showing them may not change their geometry.
+ * Calls `onRead` once a finished row has stayed on screen for `delayMs`.
+ * A row can be mounted yet unseen (its drawer behind another notice in the
+ * collapsed stack, or the row scrolled away), and an unseen row must not
+ * count as read. While it intersects but is not shown (`visibility`/`opacity`
+ * hide it), the check repeats, since showing it may not change its geometry.
  */
 export function createReadWhenShown(input: {
   readonly delayMs: number;

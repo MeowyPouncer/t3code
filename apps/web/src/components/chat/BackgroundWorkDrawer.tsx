@@ -2,9 +2,11 @@ import { formatPendingBackgroundWorkStatus } from "@t3tools/client-runtime/state
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { CheckIcon, ChevronDownIcon, CircleDotIcon } from "lucide-react";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -29,8 +31,10 @@ const histories = new Map<string, BackgroundWorkHistory>();
 const listeners = new Set<() => void>();
 const NO_FINISHED: ReadonlyArray<FinishedBackgroundWorkEntry> = [];
 const OUTPUT_REFRESH_MS = 2_000;
-/** How long finished rows must stay on screen to count as read. */
+/** How long a finished row must stay on screen to count as read. */
 const READ_AFTER_SHOWN_MS = 600;
+/** How much of a finished row's title line must be in view to count as on screen. */
+const READ_MIN_VISIBLE_RATIO = 0.5;
 
 /** On screen as far as layout can tell: sized, not hidden, page not in the background. */
 function isElementShown(element: HTMLElement): boolean {
@@ -63,7 +67,7 @@ export function useBackgroundWorkHistory(input: {
   readonly settled: boolean;
 }): {
   readonly finished: ReadonlyArray<FinishedBackgroundWorkEntry>;
-  readonly markRead: () => void;
+  readonly markRead: (taskId: string) => void;
 } {
   const { key, running, latestRunId, settled } = input;
   const history = useSyncExternalStore(subscribe, () =>
@@ -80,11 +84,16 @@ export function useBackgroundWorkHistory(input: {
       }),
     );
   }, [key, latestRunId, running, settled]);
-  const markRead = useCallback(() => {
-    if (key === null) return;
-    const current = histories.get(key);
-    if (current !== undefined) setHistory(key, markBackgroundWorkRead(current, latestRunId));
-  }, [key, latestRunId]);
+  const markRead = useCallback(
+    (taskId: string) => {
+      if (key === null) return;
+      const current = histories.get(key);
+      if (current !== undefined) {
+        setHistory(key, markBackgroundWorkRead(current, latestRunId, [taskId]));
+      }
+    },
+    [key, latestRunId],
+  );
   return { finished: history?.finished ?? NO_FINISHED, markRead };
 }
 
@@ -171,6 +180,40 @@ function BackgroundTaskOutput({
   );
 }
 
+/**
+ * Seeing is reading, row by row: calls `onRead` once `ref`'s element has
+ * stayed on screen for READ_AFTER_SHOWN_MS, not merely mounted (a drawer
+ * behind another notice is unseen, and so is a row scrolled out of it).
+ */
+function useReadWhenShown(ref: RefObject<HTMLElement | null>, onRead: (() => void) | null): void {
+  useEffect(() => {
+    const element = ref.current;
+    if (onRead === null || element === null || typeof IntersectionObserver === "undefined") return;
+    const reader = createReadWhenShown({
+      delayMs: READ_AFTER_SHOWN_MS,
+      isShown: () => isElementShown(element),
+      onRead,
+      setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          reader.intersect(
+            entry.isIntersecting && entry.intersectionRatio >= READ_MIN_VISIBLE_RATIO,
+          );
+        }
+      },
+      { threshold: [0, READ_MIN_VISIBLE_RATIO, 1] },
+    );
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      reader.dispose();
+    };
+  }, [ref, onRead]);
+}
+
 function BackgroundWorkRow({
   entry,
   finished,
@@ -179,6 +222,7 @@ function BackgroundWorkRow({
   outputOpen,
   onToggleOutput,
   onOpenThread,
+  onRead,
 }: {
   readonly entry: BackgroundWorkEntry;
   readonly finished: boolean;
@@ -187,7 +231,16 @@ function BackgroundWorkRow({
   readonly outputOpen: boolean;
   readonly onToggleOutput: (taskId: string) => void;
   readonly onOpenThread: (threadId: ThreadId) => void;
+  /** Given for an unread finished row: it is read once its title line was on screen. */
+  readonly onRead: ((taskId: string) => void) | undefined;
 }) {
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const { taskId } = entry;
+  const readThis = useMemo(
+    () => (onRead === undefined ? null : () => onRead(taskId)),
+    [onRead, taskId],
+  );
+  useReadWhenShown(titleRef, readThis);
   const statusRef = useRef<HTMLSpanElement>(null);
   // Ticks through DOM writes, as the subagent bar does, so the chat view
   // never re-renders for a timer.
@@ -215,7 +268,11 @@ function BackgroundWorkRow({
       <ComposerBanner.Icon className={cn("h-6", finished ? "text-success" : "text-primary")}>
         {finished ? <CheckIcon /> : <CircleDotIcon />}
       </ComposerBanner.Icon>
-      <ComposerBanner.Content className="min-h-6 flex-wrap gap-x-2 gap-y-0">
+      <ComposerBanner.Content
+        ref={titleRef}
+        className="min-h-6 flex-wrap gap-x-2 gap-y-0"
+        data-background-work-title={entry.taskId}
+      >
         {childThreadId === undefined ? (
           <span
             className={cn(
@@ -286,34 +343,9 @@ export function BackgroundWorkDrawer({
   readonly running: ReadonlyArray<BackgroundWorkEntry>;
   readonly finished: ReadonlyArray<FinishedBackgroundWorkEntry>;
   readonly onOpenThread: (threadId: ThreadId) => void;
-  readonly onRead: () => void;
+  /** A finished row was on screen long enough to count as read. */
+  readonly onRead: (taskId: string) => void;
 }) {
-  // Seeing is reading: finished rows count as read once they have been on
-  // screen, not merely mounted (a drawer behind another notice is unseen).
-  const rowsRef = useRef<HTMLDivElement>(null);
-  const hasUnread = finished.some((entry) => !entry.read);
-  useEffect(() => {
-    const element = rowsRef.current;
-    if (!hasUnread || element === null || typeof IntersectionObserver === "undefined") return;
-    const reader = createReadWhenShown({
-      delayMs: READ_AFTER_SHOWN_MS,
-      isShown: () => isElementShown(element),
-      onRead,
-      setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-    });
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) reader.intersect(entry.isIntersecting);
-      },
-      { threshold: [0, 0.5, 1] },
-    );
-    observer.observe(element);
-    return () => {
-      observer.disconnect();
-      reader.dispose();
-    };
-  }, [hasUnread, onRead]);
   const [openOutputIds, setOpenOutputIds] = useState<ReadonlySet<string>>(() => new Set());
   const toggleOutput = useCallback((taskId: string) => {
     setOpenOutputIds((current) => {
@@ -323,28 +355,30 @@ export function BackgroundWorkDrawer({
     });
   }, []);
 
-  const rows = (entries: ReadonlyArray<BackgroundWorkEntry>, isFinished: boolean) =>
-    entries.map((entry) => (
-      <BackgroundWorkRow
-        key={`${isFinished ? "finished" : "running"}:${entry.taskId}`}
-        entry={entry}
-        finished={isFinished}
-        environmentId={environmentId}
-        threadId={threadId}
-        outputOpen={openOutputIds.has(entry.taskId)}
-        onToggleOutput={toggleOutput}
-        onOpenThread={onOpenThread}
-      />
-    ));
+  const row = (
+    entry: BackgroundWorkEntry,
+    isFinished: boolean,
+    onRowRead: ((taskId: string) => void) | undefined,
+  ) => (
+    <BackgroundWorkRow
+      key={`${isFinished ? "finished" : "running"}:${entry.taskId}`}
+      entry={entry}
+      finished={isFinished}
+      environmentId={environmentId}
+      threadId={threadId}
+      outputOpen={openOutputIds.has(entry.taskId)}
+      onToggleOutput={toggleOutput}
+      onOpenThread={onOpenThread}
+      onRead={onRowRead}
+    />
+  );
 
   return (
     <ComposerBanner.Scroll className="max-h-[min(28rem,50dvh)]" data-background-work-drawer="true">
-      <div ref={rowsRef}>
-        <ComposerBanner.Children render={<ul role="list" />} aria-label="Background work">
-          {rows(running, false)}
-          {rows(finished, true)}
-        </ComposerBanner.Children>
-      </div>
+      <ComposerBanner.Children render={<ul role="list" />} aria-label="Background work">
+        {running.map((entry) => row(entry, false, undefined))}
+        {finished.map((entry) => row(entry, true, entry.read ? undefined : onRead))}
+      </ComposerBanner.Children>
     </ComposerBanner.Scroll>
   );
 }

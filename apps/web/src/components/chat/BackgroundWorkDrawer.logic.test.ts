@@ -106,7 +106,7 @@ describe("nextBackgroundWorkHistory", () => {
       latestRunId: "run-2",
       nowIso: "t2",
     });
-    history = markBackgroundWorkRead(history, "run-2");
+    history = markBackgroundWorkRead(history, "run-2", ["a"]);
     expect(history.finished.map((item) => item.read)).toEqual([true]);
 
     const sameTurn = nextBackgroundWorkHistory(history, {
@@ -136,13 +136,38 @@ describe("nextBackgroundWorkHistory", () => {
       latestRunId: "run-1",
       nowIso: "t2",
     });
-    history = markBackgroundWorkRead(history, "run-1");
+    history = markBackgroundWorkRead(history, "run-1", ["a"]);
     history = nextBackgroundWorkHistory(history, {
       running: [],
       latestRunId: "run-2",
       nowIso: "t3",
     });
     expect(history.finished.map((item) => [item.taskId, item.read])).toEqual([["b", false]]);
+  });
+
+  it("marks only the rows that were shown; the others stay for later", () => {
+    let history = nextBackgroundWorkHistory(undefined, {
+      running: [entry("a"), entry("b")],
+      latestRunId: "run-1",
+      nowIso: "t1",
+    });
+    history = nextBackgroundWorkHistory(history, {
+      running: [],
+      latestRunId: "run-1",
+      nowIso: "t2",
+    });
+    history = markBackgroundWorkRead(history, "run-1", ["b"]);
+    expect(history.finished.map((item) => [item.taskId, item.read])).toEqual([
+      ["a", false],
+      ["b", true],
+    ]);
+    expect(markBackgroundWorkRead(history, "run-1", ["b", "gone"])).toBe(history);
+    history = nextBackgroundWorkHistory(history, {
+      running: [],
+      latestRunId: "run-2",
+      nowIso: "t3",
+    });
+    expect(history.finished.map((item) => [item.taskId, item.read])).toEqual([["a", false]]);
   });
 
   it("runs a finished item again when it returns to the roster", () => {
