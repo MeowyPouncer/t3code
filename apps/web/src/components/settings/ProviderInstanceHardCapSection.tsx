@@ -122,13 +122,12 @@ export function ProviderInstanceHardCapSection(props: {
       <SettingsRow
         title="Withhold T3 tools"
         description="T3 tools this instance's agents never get. Orchestration covers delegate_task and thread control."
-        control={
+      >
+        <div className="pt-1 pb-2">
           <ToggleGroup
             multiple
-            variant="outline"
-            size="compact"
             aria-label={`Withheld T3 tools for ${props.instanceId}`}
-            className="flex-wrap justify-end"
+            className="flex-wrap"
             value={[...(cap.withheldCapabilities ?? [])]}
             onValueChange={(next) => {
               const { withheldCapabilities: _previous, ...rest } = cap;
@@ -144,8 +143,8 @@ export function ProviderInstanceHardCapSection(props: {
               </Toggle>
             ))}
           </ToggleGroup>
-        }
-      />
+        </div>
+      </SettingsRow>
     </SettingsSection>
   );
 }
