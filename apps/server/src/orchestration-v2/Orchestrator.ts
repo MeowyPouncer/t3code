@@ -111,6 +111,11 @@ import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
+  providerInstanceHardCapInForce,
+  refusesFileChangeResponse,
+} from "../provider/ProviderInstanceHardCap.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import {
   makeSubagentChildThread,
   subagentResultForRun,
   delegatedTaskProgress,
@@ -806,6 +811,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  // Optional like RuntimePolicyV2's, so the many tests that build this layer
+  // by hand need no settings stub; production always provides it.
+  const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -7079,6 +7087,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: `Provider session ${providerSessionId} was not found.`,
         });
+      }
+      // On an instance whose hard cap declines file changes, a file-change
+      // request takes a decline or a cancel only, decided here as it is
+      // answered: an Accept that beats FileChangeAutoDecline, or one for a
+      // request pending from before the cap, must not let the edit through.
+      if (runtimeRequest.kind === "file-change" && Option.isSome(serverSettings)) {
+        const instanceId =
+          providerSession?.providerInstanceId ??
+          (yield* projectionStore
+            .getThread(command.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+              ),
+            )).modelSelection.instanceId;
+        const cap = yield* providerInstanceHardCapInForce(serverSettings.value, instanceId);
+        if (refusesFileChangeResponse(cap, runtimeRequest, command.decision)) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `File changes on ${instanceId} are declined by its limits; this request can only be declined.`,
+          });
+        }
       }
 
       const now = yield* DateTime.now;
