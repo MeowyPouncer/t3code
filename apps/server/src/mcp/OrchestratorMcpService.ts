@@ -83,7 +83,7 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import {
-  readProviderInstanceHardCap,
+  readProviderInstanceHardCaps,
   resolveHardCappedChildRuntimeMode,
 } from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -828,7 +828,7 @@ const make = Effect.gen(function* () {
   }): Effect.Effect<RuntimeMode, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       if (Option.isNone(serverSettings)) return input.resolved;
-      const settings = yield* serverSettings.value.getSettings.pipe(
+      const caps = yield* readProviderInstanceHardCaps(serverSettings.value).pipe(
         Effect.mapError((error) =>
           failure(
             "orchestration_error",
@@ -839,7 +839,7 @@ const make = Effect.gen(function* () {
       const outcome = resolveHardCappedChildRuntimeMode({
         resolved: input.resolved,
         explicit: input.requested !== undefined && input.requested !== "inherit",
-        cap: readProviderInstanceHardCap(settings.providerInstances, input.instanceId),
+        cap: caps[input.instanceId],
       });
       return outcome._tag === "allowed"
         ? outcome.runtimeMode

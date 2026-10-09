@@ -45,11 +45,14 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import {
   isDelegatedTaskThread,
-  UNREADABLE_TRIM_WITHHELD,
+  UNRESOLVED_THREAD_WITHHELD,
   withheldMcpCapabilities,
 } from "../mcp/McpCapabilityTrim.ts";
 import type { McpCapability } from "../mcp/McpInvocationContext.ts";
-import { readProviderInstanceHardCap } from "../provider/ProviderInstanceHardCap.ts";
+import {
+  hardCapWithheldCapabilities,
+  providerInstanceHardCapInForce,
+} from "../provider/ProviderInstanceHardCap.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
@@ -389,14 +392,24 @@ export const layerWithOptions = (
        * Capabilities the thread's credential is minted without: its provider
        * instance's hard cap, `orchestration` for a review child, and `preview`
        * for agent-started threads when child browser access is off. Fails
-       * closed like browser access: unreadable settings or thread state
-       * withhold what a hard cap typically withholds.
+       * closed: a cap that cannot be read withholds everything a cap can, an
+       * unreadable thread withholds what a review child loses, and unreadable
+       * settings count child browser access as off. MCP requests check the
+       * cap again as they arrive (`McpHttpServer`), so a cap changed after
+       * the credential was minted applies at once.
        */
       const withheldCapabilities = Effect.fn("ProviderSessionManagerV2.withheldCapabilities")(
         function* (threadId: ThreadId, providerInstanceId: ProviderInstanceId) {
           if (Option.isNone(serverSettings)) return new Set<McpCapability>();
+          const cap = yield* providerInstanceHardCapInForce(
+            serverSettings.value,
+            providerInstanceId,
+          );
+          const childAgentBrowserAccess = yield* serverSettings.value.getSettings.pipe(
+            Effect.map((settings) => settings.enableChildAgentBrowserAccess),
+            Effect.orElseSucceed(() => false),
+          );
           return yield* Effect.gen(function* () {
-            const settings = yield* serverSettings.value.getSettings;
             const thread = yield* projectionStore.getThread(threadId);
             const parentThreadId = thread.lineage.parentThreadId;
             const delegatedTask =
@@ -408,17 +421,24 @@ export const layerWithOptions = (
                   )
                 : undefined;
             return withheldMcpCapabilities({
-              cap: readProviderInstanceHardCap(settings.providerInstances, providerInstanceId),
+              cap,
               thread,
               delegatedTaskPrompt: delegatedTask?.prompt,
-              childAgentBrowserAccess: settings.enableChildAgentBrowserAccess,
+              childAgentBrowserAccess,
             });
           }).pipe(
             Effect.catch((cause) =>
               Effect.logWarning(
-                "Could not resolve the thread's MCP capability limits; withholding orchestration and pull requests.",
+                "Could not resolve the thread's lineage; withholding orchestration with its cap.",
                 { threadId, cause },
-              ).pipe(Effect.as(UNREADABLE_TRIM_WITHHELD)),
+              ).pipe(
+                Effect.as(
+                  new Set<McpCapability>([
+                    ...hardCapWithheldCapabilities(cap),
+                    ...UNRESOLVED_THREAD_WITHHELD,
+                  ]),
+                ),
+              ),
             ),
           );
         },

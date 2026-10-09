@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -1908,6 +1909,8 @@ function runCapabilityTrimScenario(input: {
   readonly settings: Parameters<typeof ServerSettings.layerTest>[0];
   readonly delegatedTaskPrompt?: string;
   readonly createdBy?: OrchestrationV2AppThread["createdBy"];
+  /** Replaces the settings built from `settings`. */
+  readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
 }) {
   return Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -1993,7 +1996,8 @@ function runCapabilityTrimScenario(input: {
           state,
           idleTimeoutMs: 1_000,
           mcpConfigs,
-          serverSettingsLayer: ServerSettings.layerTest(input.settings).pipe(Layer.orDie),
+          serverSettingsLayer:
+            input.serverSettingsLayer ?? ServerSettings.layerTest(input.settings).pipe(Layer.orDie),
         }),
       ),
     );
@@ -2036,6 +2040,21 @@ it.effect("ProviderSessionManagerV2 withholds a capped instance's capabilities",
       },
     });
     assert.deepEqual(capped.capabilities, new Set(["preview", "worktree"]));
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 withholds every cappable tool when no cap can be read", () =>
+  Effect.gen(function* () {
+    const unreadable = yield* runCapabilityTrimScenario({
+      settings: {},
+      serverSettingsLayer: Layer.mock(ServerSettings.ServerSettingsService)({
+        getSettings: Effect.fail(
+          new ServerSettingsError({ settingsPath: "/settings.json", operation: "read-file" }),
+        ),
+      }),
+    });
+    // Worktree tools too: an instance capped without them must not get them.
+    assert.deepEqual(unreadable.capabilities, new Set());
   }),
 );
 

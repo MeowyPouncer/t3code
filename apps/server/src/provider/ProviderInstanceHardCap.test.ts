@@ -1,18 +1,27 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   type ProviderInstanceHardCap,
+  ServerSettingsError,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 
+import type { ServerSettingsService } from "../serverSettings.ts";
 import {
   clampRuntimeModeToHardCap,
   hardCapRuntimeModeCeiling,
   hardCapWithheldCapabilities,
+  providerInstanceHardCapInForce,
   readProviderInstanceHardCap,
+  refusesFileChangeResponse,
+  rememberedHardCapsOf,
   resolveHardCappedChildRuntimeMode,
   shouldAutoDeclineRuntimeRequest,
+  UNKNOWN_HARD_CAP,
+  withRememberedHardCaps,
 } from "./ProviderInstanceHardCap.ts";
 
 const agyCap: ProviderInstanceHardCap = {
@@ -137,5 +146,75 @@ describe("ProviderInstanceHardCap", () => {
     assert.isFalse(
       shouldAutoDeclineRuntimeRequest(undefined, { ...fileChange, responseCapability: live }),
     );
+  });
+
+  it("refuses every answer to a declining instance's file change but a decline or cancel", () => {
+    const fileChange = { kind: "file-change" as const };
+    for (const decision of ["accept", "acceptForSession", "acceptAlways", undefined] as const) {
+      assert.isTrue(refusesFileChangeResponse(agyCap, fileChange, decision), String(decision));
+    }
+    assert.isFalse(refusesFileChangeResponse(agyCap, fileChange, "decline"));
+    assert.isFalse(refusesFileChangeResponse(agyCap, fileChange, "cancel"));
+    assert.isFalse(refusesFileChangeResponse(agyCap, { kind: "command" }, "accept"));
+    assert.isFalse(
+      refusesFileChangeResponse({ maxRuntimeMode: "approval-required" }, fileChange, "accept"),
+    );
+    assert.isFalse(refusesFileChangeResponse(undefined, fileChange, "accept"));
+  });
+
+  it.effect("runs an instance whose cap cannot be read under the strictest cap", () =>
+    Effect.gen(function* () {
+      const unreadable = {
+        getSettings: Effect.fail(
+          new ServerSettingsError({ settingsPath: "/settings.json", operation: "read-file" }),
+        ),
+      } as unknown as ServerSettingsService["Service"];
+      const cap = yield* providerInstanceHardCapInForce(
+        unreadable,
+        ProviderInstanceId.make("codex"),
+      );
+      assert.deepEqual(cap, UNKNOWN_HARD_CAP);
+      assert.equal(clampRuntimeModeToHardCap("full-access", cap), "approval-required");
+      assert.isTrue(cap?.declineFileChanges);
+      // Every capability a cap can withhold, worktrees included.
+      assert.deepEqual(
+        new Set(hardCapWithheldCapabilities(cap)),
+        new Set(["orchestration", "pull-requests", "worktree", "preview", "device"]),
+      );
+    }),
+  );
+
+  it("puts remembered caps back on default settings without inventing instances", () => {
+    const antigravity = ProviderInstanceId.make("antigravity");
+    const custom = ProviderInstanceId.make("agy-work");
+    const remembered = rememberedHardCapsOf({
+      [antigravity]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
+      [custom]: { driver: ProviderDriverKind.make("antigravity"), hardCap: agyCap },
+      [ProviderInstanceId.make("codex")]: { driver: ProviderDriverKind.make("codex") },
+    });
+    assert.deepEqual(Object.keys(remembered.instances), [antigravity, custom]);
+    const restored = withRememberedHardCaps(DEFAULT_SERVER_SETTINGS, remembered);
+    // The built-in instance gets the entry the registry would build, with its cap.
+    assert.deepEqual(restored.providerInstances[antigravity], {
+      driver: ProviderDriverKind.make("antigravity"),
+      config: DEFAULT_SERVER_SETTINGS.providers.antigravity,
+      hardCap: agyCap,
+    });
+    // An instance only the lost settings named does not come back.
+    assert.isUndefined(restored.providerInstances[custom]);
+    const listed = withRememberedHardCaps(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [custom]: { driver: ProviderDriverKind.make("antigravity"), displayName: "Work" },
+        },
+      },
+      remembered,
+    );
+    assert.deepEqual(listed.providerInstances[custom], {
+      driver: ProviderDriverKind.make("antigravity"),
+      displayName: "Work",
+      hardCap: agyCap,
+    });
   });
 });

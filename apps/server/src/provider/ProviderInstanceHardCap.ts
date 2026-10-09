@@ -1,13 +1,21 @@
-import type {
-  OrchestrationV2RuntimeRequest,
-  ProviderInstanceCappedCapability,
-  ProviderInstanceConfigMap,
+import {
+  type OrchestrationV2RuntimeRequest,
+  type ProviderApprovalDecision,
+  type ProviderInstanceCappedCapability,
+  type ProviderInstanceConfig,
+  type ProviderInstanceConfigMap,
+  ProviderDriverKind,
   ProviderInstanceHardCap,
-  ProviderInstanceId,
-  RuntimeMode,
+  type ProviderInstanceId,
+  type RuntimeMode,
+  type ServerSettings,
+  type ServerSettingsError,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type { McpCapability } from "../mcp/McpInvocationContext.ts";
+import type { ServerSettingsService } from "../serverSettings.ts";
 
 /**
  * A provider instance's hard cap (`providerInstances.<id>.hardCap` in server
@@ -98,4 +106,153 @@ export function shouldAutoDeclineRuntimeRequest(
     request.status === "pending" &&
     request.responseCapability.type !== "not_resumable"
   );
+}
+
+/**
+ * Whether a response to a runtime request would let a file change through on
+ * an instance that declines them. Only a decline or a cancel answers one.
+ */
+export function refusesFileChangeResponse(
+  cap: ProviderInstanceHardCap | undefined,
+  request: Pick<OrchestrationV2RuntimeRequest, "kind">,
+  decision: ProviderApprovalDecision | undefined,
+): boolean {
+  return (
+    cap?.declineFileChanges === true &&
+    request.kind === "file-change" &&
+    decision !== "decline" &&
+    decision !== "cancel"
+  );
+}
+
+const CAPPED_CAPABILITIES: Record<ProviderInstanceCappedCapability, true> = {
+  orchestration: true,
+  "pull-requests": true,
+  worktree: true,
+  preview: true,
+  device: true,
+};
+
+/**
+ * The cap an instance runs under when its own cannot be known (settings and
+ * the remembered caps both unreadable): the most a cap can take away.
+ */
+export const UNKNOWN_HARD_CAP: ProviderInstanceHardCap = {
+  maxRuntimeMode: "approval-required",
+  declineFileChanges: true,
+  withheldCapabilities: Object.keys(CAPPED_CAPABILITIES) as Array<ProviderInstanceCappedCapability>,
+};
+
+/** Every instance's hard cap by instance id; an instance without one is absent. */
+export type ProviderInstanceHardCaps = Readonly<Record<string, ProviderInstanceHardCap>>;
+
+export function providerInstanceHardCaps(
+  providerInstances: ProviderInstanceConfigMap,
+): ProviderInstanceHardCaps {
+  const caps: Record<string, ProviderInstanceHardCap> = {};
+  for (const [instanceId, instance] of Object.entries(providerInstances)) {
+    if (instance.hardCap !== undefined) caps[instanceId] = instance.hardCap;
+  }
+  return caps;
+}
+
+/**
+ * The hard caps in force. Settings that fail to decode or cannot be read fall
+ * back to the caps that last loaded from valid ones
+ * (`ServerSettingsService.getHardCaps`); this fails when neither is known.
+ */
+export const readProviderInstanceHardCaps = (
+  serverSettings: ServerSettingsService["Service"],
+): Effect.Effect<ProviderInstanceHardCaps, ServerSettingsError> =>
+  // An own property, not `?.`: a `Layer.mock` stub answers every property
+  // with a dying effect, so only a service that defines it supplies it.
+  Object.hasOwn(serverSettings, "getHardCaps") && serverSettings.getHardCaps !== undefined
+    ? serverSettings.getHardCaps
+    : serverSettings.getSettings.pipe(
+        Effect.map((settings) => providerInstanceHardCaps(settings.providerInstances)),
+      );
+
+/**
+ * One instance's hard cap in force, {@link UNKNOWN_HARD_CAP} when the caps
+ * cannot be known: a cap that cannot be read fails closed, never open.
+ */
+export const providerInstanceHardCapInForce = (
+  serverSettings: ServerSettingsService["Service"],
+  instanceId: ProviderInstanceId,
+): Effect.Effect<ProviderInstanceHardCap | undefined> =>
+  readProviderInstanceHardCaps(serverSettings).pipe(
+    Effect.map((caps): ProviderInstanceHardCap | undefined => caps[instanceId]),
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not read the provider instances' hard caps; failing closed.", {
+        instanceId,
+        cause,
+      }).pipe(Effect.as(UNKNOWN_HARD_CAP)),
+    ),
+  );
+
+/**
+ * The caps remembered beside the settings file, written whenever settings load
+ * or save valid, so a settings file that later fails to decode or read keeps
+ * its instances capped instead of falling back to defaults without any.
+ * Each entry keeps its driver so a built-in instance that only the defaults
+ * describe can carry its cap.
+ */
+export const RememberedHardCaps = Schema.Struct({
+  instances: Schema.Record(
+    Schema.String,
+    Schema.Struct({ driver: ProviderDriverKind, hardCap: ProviderInstanceHardCap }),
+  ),
+});
+export type RememberedHardCaps = typeof RememberedHardCaps.Type;
+
+export function rememberedHardCapsOf(
+  providerInstances: ProviderInstanceConfigMap,
+): RememberedHardCaps {
+  const instances: Record<string, RememberedHardCaps["instances"][string]> = {};
+  for (const [instanceId, instance] of Object.entries(providerInstances)) {
+    if (instance.hardCap !== undefined) {
+      instances[instanceId] = { driver: instance.driver, hardCap: instance.hardCap };
+    }
+  }
+  return { instances };
+}
+
+export function rememberedHardCapsMap(remembered: RememberedHardCaps): ProviderInstanceHardCaps {
+  const caps: Record<string, ProviderInstanceHardCap> = {};
+  for (const [instanceId, entry] of Object.entries(remembered.instances)) {
+    caps[instanceId] = entry.hardCap;
+  }
+  return caps;
+}
+
+/**
+ * Puts remembered caps back on settings that came from defaults. An instance
+ * the settings list gets its cap; a built-in driver's default instance, which
+ * the registry builds from `providers.<driver>` when no entry names it, gets
+ * the same entry the registry would build, with the cap. Other remembered
+ * instances do not exist under these settings and are left out.
+ */
+export function withRememberedHardCaps(
+  settings: ServerSettings,
+  remembered: RememberedHardCaps,
+): ServerSettings {
+  const providerInstances: Record<string, ProviderInstanceConfig> = {
+    ...settings.providerInstances,
+  };
+  for (const [instanceId, { driver, hardCap }] of Object.entries(remembered.instances)) {
+    const existing = providerInstances[instanceId];
+    if (existing !== undefined) {
+      providerInstances[instanceId] = { ...existing, hardCap };
+    } else if (instanceId === driver && Object.hasOwn(settings.providers, driver)) {
+      providerInstances[instanceId] = {
+        driver,
+        config: settings.providers[driver as keyof ServerSettings["providers"]],
+        hardCap,
+      };
+    }
+  }
+  return {
+    ...settings,
+    providerInstances: providerInstances as ServerSettings["providerInstances"],
+  };
 }
