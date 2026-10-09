@@ -63,10 +63,10 @@ export function claudeSessionIdsForThread(
 }
 
 // CSI (colours, cursor moves), OSC (titles, links) and two-byte escapes.
-// eslint-disable-next-line no-control-regex
 const ANSI_ESCAPE =
+  // eslint-disable-next-line no-control-regex -- terminal escape codes are what this strips
   /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/gu;
-// eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- stray control bytes are what this strips
 const OTHER_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
 
 /**
@@ -158,7 +158,7 @@ async function findTaskOutput(input: {
     throw cause;
   }
   // The newest session is the likeliest owner of a live task.
-  for (const sessionId of [...input.sessionIds].reverse()) {
+  for (const sessionId of input.sessionIds.toReversed()) {
     for (const project of projects) {
       const candidate = NodePath.join(
         input.root,
