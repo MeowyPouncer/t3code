@@ -126,7 +126,7 @@ export function ProviderInstanceHardCapSection(props: {
           <ToggleGroup
             multiple
             variant="outline"
-            size="xs"
+            size="compact"
             aria-label={`Withheld T3 tools for ${props.instanceId}`}
             className="flex-wrap justify-end"
             value={[...(cap.withheldCapabilities ?? [])]}
@@ -139,7 +139,7 @@ export function ProviderInstanceHardCapSection(props: {
             }}
           >
             {HARD_CAP_CAPABILITIES.map((option) => (
-              <Toggle key={option.value} value={option.value} className="px-2 text-xs">
+              <Toggle key={option.value} value={option.value}>
                 {option.label}
               </Toggle>
             ))}
