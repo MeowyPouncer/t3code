@@ -3489,7 +3489,12 @@ export type OrchestrationV2GetBackgroundTaskOutputResult =
 export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedError<OrchestrationGetBackgroundTaskOutputError>()(
   "OrchestrationGetBackgroundTaskOutputError",
   {
-    reason: Schema.Literals(["invalid-task-id", "outside-root", "read-failed"]),
+    reason: Schema.Literals([
+      "invalid-task-id",
+      "outside-root",
+      "changed-during-read",
+      "read-failed",
+    ]),
     taskId: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },
@@ -3499,7 +3504,9 @@ export class OrchestrationGetBackgroundTaskOutputError extends Schema.TaggedErro
       case "invalid-task-id":
         return "Not a background task id.";
       case "outside-root":
-        return "Task output is outside Claude's task directory.";
+        return "Task output is outside this thread's Claude session.";
+      case "changed-during-read":
+        return "Task output changed while it was opened.";
       case "read-failed":
         return "Task output read failed.";
     }
