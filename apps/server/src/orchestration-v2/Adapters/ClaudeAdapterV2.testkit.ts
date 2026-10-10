@@ -250,6 +250,37 @@ type ClaudeOutboundFrame =
   | ClaudeSessionForkFrame
   | ClaudeSubagentLookupFrame;
 
+/**
+ * FORK (T3MIG-FORK-014): the CLI runs its Stop hooks before a turn's
+ * successful result. The recordings registered none and scheduled no crons,
+ * so a replay reports an empty `session_crons`, as the CLI would. The adapter
+ * applies a report only when it reads the result frame, so frames the
+ * consumer has not read yet when the hook runs are covered either way.
+ */
+async function runReplayStopHooks(
+  options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+  message: SDKMessage,
+  signal: AbortSignal,
+): Promise<void> {
+  if (message.type !== "result" || message.subtype !== "success") return;
+  for (const matcher of options.hooks?.Stop ?? []) {
+    for (const hook of matcher.hooks) {
+      await hook(
+        {
+          hook_event_name: "Stop",
+          session_id: message.session_id,
+          transcript_path: "",
+          cwd: options.cwd ?? "",
+          stop_hook_active: false,
+          session_crons: [],
+        },
+        undefined,
+        { signal },
+      );
+    }
+  }
+}
+
 interface ClaudeQueryRunner {
   readonly open: (
     input: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput,
@@ -583,7 +614,9 @@ function makeReplayQueryRunner(
           continue;
         }
         advance();
-        yield sdkMessageFromReplayFrame(withReplayedPromptUuids(entry.frame));
+        const message = sdkMessageFromReplayFrame(withReplayedPromptUuids(entry.frame));
+        await runReplayStopHooks(options, message, signal);
+        yield message;
         continue;
       }
 

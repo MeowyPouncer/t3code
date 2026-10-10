@@ -491,6 +491,13 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+/** FORK (T3MIG-FORK-014): what a provider process holds against an idle stop. */
+export interface ProviderAdapterV2IdleStopHold {
+  readonly held: boolean;
+  /** When the process last held work (now while it does); null if it never has. */
+  readonly lastHeldAtMs: number | null;
+}
+
 export interface ProviderAdapterV2SessionRuntime {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
@@ -509,6 +516,13 @@ export interface ProviderAdapterV2SessionRuntime {
    * here so the session manager defers idle release while it is pending.
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  /**
+   * FORK (T3MIG-FORK-014): whether the provider process holds work an idle
+   * stop would lose, such as background tasks or scheduled wakeups, and when
+   * it last did. When present, the session manager's idle stop reads it
+   * instead of `hasPendingBackgroundWork`.
+   */
+  readonly readIdleStopHold?: Effect.Effect<ProviderAdapterV2IdleStopHold>;
   /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide

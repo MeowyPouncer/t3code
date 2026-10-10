@@ -1,6 +1,7 @@
 import * as NodeOS from "node:os";
 
 import type {
+  HookInput,
   Query as ClaudeQuery,
   SDKMessage,
   SDKResultMessage,
@@ -46,6 +47,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -8900,57 +8902,293 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
   });
-});
 
-describe("ClaudeAdapterV2 query message stream", () => {
-  it.effect("closes the query when the message stream is interrupted mid-read", () =>
-    Effect.gen(function* () {
-      let closed = false;
-      let releaseRead = () => {};
-      const readStarted = Promise.withResolvers<void>();
-      // Never yields a message — the read stays pending until close() flips
-      // `closed` and releases the in-flight await.
-      // oxlint-disable-next-line require-yield
-      async function* sdkMessages(): AsyncGenerator<SDKMessage, void> {
-        for (;;) {
-          if (closed) return;
-          await new Promise<void>((resolve) => {
-            releaseRead = resolve;
-            readStarted.resolve();
-          });
-        }
-      }
-      const generator = sdkMessages();
-      const close = () => {
-        closed = true;
-        releaseRead();
-      };
-      const query = {
-        next: () => generator.next(),
-        return: async (value?: void) => {
-          close();
-          return generator.return(value);
+  // FORK (T3MIG-FORK-014): an idle stop waits for what the live CLI process
+  // holds — every background task it reports, and crons its Stop hook reports.
+  describe("idle stop holds", () => {
+    const stopHookInput = (sessionCrons: ReadonlyArray<unknown> | undefined): HookInput =>
+      ({
+        hook_event_name: "Stop",
+        session_id: WAKE_NATIVE_SESSION,
+        transcript_path: "/tmp/claude-replay/transcript.jsonl",
+        cwd: "/tmp",
+        stop_hook_active: false,
+        ...(sessionCrons === undefined ? {} : { session_crons: sessionCrons }),
+      }) as HookInput;
+    const level = (tasks: ReadonlyArray<Record<string, unknown>>, uuid: string) =>
+      claudeSdkFrame({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks,
+        uuid,
+        session_id: WAKE_NATIVE_SESSION,
+      });
+    const cronToolFrame = claudeSdkFrame({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000001403",
+      session_id: WAKE_NATIVE_SESSION,
+      parent_tool_use_id: null,
+      message: {
+        id: "msg_idle_stop_wakeup",
+        model: "claude-sonnet-4-6",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_idle_stop_wakeup",
+            name: "ScheduleWakeup",
+            input: { delaySeconds: 2700, reason: "check the build", prompt: "/loop check" },
+          },
+        ],
+        stop_reason: "tool_use",
+        stop_sequence: null,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
         },
-        throw: (error?: unknown) => generator.throw(error),
-        [Symbol.asyncIterator]: () => generator,
-        close,
-      } as unknown as ClaudeQuery;
+      },
+    });
+    const readHold = (harness: Effect.Success<typeof makeWakeHarness>) => {
+      const read = harness.runtime.readIdleStopHold;
+      if (read === undefined) return Effect.die("Claude runtime must expose readIdleStopHold.");
+      return read;
+    };
+    const isHeld = (harness: Effect.Success<typeof makeWakeHarness>) =>
+      readHold(harness).pipe(Effect.map((hold) => hold.held));
+    const startIdleStopTurn = (
+      harness: Effect.Success<typeof makeWakeHarness>,
+      attemptId: string,
+    ) =>
+      Effect.gen(function* () {
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(attemptId),
+            text: "Hello",
+            attachments: [],
+          }),
+        );
+        const hook = harness.getOpenedOptions()?.hooks?.Stop?.[0]?.hooks[0];
+        /** The CLI runs its Stop hook; the report covers the frames before the next result. */
+        const stop = (crons: ReadonlyArray<unknown> | undefined) =>
+          Effect.promise(() => {
+            if (hook === undefined) throw new Error("Claude query options carry no Stop hook.");
+            return hook(stopHookInput(crons), undefined, {
+              signal: new AbortController().signal,
+            });
+          });
+        const finish = Effect.gen(function* () {
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+        });
+        return { stop, finish };
+      });
 
-      const scope = yield* Scope.make();
-      yield* Stream.fromAsyncIterable(
-        ClaudeAdapterV2.claudeQueryMessages(query),
-        (cause) => cause,
-      ).pipe(
-        Stream.runForEach(() => Effect.void),
-        Effect.forkIn(scope),
-      );
-      yield* Effect.promise(() => readStarted.promise);
+    it.effect("registers a Stop hook on every query", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-hooks");
+        const hooks = harness.getOpenedOptions()?.hooks;
+        assert.equal(hooks?.Stop?.length, 1);
+        assert.isUndefined(hooks?.SubagentStop);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
 
-      // Iterating query[Symbol.asyncIterator]() directly deadlocks here:
-      // the raw generator's return() queues behind the in-flight read and
-      // scope close never completes.
-      yield* Scope.close(scope, Exit.void);
-      assert.isTrue(closed);
-    }),
-  );
+    it.effect("holds a new process until its Stop report applies at the turn's result", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        // No process yet: nothing to lose.
+        assert.isFalse(yield* isHeld(harness));
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-process-start");
+        // It may have restored crons from an earlier session.
+        assert.isTrue(yield* isHeld(harness));
+        yield* turn.stop([]);
+        // The report waits for the result it precedes.
+        assert.isTrue(yield* isHeld(harness));
+        yield* turn.finish;
+        assert.isFalse(yield* isHeld(harness));
+        // Its upstream counterpart is unchanged.
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("keeps crons unknown after a turn that ends without a Stop hook", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-interrupted");
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("applies a Stop report that overtook a buffered cron tool frame after it", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-overtaken");
+        // The CLI wrote the tool frame, then ran its Stop hook; the callback
+        // runs before the adapter has read the frame.
+        yield* turn.stop([]);
+        yield* harness.offerAndWait(cronToolFrame);
+        yield* turn.finish;
+        assert.isFalse(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("holds for a scheduled wakeup the Stop hook reports", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-crons");
+        yield* harness.offerAndWait(cronToolFrame);
+        assert.isTrue(yield* isHeld(harness));
+        yield* turn.stop([
+          { id: "cron-1", schedule: "45 15 10 10 *", recurring: false, prompt: "/loop check" },
+        ]);
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("lets go of a process that has exited, from the moment it did", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-exit");
+        assert.isTrue(yield* isHeld(harness));
+        yield* TestClock.adjust("5 minutes");
+        const exitedAt = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* Queue.shutdown(harness.sdkMessages);
+        let hold = yield* readHold(harness);
+        for (let i = 0; i < 200 && hold.held; i += 1) {
+          yield* Effect.yieldNow;
+          hold = yield* readHold(harness);
+        }
+        assert.deepEqual(hold, { held: false, lastHeldAtMs: exitedAt });
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    // T3 lets go of a process whose interrupt does not close it within 10 s.
+    const interruptPastTimeout = (
+      harness: Effect.Success<typeof makeWakeHarness>,
+      attemptId: string,
+    ) =>
+      Effect.gen(function* () {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        const interrupting = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+        yield* TestClock.adjust("11 seconds");
+        yield* Fiber.join(interrupting);
+      });
+    const awaitHold = (harness: Effect.Success<typeof makeWakeHarness>, held: boolean) =>
+      Effect.gen(function* () {
+        let current = yield* isHeld(harness);
+        for (let i = 0; i < 200 && current !== held; i += 1) {
+          yield* Effect.yieldNow;
+          current = yield* isHeld(harness);
+        }
+        return current;
+      });
+
+    it.effect("lets go of a process T3 retired after a timeout once it exits late", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-late-exit");
+        yield* interruptPastTimeout(harness, "idle-stop-late-exit");
+        // Still running, so what it holds still counts.
+        assert.isTrue(yield* isHeld(harness));
+        yield* Queue.shutdown(harness.sdkMessages);
+        assert.isFalse(yield* awaitHold(harness, false));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("keeps a replacement's holds when the retired process exits after it", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+        yield* startIdleStopTurn(harness, "idle-stop-retired");
+        yield* interruptPastTimeout(harness, "idle-stop-retired");
+        // The replacement process starts with its crons unknown.
+        yield* startIdleStopTurn(harness, "idle-stop-replacement");
+        assert.equal(harness.processQueues.length, 2);
+        assert.isTrue(yield* isHeld(harness));
+        // The retired process exits now: only its own state goes.
+        yield* Queue.shutdown(harness.sdkMessages);
+        for (let i = 0; i < 50; i += 1) yield* Effect.yieldNow;
+        assert.isTrue(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("holds while a workflow runs and records when it ended", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-workflow");
+        yield* harness.offerAndWait(
+          level(
+            [{ task_id: "workflow-1", task_type: "local_workflow", description: "spec" }],
+            "00000000-0000-4000-8000-000000001401",
+          ),
+        );
+        yield* turn.stop([]);
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+        yield* TestClock.adjust("7 minutes");
+        const endedAt = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001402"));
+        yield* TestClock.adjust("3 minutes");
+        assert.deepEqual(yield* readHold(harness), { held: false, lastHeldAtMs: endedAt });
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("keeps the CLI's task level over late task edges", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-level");
+        yield* turn.stop([]);
+        yield* turn.finish;
+        yield* harness.offerAndWait(
+          level(
+            [{ task_id: "agent-1", task_type: "local_agent", description: "resumed" }],
+            "00000000-0000-4000-8000-000000001404",
+          ),
+        );
+        // A completion of the task's earlier run arrives late: the level stands.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_updated",
+            task_id: "agent-1",
+            patch: { status: "completed" },
+            uuid: "00000000-0000-4000-8000-000000001405",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        assert.isTrue(yield* isHeld(harness));
+        yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001406"));
+        assert.isFalse(yield* isHeld(harness));
+        // A start that arrives after the level dropped its task adds nothing.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "workflow-late",
+            task_type: "local_workflow",
+            description: "late",
+            uuid: "00000000-0000-4000-8000-000000001407",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        assert.isFalse(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+  });
 });

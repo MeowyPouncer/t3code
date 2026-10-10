@@ -412,6 +412,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     searchTerms: ["composer context window bar cache timer compaction count usage tokens"],
   },
+  // FORK (T3MIG-FORK-014)
+  {
+    id: "stop-idle-agent-processes",
+    title: "Stop idle agent processes",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["memory ram claude codex process session idle free resume conversation"],
+  },
+  {
+    id: "minutes-before-idle-stop",
+    title: "Idle minutes before stopping",
+    to: "/settings/general",
+    targetId: "stop-idle-agent-processes",
+    scope: "environment-defaults",
+    searchTerms: ["agent process session timeout memory"],
+  },
   {
     id: "send-shortcut",
     title: "Send shortcut",
