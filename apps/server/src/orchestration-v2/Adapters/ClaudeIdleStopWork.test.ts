@@ -8,7 +8,6 @@ import {
   CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START,
   type ClaudeIdleStopWork,
   claudeIdleStopWorkHolds,
-  updateClaudeIdleStopWork,
 } from "./ClaudeIdleStopWork.ts";
 
 const level = (tasks: ReadonlyArray<Record<string, unknown>>) => ({
@@ -193,20 +192,17 @@ describe("Claude idle stop work: edges, for a CLI that sends no level", () => {
 });
 
 describe("Claude idle stop work: bookkeeping", () => {
-  it("returns the same state and map for a frame that changes nothing", () => {
+  it("returns the same state for a frame that changes nothing", () => {
     const work = apply(known, level([{ task_id: "t1", task_type: "local_workflow" }]));
     expect(
       applyClaudeIdleStopFrame(work, level([{ task_id: "t1", task_type: "local_workflow" }])),
     ).toBe(work);
     expect(applyClaudeIdleStopFrame(work, RESULT)).toBe(work);
-    const map = new Map([["native", work]]);
-    expect(updateClaudeIdleStopWork(map, "native", (current) => current)).toBe(map);
   });
 
-  it("starts a thread with no entry as a new process", () => {
-    const updated = updateClaudeIdleStopWork(new Map(), "other", (current) => current);
-    expect(claudeIdleStopWorkHolds(updated.get("other")!)).toEqual(["session_cron"]);
-    expect(anyClaudeIdleStopWorkHolds(updated)).toBe(true);
-    expect(anyClaudeIdleStopWorkHolds(new Map([["native", known]]))).toBe(false);
+  it("tells whether any process holds work", () => {
+    expect(anyClaudeIdleStopWorkHolds([known, CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START])).toBe(true);
+    expect(anyClaudeIdleStopWorkHolds([known])).toBe(false);
+    expect(anyClaudeIdleStopWorkHolds([])).toBe(false);
   });
 });

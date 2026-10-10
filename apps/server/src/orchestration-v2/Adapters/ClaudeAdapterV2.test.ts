@@ -9070,6 +9070,62 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
+    // T3 lets go of a process whose interrupt does not close it within 10 s.
+    const interruptPastTimeout = (
+      harness: Effect.Success<typeof makeWakeHarness>,
+      attemptId: string,
+    ) =>
+      Effect.gen(function* () {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        const interrupting = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+        yield* TestClock.adjust("11 seconds");
+        yield* Fiber.join(interrupting);
+      });
+    const awaitHold = (harness: Effect.Success<typeof makeWakeHarness>, held: boolean) =>
+      Effect.gen(function* () {
+        let current = yield* isHeld(harness);
+        for (let i = 0; i < 200 && current !== held; i += 1) {
+          yield* Effect.yieldNow;
+          current = yield* isHeld(harness);
+        }
+        return current;
+      });
+
+    it.effect("lets go of a process T3 retired after a timeout once it exits late", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-late-exit");
+        yield* interruptPastTimeout(harness, "idle-stop-late-exit");
+        // Still running, so what it holds still counts.
+        assert.isTrue(yield* isHeld(harness));
+        yield* Queue.shutdown(harness.sdkMessages);
+        assert.isFalse(yield* awaitHold(harness, false));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("keeps a replacement's holds when the retired process exits after it", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+        yield* startIdleStopTurn(harness, "idle-stop-retired");
+        yield* interruptPastTimeout(harness, "idle-stop-retired");
+        // The replacement process starts with its crons unknown.
+        yield* startIdleStopTurn(harness, "idle-stop-replacement");
+        assert.equal(harness.processQueues.length, 2);
+        assert.isTrue(yield* isHeld(harness));
+        // The retired process exits now: only its own state goes.
+        yield* Queue.shutdown(harness.sdkMessages);
+        for (let i = 0; i < 50; i += 1) yield* Effect.yieldNow;
+        assert.isTrue(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
     it.effect("holds while a workflow runs and records when it ended", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;

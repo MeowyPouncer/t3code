@@ -157,24 +157,7 @@ export function claudeIdleStopWorkHolds(
   return holds;
 }
 
-/**
- * Updates one native thread's work; returns `current` itself when nothing
- * changed. A thread with no entry starts as a fresh process would.
- */
-export function updateClaudeIdleStopWork(
-  current: ReadonlyMap<string, ClaudeIdleStopWork>,
-  nativeThreadId: string,
-  update: (work: ClaudeIdleStopWork) => ClaudeIdleStopWork,
-): ReadonlyMap<string, ClaudeIdleStopWork> {
-  const work = current.get(nativeThreadId) ?? CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START;
-  const next = update(work);
-  if (next === work && current.has(nativeThreadId)) return current;
-  return new Map(current).set(nativeThreadId, next);
-}
-
-/** Whether any live process holds work. */
-export function anyClaudeIdleStopWorkHolds(
-  works: ReadonlyMap<string, ClaudeIdleStopWork>,
-): boolean {
-  return [...works.values()].some((work) => claudeIdleStopWorkHolds(work).length > 0);
+/** Whether any of these processes holds work. */
+export function anyClaudeIdleStopWorkHolds(works: Iterable<ClaudeIdleStopWork>): boolean {
+  return [...works].some((work) => claudeIdleStopWorkHolds(work).length > 0);
 }
