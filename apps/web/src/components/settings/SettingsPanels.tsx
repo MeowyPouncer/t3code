@@ -34,6 +34,7 @@ import {
   MAX_INTERFACE_FONT_SIZE,
   MAX_PANEL_ANIMATION_DURATION_MS,
   MAX_PROMPT_FONT_SIZE,
+  MAX_PROVIDER_SESSION_IDLE_STOP_MINUTES,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MAX_TERMINAL_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
@@ -42,6 +43,7 @@ import {
   MIN_INTERFACE_FONT_SIZE,
   MIN_PANEL_ANIMATION_DURATION_MS,
   MIN_PROMPT_FONT_SIZE,
+  MIN_PROVIDER_SESSION_IDLE_STOP_MINUTES,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
@@ -613,6 +615,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.statusLineEnabled !== DEFAULT_UNIFIED_SETTINGS.statusLineEnabled
         ? ["Status line"]
         : []),
+      ...(settings.providerSessionIdleStopMinutes !==
+      DEFAULT_UNIFIED_SETTINGS.providerSessionIdleStopMinutes
+        ? ["Stop idle agent processes"]
+        : []),
       ...(settings.composerRichTextEnabled !== DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled
         ? ["Rich text composer"]
         : []),
@@ -682,6 +688,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadUnpin,
       settings.composerCollapseOnScroll,
       settings.statusLineEnabled,
+      settings.providerSessionIdleStopMinutes,
       settings.composerRichTextEnabled,
       settings.sendShortcut,
       settings.followUpBehavior,
@@ -805,6 +812,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
       statusLineEnabled: DEFAULT_UNIFIED_SETTINGS.statusLineEnabled,
+      providerSessionIdleStopMinutes: DEFAULT_UNIFIED_SETTINGS.providerSessionIdleStopMinutes,
       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
@@ -2083,6 +2091,45 @@ function AutoSettleDaysInput({
   );
 }
 
+// FORK (T3MIG-FORK-014): the window turning the idle stop back on starts with.
+const IDLE_STOP_DEFAULT_MINUTES = DEFAULT_UNIFIED_SETTINGS.providerSessionIdleStopMinutes ?? 30;
+
+function IdleStopMinutesInput({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (minutes: number) => void;
+}) {
+  // A draft only while editing, so the field can be emptied mid-edit; it
+  // commits valid input and shows the setting again on blur.
+  const [draft, setDraft] = useState<string | null>(null);
+
+  return (
+    <Input
+      size="sm"
+      type="number"
+      min={MIN_PROVIDER_SESSION_IDLE_STOP_MINUTES}
+      max={MAX_PROVIDER_SESSION_IDLE_STOP_MINUTES}
+      className="w-full sm:w-24"
+      value={draft ?? String(value)}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        const parsed = Number(event.target.value);
+        if (
+          Number.isInteger(parsed) &&
+          parsed >= MIN_PROVIDER_SESSION_IDLE_STOP_MINUTES &&
+          parsed <= MAX_PROVIDER_SESSION_IDLE_STOP_MINUTES
+        ) {
+          onCommit(parsed);
+        }
+      }}
+      onBlur={() => setDraft(null)}
+      aria-label="Idle minutes before stopping"
+    />
+  );
+}
+
 // The legacy rows sit behind the fold, so a settings-search jump has to
 // expand the section before its target can mount and scroll.
 const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set([
@@ -2815,6 +2862,55 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        {/* FORK (T3MIG-FORK-014) */}
+        <SettingsRow
+          serverScoped
+          settingKeys={["providerSessionIdleStopMinutes"]}
+          {...searchableSetting("stop-idle-agent-processes")}
+          description="Stop a thread's agent process (claude, codex …) once the thread has been idle this long, to free its memory. A thread with a running turn, a pending approval or question, background work, a scheduled wakeup, or delegated work still running is never idle. The next message resumes the same conversation."
+          resetAction={
+            settings.providerSessionIdleStopMinutes !==
+            DEFAULT_UNIFIED_SETTINGS.providerSessionIdleStopMinutes ? (
+              <SettingResetButton
+                label="stop idle agent processes"
+                onClick={() =>
+                  updateSettings({
+                    providerSessionIdleStopMinutes:
+                      DEFAULT_UNIFIED_SETTINGS.providerSessionIdleStopMinutes,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["providerSessionIdleStopMinutes"]}
+              checked={(settings.providerSessionIdleStopMinutes ?? 0) > 0}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  providerSessionIdleStopMinutes: checked ? IDLE_STOP_DEFAULT_MINUTES : null,
+                })
+              }
+              aria-label="Stop idle agent processes"
+            />
+          }
+        />
+        {settings.providerSessionIdleStopMinutes !== null &&
+        settings.providerSessionIdleStopMinutes > 0 ? (
+          <SettingsRow
+            serverScoped
+            settingKeys={["providerSessionIdleStopMinutes"]}
+            title={searchableSetting("minutes-before-idle-stop").title}
+            description="Minutes without activity, counted from the end of the thread's last work."
+            control={
+              <IdleStopMinutesInput
+                value={settings.providerSessionIdleStopMinutes}
+                onCommit={(minutes) => updateSettings({ providerSessionIdleStopMinutes: minutes })}
+              />
+            }
+          />
+        ) : null}
 
         <SettingsRow
           {...searchableSetting("send-shortcut")}
