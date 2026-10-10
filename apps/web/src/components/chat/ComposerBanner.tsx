@@ -284,7 +284,10 @@ function Scroll({ className, children, ...props }: ComponentProps<typeof ScrollA
     <ScrollArea
       radius="none"
       scrollFade
-      className={cn("h-auto max-h-[min(24rem,40dvh)]", className)}
+      className={cn(
+        "h-auto max-h-[min(24rem,var(--composer-banner-scroll-budget,40dvh))]",
+        className,
+      )}
       {...props}
     >
       {/* Clears the overlay scrollbar only once there is something to scroll. */}

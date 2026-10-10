@@ -16,6 +16,8 @@ export interface ComposerTasksSurface {
   readonly inlineBadge: boolean;
   readonly tab: boolean;
   readonly drawer: boolean;
+  /** The open list and a question or approval panel share one scroll height budget. */
+  readonly sharesScrollBudget: boolean;
 }
 
 export function resolveComposerTasksSurface(
@@ -36,5 +38,6 @@ export function resolveComposerTasksSurface(
       !showComposerTopDrawer &&
       !isComposerCollapsedMobile,
     drawer: hasTasks && drawerOpen,
+    sharesScrollBudget: hasTasks && drawerOpen && showComposerTopDrawer,
   };
 }

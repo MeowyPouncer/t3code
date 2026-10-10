@@ -20,6 +20,7 @@ describe("resolveComposerTasksSurface", () => {
       inlineBadge: false,
       tab: true,
       drawer: false,
+      sharesScrollBudget: false,
     });
   });
 
@@ -28,19 +29,25 @@ describe("resolveComposerTasksSurface", () => {
       inlineBadge: true,
       tab: false,
       drawer: false,
+      sharesScrollBudget: false,
     });
   });
 
   it("opens the list above a pending question without dropping it", () => {
     expect(
       resolveComposerTasksSurface({ ...base, showComposerTopDrawer: true, drawerOpen: true }),
-    ).toEqual({ inlineBadge: false, tab: false, drawer: true });
+    ).toEqual({ inlineBadge: false, tab: false, drawer: true, sharesScrollBudget: true });
   });
 
   it("shows nothing without a task list", () => {
     expect(
       resolveComposerTasksSurface({ ...base, hasTasks: false, showComposerTopDrawer: true }),
-    ).toEqual({ inlineBadge: false, tab: false, drawer: false });
+    ).toEqual({
+      inlineBadge: false,
+      tab: false,
+      drawer: false,
+      sharesScrollBudget: false,
+    });
   });
 
   it("keeps the mobile collapsed composer badge", () => {
@@ -48,6 +55,7 @@ describe("resolveComposerTasksSurface", () => {
       inlineBadge: true,
       tab: false,
       drawer: false,
+      sharesScrollBudget: false,
     });
   });
 });

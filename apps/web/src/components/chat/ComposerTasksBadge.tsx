@@ -120,6 +120,9 @@ export const ComposerTasksBadge = memo(function ComposerTasksBadge({
       aria-expanded={expanded}
       aria-label={`${expanded ? "Collapse tasks" : "Tasks"}: ${progress.completedSteps} of ${progress.totalSteps} complete. Current task: ${progress.step}`}
       data-composer-tasks-badge="true"
+      // Focus or a click here must not expand a collapsed composer: that would
+      // remount a pending question beside it and reset its disclosure state.
+      data-chat-composer-collapsed-controls="true"
       onClick={onToggle}
       onPointerDown={(event) => event.preventDefault()}
     >
