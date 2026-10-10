@@ -510,6 +510,13 @@ export interface ProviderAdapterV2SessionRuntime {
    */
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   /**
+   * FORK (T3MIG-FORK-014): whether the provider process holds work an idle
+   * stop would lose, such as background tasks or scheduled wakeups. When
+   * present, the session manager's idle stop reads it instead of
+   * `hasPendingBackgroundWork`.
+   */
+  readonly hasIdleStopHolds?: Effect.Effect<boolean>;
+  /**
    * Per-provider-thread pending work for root-run ingestion stop gates. When
    * present, RunExecutionService uses only this probe (never the session-wide
    * hasPendingBackgroundWork) so sibling native threads cannot pin an

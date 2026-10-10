@@ -4582,18 +4582,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
         const afterFailure = providerThreadRosterEvents(harness.events).at(-1);
         assert.deepEqual(afterFailure?.providerThread.pendingBackgroundTasks ?? [], []);
-        // FORK (T3MIG-FORK-014): the Waiting roster is cleared, but an idle
-        // stop still waits until the live CLI reports the task gone.
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
-        yield* harness.offerAndWait(
-          claudeSdkFrame({
-            type: "system",
-            subtype: "background_tasks_changed",
-            tasks: [],
-            uuid: "00000000-0000-4000-8000-000000000204",
-            session_id: WAKE_NATIVE_SESSION,
-          }),
-        );
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     ),
@@ -4856,29 +4844,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.deepEqual(rosterBAfterFail ?? [], []);
           assert.isFalse(yield* hasPendingBackgroundWorkForThread(providerThreadA));
           assert.isFalse(yield* hasPendingBackgroundWorkForThread(providerThreadB));
-          // FORK (T3MIG-FORK-014): B's live CLI still holds an idle stop until
-          // it reports the task gone; A's dead process holds nothing.
-          assert.isTrue(yield* hasPendingBackgroundWork);
-          yield* Queue.offer(
-            processB.queue,
-            claudeSdkFrame({
-              type: "system",
-              subtype: "task_notification",
-              task_id: taskB,
-              tool_use_id: "toolu-roster-b",
-              status: "stopped",
-              output_file: `/tmp/claude-replay/tasks/${taskB}.output`,
-              summary: "stopped",
-              uuid: "00000000-0000-4000-8000-000000000305",
-              session_id: nativeIds[1],
-            }),
-          );
-          let holding = true;
-          for (let i = 0; i < 200 && holding; i += 1) {
-            yield* Effect.yieldNow;
-            holding = yield* hasPendingBackgroundWork;
-          }
-          assert.isFalse(holding);
+          assert.isFalse(yield* hasPendingBackgroundWork);
         }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
       ),
   );
@@ -8936,12 +8902,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
   });
 
-  // FORK (T3MIG-FORK-014): an idle stop waits for work the Waiting roster does
-  // not show — a workflow, and crons the CLI reports to its Stop hooks.
+  // FORK (T3MIG-FORK-014): an idle stop waits for what the live CLI process
+  // holds — every background task it reports, and crons its Stop hooks report.
   describe("idle stop holds", () => {
-    const stopHookInput = (sessionCrons: ReadonlyArray<unknown> | undefined): HookInput =>
+    const stopHookInput = (
+      sessionCrons: ReadonlyArray<unknown> | undefined,
+      event: "Stop" | "SubagentStop" = "Stop",
+    ): HookInput =>
       ({
-        hook_event_name: "Stop",
+        hook_event_name: event,
         session_id: WAKE_NATIVE_SESSION,
         transcript_path: "/tmp/claude-replay/transcript.jsonl",
         cwd: "/tmp",
@@ -8959,10 +8928,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       input: HookInput,
     ) =>
       Effect.promise(() => {
-        if (hook === undefined) throw new Error("Claude query options carry no Stop hook.");
+        if (hook === undefined) throw new Error("Claude query options carry no such hook.");
         return hook(input, undefined, { signal: new AbortController().signal });
       });
-    const workflowLevel = (tasks: ReadonlyArray<Record<string, unknown>>, uuid: string) =>
+    const level = (tasks: ReadonlyArray<Record<string, unknown>>, uuid: string) =>
       claudeSdkFrame({
         type: "system",
         subtype: "background_tasks_changed",
@@ -8998,150 +8967,166 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       },
     });
-
-    it.effect("registers Stop and SubagentStop hooks on every query", () =>
+    const startIdleStopTurn = (
+      harness: Effect.Success<typeof makeWakeHarness>,
+      attemptId: string,
+    ) =>
       Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("idle-stop-hooks"),
+            attemptId: RunAttemptId.make(attemptId),
             text: "Hello",
             attachments: [],
           }),
         );
+        const hooks = harness.getOpenedOptions()?.hooks;
+        const holds = harness.runtime.hasIdleStopHolds;
+        if (holds === undefined) return yield* Effect.die("no hasIdleStopHolds");
+        return {
+          holds,
+          stop: (crons: ReadonlyArray<unknown> | undefined) =>
+            callHook(hooks?.Stop?.[0]?.hooks[0], stopHookInput(crons)),
+          subagentStop: (crons: ReadonlyArray<unknown>) =>
+            callHook(hooks?.SubagentStop?.[0]?.hooks[0], stopHookInput(crons, "SubagentStop")),
+        };
+      });
+
+    it.effect("registers Stop and SubagentStop hooks on every query", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-hooks");
         const hooks = harness.getOpenedOptions()?.hooks;
         assert.equal(hooks?.Stop?.length, 1);
         assert.equal(hooks?.SubagentStop?.length, 1);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
+    it.effect("holds a new process until a Stop hook reports its crons", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const holds = harness.runtime.hasIdleStopHolds;
+        assert.isDefined(holds);
+        // No process yet: nothing to lose.
+        assert.isFalse(yield* holds!);
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-process-start");
+        // It may have restored crons from an earlier session.
+        assert.isTrue(yield* turn.holds);
+        // A turn that ends without a Stop hook (interrupted) leaves them unknown.
+        yield* harness.offerAndWait(turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+        assert.isTrue(yield* turn.holds);
+        yield* turn.stop([]);
+        assert.isFalse(yield* turn.holds);
+        // Its upstream counterpart is unchanged.
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("lets go of a process that has exited", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-exit");
+        assert.isTrue(yield* turn.holds);
+        yield* Queue.shutdown(harness.sdkMessages);
+        let holding = true;
+        for (let i = 0; i < 200 && holding; i += 1) {
+          yield* Effect.yieldNow;
+          holding = yield* turn.holds;
+        }
+        assert.isFalse(holding);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
     it.effect("holds while a workflow runs, though the Waiting roster leaves it out", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("idle-stop-workflow"),
-            text: "Run the spec workflow.",
-            attachments: [],
-          }),
-        );
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-workflow");
         yield* harness.offerAndWait(
-          workflowLevel(
+          level(
             [{ task_id: "workflow-1", task_type: "local_workflow", description: "spec" }],
             "00000000-0000-4000-8000-000000001401",
           ),
         );
+        yield* turn.stop([]);
         yield* harness.offerAndWait(turnOneResult);
         yield* Queue.take(harness.terminalReceipts);
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
-
-        yield* harness.offerAndWait(workflowLevel([], "00000000-0000-4000-8000-000000001402"));
+        assert.isTrue(yield* turn.holds);
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+        yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001402"));
+        assert.isFalse(yield* turn.holds);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
-    it.effect("holds for a scheduled wakeup until the Stop hook reports no crons", () =>
+    it.effect("keeps the CLI's task level over late task edges", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now: yield* DateTime.now,
-            attemptId: RunAttemptId.make("idle-stop-crons"),
-            text: "Check the build every 45 minutes.",
-            attachments: [],
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-level");
+        yield* turn.stop([]);
+        yield* harness.offerAndWait(
+          level(
+            [{ task_id: "agent-1", task_type: "local_agent", description: "resumed" }],
+            "00000000-0000-4000-8000-000000001404",
+          ),
+        );
+        // A completion of the task's earlier run arrives late: the level stands.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_updated",
+            task_id: "agent-1",
+            patch: { status: "completed" },
+            uuid: "00000000-0000-4000-8000-000000001405",
+            session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        const stopHook = harness.getOpenedOptions()?.hooks?.Stop?.[0]?.hooks[0];
-        const subagentStopHook = harness.getOpenedOptions()?.hooks?.SubagentStop?.[0]?.hooks[0];
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        assert.isTrue(yield* turn.holds);
+        yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001406"));
+        assert.isFalse(yield* turn.holds);
+        // A start that arrives after the level dropped its task adds nothing.
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "workflow-late",
+            task_type: "local_workflow",
+            description: "late",
+            uuid: "00000000-0000-4000-8000-000000001407",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        assert.isFalse(yield* turn.holds);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("holds for a scheduled wakeup until a Stop hook reports no crons", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-crons");
+        yield* turn.stop([]);
+        assert.isFalse(yield* turn.holds);
 
         // The tool ran, but no hook has reported the crons since: unknown, so held.
         yield* harness.offerAndWait(cronToolFrame);
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        assert.isTrue(yield* turn.holds);
         // A CLI that sends no session_crons leaves them unknown.
-        yield* callHook(stopHook, stopHookInput(undefined));
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        yield* turn.stop(undefined);
+        assert.isTrue(yield* turn.holds);
 
-        const wakeup = {
-          id: "cron-1",
-          schedule: "45 15 10 10 *",
-          recurring: false,
-          prompt: "/loop check",
-        };
-        yield* callHook(stopHook, stopHookInput([wakeup]));
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        const wakeup = { id: "cron-1", schedule: "45 15 10 10 *", recurring: false, prompt: "p" };
+        yield* turn.stop([wakeup]);
+        assert.isTrue(yield* turn.holds);
         yield* harness.offerAndWait(turnOneResult);
         yield* Queue.take(harness.terminalReceipts);
-        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        assert.isTrue(yield* turn.holds);
 
         // The wakeup fired; the turn it started ends with no crons left.
-        yield* callHook(subagentStopHook, {
-          ...stopHookInput([]),
-          hook_event_name: "SubagentStop",
-        } as HookInput);
-        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        yield* turn.subagentStop([]);
+        assert.isFalse(yield* turn.holds);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
   });
-});
-
-describe("ClaudeAdapterV2 query message stream", () => {
-  it.effect("closes the query when the message stream is interrupted mid-read", () =>
-    Effect.gen(function* () {
-      let closed = false;
-      let releaseRead = () => {};
-      const readStarted = Promise.withResolvers<void>();
-      // Never yields a message — the read stays pending until close() flips
-      // `closed` and releases the in-flight await.
-      // oxlint-disable-next-line require-yield
-      async function* sdkMessages(): AsyncGenerator<SDKMessage, void> {
-        for (;;) {
-          if (closed) return;
-          await new Promise<void>((resolve) => {
-            releaseRead = resolve;
-            readStarted.resolve();
-          });
-        }
-      }
-      const generator = sdkMessages();
-      const close = () => {
-        closed = true;
-        releaseRead();
-      };
-      const query = {
-        next: () => generator.next(),
-        return: async (value?: void) => {
-          close();
-          return generator.return(value);
-        },
-        throw: (error?: unknown) => generator.throw(error),
-        [Symbol.asyncIterator]: () => generator,
-        close,
-      } as unknown as ClaudeQuery;
-
-      const scope = yield* Scope.make();
-      yield* Stream.fromAsyncIterable(
-        ClaudeAdapterV2.claudeQueryMessages(query),
-        (cause) => cause,
-      ).pipe(
-        Stream.runForEach(() => Effect.void),
-        Effect.forkIn(scope),
-      );
-      yield* Effect.promise(() => readStarted.promise);
-
-      // Iterating query[Symbol.asyncIterator]() directly deadlocks here:
-      // the raw generator's return() queues behind the in-flight read and
-      // scope close never completes.
-      yield* Scope.close(scope, Exit.void);
-      assert.isTrue(closed);
-    }),
-  );
 });

@@ -4921,6 +4921,65 @@ it.effect(
     }),
 );
 
+it.effect(
+  "FORK: delegated work that ends late in the window still gets a whole window after it",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const session = yield* openIdleStopSession("idle-stop-late-hold");
+        const nodeId = NodeId.make("delegated-task-late");
+        const writeTask = (status: "running" | "completed") =>
+          Effect.gen(function* () {
+            yield* session.eventSink.write({
+              events: [
+                {
+                  id: yield* session.idAllocator.allocate.event({ threadId: session.threadId }),
+                  type: "subagent.updated",
+                  threadId: session.threadId,
+                  nodeId,
+                  driver: CODEX_DRIVER,
+                  occurredAt: session.now,
+                  payload: {
+                    id: nodeId,
+                    threadId: session.threadId,
+                    runId: null,
+                    parentNodeId: nodeId,
+                    origin: "app_owned",
+                    createdBy: "agent",
+                    driver: CODEX_DRIVER,
+                    providerInstanceId: modelSelection.instanceId,
+                    providerThreadId: null,
+                    childThreadId: ThreadId.make("idle-stop-late-child"),
+                    nativeTaskRef: null,
+                    prompt: "Do the work.",
+                    title: null,
+                    model: null,
+                    status,
+                    result: null,
+                    startedAt: session.now,
+                    completedAt: status === "completed" ? session.now : null,
+                    updatedAt: session.now,
+                  },
+                },
+              ],
+            });
+          });
+        yield* writeTask("running");
+        // The child finishes a minute before the window would have ended.
+        yield* advance("29 minutes");
+        yield* writeTask("completed");
+        yield* advance("1 minute");
+        assert.equal(yield* closes(state), 0);
+        yield* advance("29 minutes");
+        assert.equal(yield* closes(state), 0);
+        yield* advance("1 minute");
+        assert.equal(yield* closes(state), 1);
+      });
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 30 * 60 * 1000 })));
+    }),
+);
+
 it.effect("FORK: holds an idle session whose background-work probe fails", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

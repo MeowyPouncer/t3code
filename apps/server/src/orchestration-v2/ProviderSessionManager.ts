@@ -1146,17 +1146,18 @@ export const layerWithOptions = (
         );
 
       // FORK (T3MIG-FORK-014): everything that keeps an idle session open —
-      // the adapter's live background work (a probe that fails counts as
-      // work; upstream counted it as none), and each attached thread's
-      // active runs, pending requests and delegated work.
+      // the work its provider process holds (`hasIdleStopHolds`, else the
+      // adapter's pending background work; a probe that fails counts as work,
+      // upstream counted it as none), and each attached thread's active runs,
+      // pending requests and delegated work.
       const idleStopHolds = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const holds: Array<IdleStopHold> = [];
+          const processProbe =
+            entry.runtime.hasIdleStopHolds ?? entry.runtime.hasPendingBackgroundWork;
           if (
-            entry.runtime.hasPendingBackgroundWork !== undefined &&
-            (yield* entry.runtime.hasPendingBackgroundWork.pipe(
-              Effect.catchCause(() => Effect.succeed(true)),
-            ))
+            processProbe !== undefined &&
+            (yield* processProbe.pipe(Effect.catchCause(() => Effect.succeed(true))))
           ) {
             holds.push("background_work");
           }
@@ -1168,11 +1169,16 @@ export const layerWithOptions = (
 
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
+      // FORK (T3MIG-FORK-014): holds are checked every minute from the start
+      // of the idle window, not only at its end, and the window starts again
+      // once the last hold ends.
       const releaseIfStillIdle = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly generation: number;
         readonly idleTimeoutMs: number;
-        /** FORK: the previous check found a hold, so a clear one starts a fresh idle window. */
+        /** When the idle clock started: at scheduling, or when the last hold ended. */
+        readonly clockStartMs: number;
+        /** The previous check found a hold. */
         readonly heldOnLastCheck?: boolean;
       }): Effect.Effect<void> =>
         Effect.gen(function* () {
@@ -1190,8 +1196,9 @@ export const layerWithOptions = (
           // can reuse the same providerSessionId while this fiber is parked.
           const probedRuntime = entry.runtime;
           const holds = yield* idleStopHolds(entry);
+          const now = yield* Clock.currentTimeMillis;
+          const recheckMs = Math.min(input.idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS);
           if (holds.length > 0) {
-            const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
             if (maxIdlePinMs === null || now - pinnedSinceMs < maxIdlePinMs) {
               const shouldContinuePin = yield* Ref.modify(sessions, (latest) => {
@@ -1222,11 +1229,8 @@ export const layerWithOptions = (
               }
               // Re-check on this fiber. Do not call scheduleIdleReleaseInternal:
               // that cancels entry.idleFiber, which is this fiber, and can
-              // self-deadlock on Fiber.interrupt. FORK: every minute rather than
-              // every idle window, so the window after the work ends is not late.
-              yield* Effect.sleep(
-                Duration.millis(Math.min(input.idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS)),
-              );
+              // self-deadlock on Fiber.interrupt.
+              yield* Effect.sleep(Duration.millis(recheckMs));
               return yield* releaseIfStillIdle({ ...input, heldOnLastCheck: true });
             }
             yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
@@ -1234,11 +1238,14 @@ export const layerWithOptions = (
               pinnedForMs: now - pinnedSinceMs,
               holds,
             });
-          } else if (input.heldOnLastCheck === true) {
-            // FORK (T3MIG-FORK-014): the idle clock starts once the last hold
-            // has ended, so the session gets a whole idle window after it.
-            yield* Effect.sleep(Duration.millis(input.idleTimeoutMs));
-            return yield* releaseIfStillIdle({ ...input, heldOnLastCheck: false });
+          } else {
+            // A hold that has just ended starts a whole idle window.
+            const clockStartMs = input.heldOnLastCheck === true ? now : input.clockStartMs;
+            const remainingMs = clockStartMs + input.idleTimeoutMs - now;
+            if (remainingMs > 0) {
+              yield* Effect.sleep(Duration.millis(Math.min(remainingMs, recheckMs)));
+              return yield* releaseIfStillIdle({ ...input, clockStartMs, heldOnLastCheck: false });
+            }
           }
           // The hold checks yield to the adapter and the store, so the idle
           // decision above can go stale; the generation guard revalidates
@@ -1285,14 +1292,24 @@ export const layerWithOptions = (
 
           yield* cancelIdleFiber(entry.idleFiber);
           const generation = entry.idleGeneration + 1;
-          // FORK (T3MIG-FORK-014): with idle stop off the session keeps no timer.
+          // FORK (T3MIG-FORK-014): with idle stop off the session keeps no timer;
+          // otherwise its holds are first checked a minute in (or at the end of
+          // a shorter window).
           const idleTimeoutMs = yield* resolveIdleTimeoutMs;
+          const clockStartMs = yield* Clock.currentTimeMillis;
           const idleFiber =
             idleTimeoutMs === null
               ? null
-              : yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
+              : yield* Effect.sleep(
+                  Duration.millis(Math.min(idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS)),
+                ).pipe(
                   Effect.andThen(
-                    releaseIfStillIdle({ providerSessionId, generation, idleTimeoutMs }),
+                    releaseIfStillIdle({
+                      providerSessionId,
+                      generation,
+                      idleTimeoutMs,
+                      clockStartMs,
+                    }),
                   ),
                   Effect.forkIn(layerScope),
                 );

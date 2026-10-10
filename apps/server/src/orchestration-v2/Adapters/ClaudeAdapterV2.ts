@@ -2,6 +2,7 @@ import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts"
 import {
   applyClaudeIdleStopFrame,
   applyClaudeStopHookInput,
+  CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START,
   type ClaudeIdleStopWork,
   claudeIdleStopWorkHolds,
   updateClaudeIdleStopWork,
@@ -3264,9 +3265,9 @@ export function makeClaudeAdapterV2(
         const pendingBackgroundTasksByNativeThread = yield* Ref.make(
           new Map<string, Map<string, OrchestrationV2PendingBackgroundTask>>(),
         );
-        // FORK (T3MIG-FORK-014): per native session, the process's live
-        // background tasks of every type and its crons, which hold an idle
-        // stop. Per CLI process like the roster: reset when it starts or goes.
+        // FORK (T3MIG-FORK-014): per native session with a live CLI process,
+        // its background tasks of every type and its crons, which hold an idle
+        // stop. Set when the process starts, dropped when it goes.
         const idleStopWorkByNativeThread = yield* Ref.make<ReadonlyMap<string, ClaudeIdleStopWork>>(
           new Map(),
         );
@@ -7460,6 +7461,11 @@ export function makeClaudeAdapterV2(
           yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
             status: "active",
           });
+          // FORK (T3MIG-FORK-014): the new process holds an idle stop until its
+          // first Stop hook reports its crons; it may restore earlier ones.
+          yield* Ref.update(idleStopWorkByNativeThread, (current) =>
+            new Map(current).set(nativeThreadId, CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START),
+          );
           hookOwner.query = querySession;
           const closed = yield* Deferred.make<void, never>();
           const context: ClaudeLiveQueryContext = {
@@ -7918,8 +7924,24 @@ export function makeClaudeAdapterV2(
                 return true;
               }
             }
-            // FORK (T3MIG-FORK-014): workflows and other background tasks the
-            // roster does not show, and crons that will wake the process.
+            return false;
+          }),
+          // FORK (T3MIG-FORK-014): what an idle stop would lose — the live
+          // process's background tasks and crons, as the CLI reports them, and
+          // wake output still waiting for its continuation run.
+          hasIdleStopHolds: Effect.gen(function* () {
+            for (const entry of (yield* Ref.get(wakeBuffers)).values()) {
+              if (
+                entry.messages.some(
+                  (message) =>
+                    message.type === "user" ||
+                    message.type === "assistant" ||
+                    message.type === "result",
+                )
+              ) {
+                return true;
+              }
+            }
             for (const work of (yield* Ref.get(idleStopWorkByNativeThread)).values()) {
               if (claudeIdleStopWorkHolds(work).length > 0) {
                 return true;
