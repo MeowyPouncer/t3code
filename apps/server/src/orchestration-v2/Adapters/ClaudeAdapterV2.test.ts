@@ -47,6 +47,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -8903,34 +8904,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   });
 
   // FORK (T3MIG-FORK-014): an idle stop waits for what the live CLI process
-  // holds — every background task it reports, and crons its Stop hooks report.
+  // holds — every background task it reports, and crons its Stop hook reports.
   describe("idle stop holds", () => {
-    const stopHookInput = (
-      sessionCrons: ReadonlyArray<unknown> | undefined,
-      event: "Stop" | "SubagentStop" = "Stop",
-    ): HookInput =>
+    const stopHookInput = (sessionCrons: ReadonlyArray<unknown> | undefined): HookInput =>
       ({
-        hook_event_name: event,
+        hook_event_name: "Stop",
         session_id: WAKE_NATIVE_SESSION,
         transcript_path: "/tmp/claude-replay/transcript.jsonl",
         cwd: "/tmp",
         stop_hook_active: false,
         ...(sessionCrons === undefined ? {} : { session_crons: sessionCrons }),
       }) as HookInput;
-    const callHook = (
-      hook:
-        | ((
-            input: HookInput,
-            toolUseId: string | undefined,
-            options: { signal: AbortSignal },
-          ) => Promise<unknown>)
-        | undefined,
-      input: HookInput,
-    ) =>
-      Effect.promise(() => {
-        if (hook === undefined) throw new Error("Claude query options carry no such hook.");
-        return hook(input, undefined, { signal: new AbortController().signal });
-      });
     const level = (tasks: ReadonlyArray<Record<string, unknown>>, uuid: string) =>
       claudeSdkFrame({
         type: "system",
@@ -8967,6 +8951,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       },
     });
+    const readHold = (harness: Effect.Success<typeof makeWakeHarness>) => {
+      const read = harness.runtime.readIdleStopHold;
+      if (read === undefined) return Effect.die("Claude runtime must expose readIdleStopHold.");
+      return read;
+    };
+    const isHeld = (harness: Effect.Success<typeof makeWakeHarness>) =>
+      readHold(harness).pipe(Effect.map((hold) => hold.held));
     const startIdleStopTurn = (
       harness: Effect.Success<typeof makeWakeHarness>,
       attemptId: string,
@@ -8982,65 +8973,104 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attachments: [],
           }),
         );
-        const hooks = harness.getOpenedOptions()?.hooks;
-        const holds = harness.runtime.hasIdleStopHolds;
-        if (holds === undefined) return yield* Effect.die("no hasIdleStopHolds");
-        return {
-          holds,
-          stop: (crons: ReadonlyArray<unknown> | undefined) =>
-            callHook(hooks?.Stop?.[0]?.hooks[0], stopHookInput(crons)),
-          subagentStop: (crons: ReadonlyArray<unknown>) =>
-            callHook(hooks?.SubagentStop?.[0]?.hooks[0], stopHookInput(crons, "SubagentStop")),
-        };
+        const hook = harness.getOpenedOptions()?.hooks?.Stop?.[0]?.hooks[0];
+        /** The CLI runs its Stop hook; the report covers the frames before the next result. */
+        const stop = (crons: ReadonlyArray<unknown> | undefined) =>
+          Effect.promise(() => {
+            if (hook === undefined) throw new Error("Claude query options carry no Stop hook.");
+            return hook(stopHookInput(crons), undefined, {
+              signal: new AbortController().signal,
+            });
+          });
+        const finish = Effect.gen(function* () {
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+        });
+        return { stop, finish };
       });
 
-    it.effect("registers Stop and SubagentStop hooks on every query", () =>
+    it.effect("registers a Stop hook on every query", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
         yield* startIdleStopTurn(harness, "idle-stop-hooks");
         const hooks = harness.getOpenedOptions()?.hooks;
         assert.equal(hooks?.Stop?.length, 1);
-        assert.equal(hooks?.SubagentStop?.length, 1);
+        assert.isUndefined(hooks?.SubagentStop);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
-    it.effect("holds a new process until a Stop hook reports its crons", () =>
+    it.effect("holds a new process until its Stop report applies at the turn's result", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
-        const holds = harness.runtime.hasIdleStopHolds;
-        assert.isDefined(holds);
         // No process yet: nothing to lose.
-        assert.isFalse(yield* holds!);
+        assert.isFalse(yield* isHeld(harness));
         const turn = yield* startIdleStopTurn(harness, "idle-stop-process-start");
         // It may have restored crons from an earlier session.
-        assert.isTrue(yield* turn.holds);
-        // A turn that ends without a Stop hook (interrupted) leaves them unknown.
-        yield* harness.offerAndWait(turnOneResult);
-        yield* Queue.take(harness.terminalReceipts);
-        assert.isTrue(yield* turn.holds);
+        assert.isTrue(yield* isHeld(harness));
         yield* turn.stop([]);
-        assert.isFalse(yield* turn.holds);
+        // The report waits for the result it precedes.
+        assert.isTrue(yield* isHeld(harness));
+        yield* turn.finish;
+        assert.isFalse(yield* isHeld(harness));
         // Its upstream counterpart is unchanged.
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
-    it.effect("lets go of a process that has exited", () =>
+    it.effect("keeps crons unknown after a turn that ends without a Stop hook", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
-        const turn = yield* startIdleStopTurn(harness, "idle-stop-exit");
-        assert.isTrue(yield* turn.holds);
-        yield* Queue.shutdown(harness.sdkMessages);
-        let holding = true;
-        for (let i = 0; i < 200 && holding; i += 1) {
-          yield* Effect.yieldNow;
-          holding = yield* turn.holds;
-        }
-        assert.isFalse(holding);
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-interrupted");
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
-    it.effect("holds while a workflow runs, though the Waiting roster leaves it out", () =>
+    it.effect("applies a Stop report that overtook a buffered cron tool frame after it", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-overtaken");
+        // The CLI wrote the tool frame, then ran its Stop hook; the callback
+        // runs before the adapter has read the frame.
+        yield* turn.stop([]);
+        yield* harness.offerAndWait(cronToolFrame);
+        yield* turn.finish;
+        assert.isFalse(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("holds for a scheduled wakeup the Stop hook reports", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const turn = yield* startIdleStopTurn(harness, "idle-stop-crons");
+        yield* harness.offerAndWait(cronToolFrame);
+        assert.isTrue(yield* isHeld(harness));
+        yield* turn.stop([
+          { id: "cron-1", schedule: "45 15 10 10 *", recurring: false, prompt: "/loop check" },
+        ]);
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("lets go of a process that has exited, from the moment it did", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startIdleStopTurn(harness, "idle-stop-exit");
+        assert.isTrue(yield* isHeld(harness));
+        yield* TestClock.adjust("5 minutes");
+        const exitedAt = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* Queue.shutdown(harness.sdkMessages);
+        let hold = yield* readHold(harness);
+        for (let i = 0; i < 200 && hold.held; i += 1) {
+          yield* Effect.yieldNow;
+          hold = yield* readHold(harness);
+        }
+        assert.deepEqual(hold, { held: false, lastHeldAtMs: exitedAt });
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    );
+
+    it.effect("holds while a workflow runs and records when it ended", () =>
       Effect.gen(function* () {
         const harness = yield* makeWakeHarness;
         const turn = yield* startIdleStopTurn(harness, "idle-stop-workflow");
@@ -9051,13 +9081,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         );
         yield* turn.stop([]);
-        yield* harness.offerAndWait(turnOneResult);
-        yield* Queue.take(harness.terminalReceipts);
-        assert.isTrue(yield* turn.holds);
+        yield* turn.finish;
+        assert.isTrue(yield* isHeld(harness));
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
 
+        yield* TestClock.adjust("7 minutes");
+        const endedAt = DateTime.toEpochMillis(yield* DateTime.now);
         yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001402"));
-        assert.isFalse(yield* turn.holds);
+        yield* TestClock.adjust("3 minutes");
+        assert.deepEqual(yield* readHold(harness), { held: false, lastHeldAtMs: endedAt });
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
 
@@ -9066,6 +9098,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const harness = yield* makeWakeHarness;
         const turn = yield* startIdleStopTurn(harness, "idle-stop-level");
         yield* turn.stop([]);
+        yield* turn.finish;
         yield* harness.offerAndWait(
           level(
             [{ task_id: "agent-1", task_type: "local_agent", description: "resumed" }],
@@ -9083,9 +9116,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        assert.isTrue(yield* turn.holds);
+        assert.isTrue(yield* isHeld(harness));
         yield* harness.offerAndWait(level([], "00000000-0000-4000-8000-000000001406"));
-        assert.isFalse(yield* turn.holds);
+        assert.isFalse(yield* isHeld(harness));
         // A start that arrives after the level dropped its task adds nothing.
         yield* harness.offerAndWait(
           claudeSdkFrame({
@@ -9098,34 +9131,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        assert.isFalse(yield* turn.holds);
-      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
-    );
-
-    it.effect("holds for a scheduled wakeup until a Stop hook reports no crons", () =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
-        const turn = yield* startIdleStopTurn(harness, "idle-stop-crons");
-        yield* turn.stop([]);
-        assert.isFalse(yield* turn.holds);
-
-        // The tool ran, but no hook has reported the crons since: unknown, so held.
-        yield* harness.offerAndWait(cronToolFrame);
-        assert.isTrue(yield* turn.holds);
-        // A CLI that sends no session_crons leaves them unknown.
-        yield* turn.stop(undefined);
-        assert.isTrue(yield* turn.holds);
-
-        const wakeup = { id: "cron-1", schedule: "45 15 10 10 *", recurring: false, prompt: "p" };
-        yield* turn.stop([wakeup]);
-        assert.isTrue(yield* turn.holds);
-        yield* harness.offerAndWait(turnOneResult);
-        yield* Queue.take(harness.terminalReceipts);
-        assert.isTrue(yield* turn.holds);
-
-        // The wakeup fired; the turn it started ends with no crons left.
-        yield* turn.subagentStop([]);
-        assert.isFalse(yield* turn.holds);
+        assert.isFalse(yield* isHeld(harness));
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     );
   });

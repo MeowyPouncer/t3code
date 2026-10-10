@@ -1146,32 +1146,44 @@ export const layerWithOptions = (
         );
 
       // FORK (T3MIG-FORK-014): everything that keeps an idle session open —
-      // the work its provider process holds (`hasIdleStopHolds`, else the
+      // the work its provider process holds (`readIdleStopHold`, else the
       // adapter's pending background work; a probe that fails counts as work,
       // upstream counted it as none), and each attached thread's active runs,
-      // pending requests and delegated work.
+      // pending requests and delegated work — and when the last of them ended.
+      const sampledBackgroundWork = (runtime: ProviderAdapterV2SessionRuntime) =>
+        runtime.hasPendingBackgroundWork === undefined
+          ? Effect.succeed(false)
+          : runtime.hasPendingBackgroundWork.pipe(Effect.catchCause(() => Effect.succeed(true)));
       const idleStopHolds = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const holds: Array<IdleStopHold> = [];
-          const processProbe =
-            entry.runtime.hasIdleStopHolds ?? entry.runtime.hasPendingBackgroundWork;
-          if (
-            processProbe !== undefined &&
-            (yield* processProbe.pipe(Effect.catchCause(() => Effect.succeed(true))))
-          ) {
+          let lastHeldAtMs: number | null = null;
+          const later = (at: number | null) => {
+            if (at !== null && (lastHeldAtMs === null || at > lastHeldAtMs)) lastHeldAtMs = at;
+          };
+          if (entry.runtime.readIdleStopHold !== undefined) {
+            const process = yield* entry.runtime.readIdleStopHold.pipe(
+              Effect.catchCause(() => Effect.succeed({ held: true, lastHeldAtMs: null })),
+            );
+            if (process.held) holds.push("background_work");
+            later(process.lastHeldAtMs);
+          } else if (yield* sampledBackgroundWork(entry.runtime)) {
             holds.push("background_work");
           }
           for (const threadId of entry.attachedThreadIds) {
-            holds.push(...(yield* threadIdleStopHolds(projectionStore, threadId)));
+            const thread = yield* threadIdleStopHolds(projectionStore, threadId);
+            holds.push(...thread.holds);
+            later(thread.lastHeldAtMs);
           }
-          return holds;
+          return { holds, lastHeldAtMs: lastHeldAtMs as number | null };
         });
 
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
       // FORK (T3MIG-FORK-014): holds are checked every minute from the start
       // of the idle window, not only at its end, and the window starts again
-      // once the last hold ends.
+      // after the last hold ended: at its recorded end, or, for a probe that
+      // records none, at the first check that finds it gone.
       const releaseIfStillIdle = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly generation: number;
@@ -1195,7 +1207,7 @@ export const layerWithOptions = (
           // Capture runtime identity before yielding: a replacement session
           // can reuse the same providerSessionId while this fiber is parked.
           const probedRuntime = entry.runtime;
-          const holds = yield* idleStopHolds(entry);
+          const { holds, lastHeldAtMs } = yield* idleStopHolds(entry);
           const now = yield* Clock.currentTimeMillis;
           const recheckMs = Math.min(input.idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS);
           if (holds.length > 0) {
@@ -1239,8 +1251,12 @@ export const layerWithOptions = (
               holds,
             });
           } else {
-            // A hold that has just ended starts a whole idle window.
-            const clockStartMs = input.heldOnLastCheck === true ? now : input.clockStartMs;
+            // A hold that has ended starts a whole idle window.
+            const clockStartMs = Math.max(
+              input.clockStartMs,
+              input.heldOnLastCheck === true ? now : Number.NEGATIVE_INFINITY,
+              lastHeldAtMs ?? Number.NEGATIVE_INFINITY,
+            );
             const remainingMs = clockStartMs + input.idleTimeoutMs - now;
             if (remainingMs > 0) {
               yield* Effect.sleep(Duration.millis(Math.min(remainingMs, recheckMs)));
@@ -1294,25 +1310,30 @@ export const layerWithOptions = (
           const generation = entry.idleGeneration + 1;
           // FORK (T3MIG-FORK-014): with idle stop off the session keeps no timer;
           // otherwise its holds are first checked a minute in (or at the end of
-          // a shorter window).
+          // a shorter window). A probe that records no hold end is sampled as
+          // the window starts, so a hold it reports then restarts the window
+          // once it is gone, even if it ends before the first check.
           const idleTimeoutMs = yield* resolveIdleTimeoutMs;
           const clockStartMs = yield* Clock.currentTimeMillis;
+          const runtime = entry.runtime;
           const idleFiber =
             idleTimeoutMs === null
               ? null
-              : yield* Effect.sleep(
-                  Duration.millis(Math.min(idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS)),
-                ).pipe(
-                  Effect.andThen(
-                    releaseIfStillIdle({
-                      providerSessionId,
-                      generation,
-                      idleTimeoutMs,
-                      clockStartMs,
-                    }),
-                  ),
-                  Effect.forkIn(layerScope),
-                );
+              : yield* Effect.gen(function* () {
+                  const heldAtStart =
+                    runtime.readIdleStopHold === undefined &&
+                    (yield* sampledBackgroundWork(runtime));
+                  yield* Effect.sleep(
+                    Duration.millis(Math.min(idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS)),
+                  );
+                  yield* releaseIfStillIdle({
+                    providerSessionId,
+                    generation,
+                    idleTimeoutMs,
+                    clockStartMs,
+                    heldOnLastCheck: heldAtStart,
+                  });
+                }).pipe(Effect.forkIn(layerScope));
           const lastActivityAtMs = yield* Clock.currentTimeMillis;
           yield* Ref.update(sessions, (latest) => {
             const latestEntry = latest.get(key);

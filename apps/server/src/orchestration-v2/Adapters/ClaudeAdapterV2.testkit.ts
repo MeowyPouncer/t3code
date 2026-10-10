@@ -253,7 +253,9 @@ type ClaudeOutboundFrame =
 /**
  * FORK (T3MIG-FORK-014): the CLI runs its Stop hooks before a turn's
  * successful result. The recordings registered none and scheduled no crons,
- * so a replay reports an empty `session_crons`, as the CLI would.
+ * so a replay reports an empty `session_crons`, as the CLI would. The adapter
+ * applies a report only when it reads the result frame, so frames the
+ * consumer has not read yet when the hook runs are covered either way.
  */
 async function runReplayStopHooks(
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,

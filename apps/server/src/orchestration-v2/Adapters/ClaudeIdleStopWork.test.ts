@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  anyClaudeIdleStopWorkHolds,
   applyClaudeIdleStopFrame,
   applyClaudeStopHookInput,
   CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START,
@@ -20,16 +21,15 @@ const started = (taskId: string, extra: Record<string, unknown> = {}) => ({
   type: "system",
   subtype: "task_started",
   task_id: taskId,
-  task_type: "local_workflow",
+  task_type: "local_agent",
   ...extra,
 });
 
-const notified = (taskId: string, extra: Record<string, unknown> = {}) => ({
+const notified = (taskId: string) => ({
   type: "system",
   subtype: "task_notification",
   task_id: taskId,
   status: "completed",
-  ...extra,
 });
 
 const toolUse = (name: string, parentToolUseId: string | null = null) => ({
@@ -38,57 +38,72 @@ const toolUse = (name: string, parentToolUseId: string | null = null) => ({
   message: { content: [{ type: "tool_use", id: `toolu_${name}`, name, input: {} }] },
 });
 
-const NO_CRONS = { hook_event_name: "Stop", session_crons: [] };
-
-/** A process whose first Stop hook has reported no crons. */
-const known = applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, NO_CRONS);
+const RESULT = { type: "result", subtype: "success" };
+const stop = (crons?: ReadonlyArray<Record<string, unknown>>) => ({
+  hook_event_name: "Stop",
+  ...(crons === undefined ? {} : { session_crons: crons }),
+});
+const CRON = { id: "c1", schedule: "*/5 * * * *", recurring: true, prompt: "p" };
 
 const apply = (from: ClaudeIdleStopWork, ...frames: ReadonlyArray<unknown>): ClaudeIdleStopWork =>
   frames.reduce<ClaudeIdleStopWork>(applyClaudeIdleStopFrame, from);
 
+/** A process whose first turn reported no crons. */
+const known = apply(
+  applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, stop([])),
+  RESULT,
+);
+
 describe("Claude idle stop work: crons", () => {
-  it("holds a new process until a hook reports its crons", () => {
-    expect(claudeIdleStopWorkHolds(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START)).toEqual([
-      "session_cron",
-    ]);
-    // An older CLI that sends no session_crons leaves them unknown.
-    expect(
-      claudeIdleStopWorkHolds(
-        applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, {
-          hook_event_name: "Stop",
-        }),
-      ),
-    ).toEqual(["session_cron"]);
-    expect(claudeIdleStopWorkHolds(known)).toEqual([]);
-    // A SubagentStop report makes them known as well.
-    expect(
-      claudeIdleStopWorkHolds(
-        applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, {
-          hook_event_name: "SubagentStop",
-          session_crons: [],
-        }),
-      ),
-    ).toEqual([]);
+  it("holds a new process until a report applies at a result", () => {
+    const start = CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START;
+    expect(claudeIdleStopWorkHolds(start)).toEqual(["session_cron"]);
+    // The report waits for the result frame of its turn.
+    const reported = applyClaudeStopHookInput(start, stop([]));
+    expect(claudeIdleStopWorkHolds(reported)).toEqual(["session_cron"]);
+    expect(claudeIdleStopWorkHolds(apply(reported, RESULT))).toEqual([]);
+    // A turn that ends without a Stop hook (interrupted) leaves them unknown.
+    expect(claudeIdleStopWorkHolds(apply(start, RESULT))).toEqual(["session_cron"]);
+    // So does an older CLI that sends no session_crons.
+    expect(claudeIdleStopWorkHolds(apply(applyClaudeStopHookInput(start, stop()), RESULT))).toEqual(
+      ["session_cron"],
+    );
+  });
+
+  it("covers a cron tool frame the report overtook, once the result arrives", () => {
+    // The CLI wrote the tool frame before its Stop hook, but the hook callback
+    // ran before the frame left the SDK's buffer.
+    const reported = applyClaudeStopHookInput(known, stop([]));
+    const work = apply(reported, toolUse("ScheduleWakeup"), RESULT);
+    expect(claudeIdleStopWorkHolds(work)).toEqual([]);
   });
 
   it("holds while a restored or reported cron is scheduled", () => {
-    const restored = applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, {
-      hook_event_name: "Stop",
-      session_crons: [{ id: "durable", schedule: "0 9 * * *", recurring: true, prompt: "p" }],
-    });
+    const restored = apply(
+      applyClaudeStopHookInput(CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START, stop([CRON])),
+      RESULT,
+    );
     expect(claudeIdleStopWorkHolds(restored)).toEqual(["session_cron"]);
-    expect(restored.crons).toEqual([{ id: "durable", recurring: true }]);
-    expect(claudeIdleStopWorkHolds(applyClaudeStopHookInput(restored, NO_CRONS))).toEqual([]);
+    expect(restored.crons).toEqual([{ id: "c1", recurring: true }]);
+    expect(
+      claudeIdleStopWorkHolds(apply(applyClaudeStopHookInput(restored, stop([])), RESULT)),
+    ).toEqual([]);
   });
 
-  it.each([["ScheduleWakeup"], ["CronCreate"]])("holds after %s until the next report", (tool) => {
-    const used = apply(known, toolUse(tool));
-    expect(claudeIdleStopWorkHolds(used)).toEqual(["session_cron"]);
-    expect(
-      claudeIdleStopWorkHolds(applyClaudeStopHookInput(used, { hook_event_name: "Stop" })),
-    ).toEqual(["session_cron"]);
-    expect(claudeIdleStopWorkHolds(applyClaudeStopHookInput(used, NO_CRONS))).toEqual([]);
-  });
+  it.each([["ScheduleWakeup"], ["CronCreate"]])(
+    "holds after %s until the next report applies",
+    (tool) => {
+      const used = apply(known, toolUse(tool));
+      expect(claudeIdleStopWorkHolds(used)).toEqual(["session_cron"]);
+      expect(claudeIdleStopWorkHolds(apply(used, RESULT))).toEqual(["session_cron"]);
+      expect(
+        claudeIdleStopWorkHolds(apply(applyClaudeStopHookInput(used, stop()), RESULT)),
+      ).toEqual(["session_cron"]);
+      expect(
+        claudeIdleStopWorkHolds(apply(applyClaudeStopHookInput(used, stop([])), RESULT)),
+      ).toEqual([]);
+    },
+  );
 
   it("takes a subagent's cron tool as the session's", () => {
     expect(claudeIdleStopWorkHolds(apply(known, toolUse("CronCreate", "toolu_parent")))).toEqual([
@@ -138,20 +153,30 @@ describe("Claude idle stop work: the task level", () => {
 });
 
 describe("Claude idle stop work: edges, for a CLI that sends no level", () => {
-  it("follows starts and ends", () => {
+  it("holds for a task seen starting until a level clears it", () => {
     const running = apply(known, started("wf"));
     expect(claudeIdleStopWorkHolds(running)).toEqual(["background_task"]);
-    expect(claudeIdleStopWorkHolds(apply(running, notified("wf")))).toEqual([]);
+    // An end edge does not clear it: it cannot tell a resumed task apart.
     expect(
       claudeIdleStopWorkHolds(
-        apply(running, {
+        apply(running, notified("wf"), {
           type: "system",
           subtype: "task_updated",
           task_id: "wf",
           patch: { status: "failed" },
         }),
       ),
-    ).toEqual([]);
+    ).toEqual(["background_task"]);
+    expect(claudeIdleStopWorkHolds(apply(running, notified("wf"), level([])))).toEqual([]);
+  });
+
+  it("keeps a task that ended and then resumed busy", () => {
+    const work = apply(known, started("agent"), notified("agent"), started("agent"));
+    expect(claudeIdleStopWorkHolds(work)).toEqual(["background_task"]);
+    // A start that arrives after its end holds too, until a level.
+    expect(claudeIdleStopWorkHolds(apply(known, notified("quick"), started("quick")))).toEqual([
+      "background_task",
+    ]);
   });
 
   it("ignores a foreground task until it moves to the background", () => {
@@ -165,42 +190,6 @@ describe("Claude idle stop work: edges, for a CLI that sends no level", () => {
     });
     expect(claudeIdleStopWorkHolds(backgrounded)).toEqual(["background_task"]);
   });
-
-  it("does not let an earlier run's completion clear a resumed task", () => {
-    const resumed = apply(
-      known,
-      started("agent", { run_id: "run-1" }),
-      notified("agent", {
-        run_id: "run-1",
-      }),
-      started("agent", { run_id: "run-2" }),
-    );
-    expect(claudeIdleStopWorkHolds(resumed)).toEqual(["background_task"]);
-    // A duplicate completion of run 1 arrives late.
-    expect(claudeIdleStopWorkHolds(apply(resumed, notified("agent", { run_id: "run-1" })))).toEqual(
-      ["background_task"],
-    );
-    expect(claudeIdleStopWorkHolds(apply(resumed, notified("agent", { run_id: "run-2" })))).toEqual(
-      [],
-    );
-  });
-
-  it("does not add a task whose start arrives after its end", () => {
-    const work = apply(known, notified("quick"), started("quick"));
-    expect(claudeIdleStopWorkHolds(work)).toEqual([]);
-    const fenced = apply(
-      known,
-      notified("agent", { run_id: "run-1" }),
-      started("agent", {
-        run_id: "run-1",
-      }),
-    );
-    expect(claudeIdleStopWorkHolds(fenced)).toEqual([]);
-    // A later run of the same task is live.
-    expect(claudeIdleStopWorkHolds(apply(fenced, started("agent", { run_id: "run-2" })))).toEqual([
-      "background_task",
-    ]);
-  });
 });
 
 describe("Claude idle stop work: bookkeeping", () => {
@@ -209,7 +198,7 @@ describe("Claude idle stop work: bookkeeping", () => {
     expect(
       applyClaudeIdleStopFrame(work, level([{ task_id: "t1", task_type: "local_workflow" }])),
     ).toBe(work);
-    expect(applyClaudeIdleStopFrame(work, { type: "result" })).toBe(work);
+    expect(applyClaudeIdleStopFrame(work, RESULT)).toBe(work);
     const map = new Map([["native", work]]);
     expect(updateClaudeIdleStopWork(map, "native", (current) => current)).toBe(map);
   });
@@ -217,5 +206,7 @@ describe("Claude idle stop work: bookkeeping", () => {
   it("starts a thread with no entry as a new process", () => {
     const updated = updateClaudeIdleStopWork(new Map(), "other", (current) => current);
     expect(claudeIdleStopWorkHolds(updated.get("other")!)).toEqual(["session_cron"]);
+    expect(anyClaudeIdleStopWorkHolds(updated)).toBe(true);
+    expect(anyClaudeIdleStopWorkHolds(new Map([["native", known]]))).toBe(false);
   });
 });

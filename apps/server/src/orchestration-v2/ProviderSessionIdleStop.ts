@@ -13,6 +13,7 @@ import type {
   OrchestrationV2Subagent,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
@@ -54,19 +55,41 @@ const TERMINAL_TASK_STATUSES: ReadonlySet<OrchestrationV2Subagent["status"]> = n
 ]);
 
 export interface IdleStopThreadRecords {
-  readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "status" | "queueHeld">>;
-  readonly runtimeRequests: ReadonlyArray<Pick<OrchestrationV2RuntimeRequest, "status">>;
+  readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "status" | "queueHeld" | "completedAt">>;
+  readonly runtimeRequests: ReadonlyArray<
+    Pick<OrchestrationV2RuntimeRequest, "status" | "resolvedAt">
+  >;
   readonly subagents: ReadonlyArray<
-    Pick<OrchestrationV2Subagent, "origin" | "status" | "childThreadId">
+    Pick<
+      OrchestrationV2Subagent,
+      "origin" | "status" | "childThreadId" | "completedAt" | "updatedAt"
+    >
   >;
 }
 
-/**
- * One thread's own holds, and the child threads of its finished delegated
- * tasks, which still hold it while they wait for children of their own.
- */
-export function idleStopHoldsFromRecords(records: IdleStopThreadRecords): {
+/** What holds a thread, and when its last hold ended (null if none ever did). */
+export interface IdleStopThreadHolds {
   readonly holds: ReadonlyArray<IdleStopHold>;
+  readonly lastHeldAtMs: number | null;
+}
+
+function latest(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.max(left, right);
+}
+
+function epochMillis(value: DateTime.Utc | null): number | null {
+  return value === null ? null : DateTime.toEpochMillis(value);
+}
+
+/**
+ * One thread's own holds, when the last of them ended (a run's completion, an
+ * answered request, a delegated task's end), and the child threads of its
+ * finished delegated tasks, which still hold it while they wait for children
+ * of their own.
+ */
+export function idleStopHoldsFromRecords(records: IdleStopThreadRecords): IdleStopThreadHolds & {
   readonly finishedChildThreadIds: ReadonlyArray<ThreadId>;
 } {
   const holds: Array<IdleStopHold> = [];
@@ -91,47 +114,63 @@ export function idleStopHoldsFromRecords(records: IdleStopThreadRecords): {
       ? [task.childThreadId]
       : [],
   );
-  return { holds, finishedChildThreadIds };
+  let lastHeldAtMs: number | null = null;
+  for (const run of records.runs) lastHeldAtMs = latest(lastHeldAtMs, epochMillis(run.completedAt));
+  for (const request of records.runtimeRequests) {
+    lastHeldAtMs = latest(lastHeldAtMs, epochMillis(request.resolvedAt));
+  }
+  for (const task of delegated) {
+    if (!TERMINAL_TASK_STATUSES.has(task.status)) continue;
+    lastHeldAtMs = latest(lastHeldAtMs, epochMillis(task.completedAt ?? task.updatedAt));
+  }
+  return { holds, lastHeldAtMs, finishedChildThreadIds };
 }
+
+const UNKNOWN: IdleStopThreadHolds = { holds: ["unknown"], lastHeldAtMs: null };
 
 const holdsForThread = (
   projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
   threadId: ThreadId,
   depth: number,
   visited: Set<ThreadId>,
-): Effect.Effect<ReadonlyArray<IdleStopHold>> => {
-  if (visited.has(threadId)) return Effect.succeed([]);
+): Effect.Effect<IdleStopThreadHolds> => {
+  if (visited.has(threadId)) return Effect.succeed({ holds: [], lastHeldAtMs: null });
   visited.add(threadId);
   return projectionStore.getThreadRecords(threadId, ["runs", "runtimeRequests", "subagents"]).pipe(
-    Effect.flatMap((records) => {
-      const { holds, finishedChildThreadIds } = idleStopHoldsFromRecords(records);
-      if (holds.length > 0 || finishedChildThreadIds.length === 0) {
-        return Effect.succeed(holds);
+    Effect.flatMap((records): Effect.Effect<IdleStopThreadHolds> => {
+      const own = idleStopHoldsFromRecords(records);
+      if (own.holds.length > 0 || own.finishedChildThreadIds.length === 0) {
+        return Effect.succeed({ holds: own.holds, lastHeldAtMs: own.lastHeldAtMs });
       }
-      if (depth >= MAX_DELEGATION_DEPTH) {
-        return Effect.succeed<ReadonlyArray<IdleStopHold>>(["unknown"]);
-      }
-      return Effect.forEach(finishedChildThreadIds, (childThreadId) =>
+      if (depth >= MAX_DELEGATION_DEPTH) return Effect.succeed(UNKNOWN);
+      return Effect.forEach(own.finishedChildThreadIds, (childThreadId) =>
         holdsForThread(projectionStore, childThreadId, depth + 1, visited),
       ).pipe(
-        Effect.map((childHolds): ReadonlyArray<IdleStopHold> => {
-          const flat = childHolds.flat();
-          if (flat.includes("unknown")) return ["unknown"];
-          return flat.length > 0 ? ["delegated_work"] : [];
+        Effect.map((children): IdleStopThreadHolds => {
+          const flat = children.flatMap((child) => child.holds);
+          const lastHeldAtMs = children.reduce<number | null>(
+            (at, child) => latest(at, child.lastHeldAtMs),
+            own.lastHeldAtMs,
+          );
+          if (flat.includes("unknown")) return UNKNOWN;
+          return { holds: flat.length > 0 ? ["delegated_work"] : [], lastHeldAtMs };
         }),
       );
     }),
     // A thread that no longer exists waits for nothing.
     Effect.catchTags({
-      ProjectionStoreThreadNotFoundError: () => Effect.succeed<ReadonlyArray<IdleStopHold>>([]),
+      ProjectionStoreThreadNotFoundError: () =>
+        Effect.succeed<IdleStopThreadHolds>({ holds: [], lastHeldAtMs: null }),
     }),
-    Effect.catchCause(() => Effect.succeed<ReadonlyArray<IdleStopHold>>(["unknown"])),
+    Effect.catchCause(() => Effect.succeed(UNKNOWN)),
   );
 };
 
-/** What holds `threadId`'s provider session open; empty when it may be stopped. */
+/**
+ * What holds `threadId`'s provider session open (empty when it may be
+ * stopped), and when the last hold ended, delegated descendants included.
+ */
 export const threadIdleStopHolds = (
   projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
   threadId: ThreadId,
-): Effect.Effect<ReadonlyArray<IdleStopHold>> =>
-  holdsForThread(projectionStore, threadId, 0, new Set());
+): Effect.Effect<IdleStopThreadHolds> => holdsForThread(projectionStore, threadId, 0, new Set());

@@ -1,10 +1,10 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
+  anyClaudeIdleStopWorkHolds,
   applyClaudeIdleStopFrame,
   applyClaudeStopHookInput,
   CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START,
   type ClaudeIdleStopWork,
-  claudeIdleStopWorkHolds,
   updateClaudeIdleStopWork,
 } from "./ClaudeIdleStopWork.ts";
 import {
@@ -3271,8 +3271,27 @@ export function makeClaudeAdapterV2(
         const idleStopWorkByNativeThread = yield* Ref.make<ReadonlyMap<string, ClaudeIdleStopWork>>(
           new Map(),
         );
+        // When the last of that work ended, so an idle stop can start its
+        // window from there however late it looks.
+        const idleStopHoldEndedAtMs = yield* Ref.make<number | null>(null);
+        const updateIdleStopWorks = (
+          update: (
+            current: ReadonlyMap<string, ClaudeIdleStopWork>,
+          ) => ReadonlyMap<string, ClaudeIdleStopWork>,
+        ) =>
+          Effect.gen(function* () {
+            const now = DateTime.toEpochMillis(yield* DateTime.now);
+            const ended = yield* Ref.modify(idleStopWorkByNativeThread, (current) => {
+              const next = update(current);
+              return [
+                anyClaudeIdleStopWorkHolds(current) && !anyClaudeIdleStopWorkHolds(next),
+                next,
+              ] as const;
+            });
+            if (ended) yield* Ref.set(idleStopHoldEndedAtMs, now);
+          });
         const forgetClaudeIdleStopWork = (nativeThreadId: string) =>
-          Ref.update(idleStopWorkByNativeThread, (current) => {
+          updateIdleStopWorks((current) => {
             if (!current.has(nativeThreadId)) return current;
             const updated = new Map(current);
             updated.delete(nativeThreadId);
@@ -5781,11 +5800,6 @@ export function makeClaudeAdapterV2(
           // Before any routing: a Monitor started during an idle wake turn
           // reports its task before the drain replays the tool call.
           yield* trackClaudeBackgroundCalls(message, liveQuery.nativeThreadId);
-          yield* Ref.update(idleStopWorkByNativeThread, (current) =>
-            updateClaudeIdleStopWork(current, liveQuery.nativeThreadId, (work) =>
-              applyClaudeIdleStopFrame(work, message),
-            ),
-          );
           // Before routing too: the wake gate reads it while the root is idle.
           if (
             message.type === "system" &&
@@ -7369,16 +7383,16 @@ export function makeClaudeAdapterV2(
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
-          // FORK (T3MIG-FORK-014): the CLI gives its Stop and SubagentStop
-          // hooks the session's crons, which hold an idle stop. Only the
-          // reports of the live process count.
+          // FORK (T3MIG-FORK-014): the CLI gives its Stop hook the session's
+          // crons, which hold an idle stop. Only the reports of the live
+          // process count, and each waits for the result frame it precedes.
           const hookOwner: { query?: ClaudeAgentSdkQuerySession } = {};
           const recordSessionCrons: HookCallback = (hookInput) =>
             runPromise(
               Effect.gen(function* () {
                 const live = yield* Ref.get(queryContext);
                 if (hookOwner.query === undefined || live?.query !== hookOwner.query) return;
-                yield* Ref.update(idleStopWorkByNativeThread, (current) =>
+                yield* updateIdleStopWorks((current) =>
                   updateClaudeIdleStopWork(current, nativeThreadId, (work) =>
                     applyClaudeStopHookInput(work, hookInput),
                   ),
@@ -7412,10 +7426,7 @@ export function makeClaudeAdapterV2(
             canUseTool,
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
-            hooks: {
-              Stop: [{ hooks: [recordSessionCrons] }],
-              SubagentStop: [{ hooks: [recordSessionCrons] }],
-            },
+            hooks: { Stop: [{ hooks: [recordSessionCrons] }] },
           });
           const querySession = yield* queryRunner
             .open({
@@ -7463,7 +7474,7 @@ export function makeClaudeAdapterV2(
           });
           // FORK (T3MIG-FORK-014): the new process holds an idle stop until its
           // first Stop hook reports its crons; it may restore earlier ones.
-          yield* Ref.update(idleStopWorkByNativeThread, (current) =>
+          yield* updateIdleStopWorks((current) =>
             new Map(current).set(nativeThreadId, CLAUDE_IDLE_STOP_WORK_AT_PROCESS_START),
           );
           hookOwner.query = querySession;
@@ -7494,7 +7505,23 @@ export function makeClaudeAdapterV2(
               ) {
                 context.permissionMode = message.permissionMode;
               }
-              return handleSdkMessage({ query: querySession, message });
+              // FORK (T3MIG-FORK-014): idle-stop work follows the stream's own
+              // order, once per frame of the live process, before any frame is
+              // held or buffered.
+              const trackIdleStopWork = Ref.get(queryContext).pipe(
+                Effect.flatMap((live) =>
+                  live?.query === querySession
+                    ? updateIdleStopWorks((current) =>
+                        updateClaudeIdleStopWork(current, nativeThreadId, (work) =>
+                          applyClaudeIdleStopFrame(work, message),
+                        ),
+                      )
+                    : Effect.void,
+                ),
+              );
+              return trackIdleStopWork.pipe(
+                Effect.andThen(handleSdkMessage({ query: querySession, message })),
+              );
             }),
             Effect.exit,
             Effect.flatMap(
@@ -7929,25 +7956,23 @@ export function makeClaudeAdapterV2(
           // FORK (T3MIG-FORK-014): what an idle stop would lose — the live
           // process's background tasks and crons, as the CLI reports them, and
           // wake output still waiting for its continuation run.
-          hasIdleStopHolds: Effect.gen(function* () {
-            for (const entry of (yield* Ref.get(wakeBuffers)).values()) {
-              if (
-                entry.messages.some(
-                  (message) =>
-                    message.type === "user" ||
-                    message.type === "assistant" ||
-                    message.type === "result",
-                )
-              ) {
-                return true;
-              }
-            }
-            for (const work of (yield* Ref.get(idleStopWorkByNativeThread)).values()) {
-              if (claudeIdleStopWorkHolds(work).length > 0) {
-                return true;
-              }
-            }
-            return false;
+          readIdleStopHold: Effect.gen(function* () {
+            const now = DateTime.toEpochMillis(yield* DateTime.now);
+            const wakeOutputWaiting = [...(yield* Ref.get(wakeBuffers)).values()].some((entry) =>
+              entry.messages.some(
+                (message) =>
+                  message.type === "user" ||
+                  message.type === "assistant" ||
+                  message.type === "result",
+              ),
+            );
+            const held =
+              wakeOutputWaiting ||
+              anyClaudeIdleStopWorkHolds(yield* Ref.get(idleStopWorkByNativeThread));
+            return {
+              held,
+              lastHeldAtMs: held ? now : yield* Ref.get(idleStopHoldEndedAtMs),
+            };
           }),
           hasPendingBackgroundWorkForThread: (providerThread) =>
             Effect.gen(function* () {

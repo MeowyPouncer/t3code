@@ -20,6 +20,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -323,6 +324,7 @@ function makeProviderAdapter(
       readonly initialProviderItemIdentityVersion?: 2;
     }) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+    readonly readIdleStopHold?: ProviderAdapterV2SessionRuntime["readIdleStopHold"];
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -411,6 +413,9 @@ function makeProviderAdapter(
           ...(options.hasPendingBackgroundWork === undefined
             ? {}
             : { hasPendingBackgroundWork: options.hasPendingBackgroundWork }),
+          ...(options.readIdleStopHold === undefined
+            ? {}
+            : { readIdleStopHold: options.readIdleStopHold }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
             Ref.update(state, (current) => ({
@@ -468,6 +473,7 @@ function layerTest(input: {
     readonly paused: Deferred.Deferred<void>;
   };
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
+  readonly readIdleStopHold?: ProviderAdapterV2SessionRuntime["readIdleStopHold"];
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
@@ -493,6 +499,7 @@ function layerTest(input: {
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
+      ...(input.readIdleStopHold === undefined ? {} : { readIdleStopHold: input.readIdleStopHold }),
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
@@ -4978,6 +4985,104 @@ it.effect(
       });
       yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 30 * 60 * 1000 })));
     }),
+);
+
+// A hold that ends before the first check (a minute in) still gets a whole
+// window after it: from its recorded end, or, for a probe that records none,
+// from the first check that finds it gone.
+it.effect("FORK: an answer given before the first check restarts the window from its time", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      const session = yield* openIdleStopSession("idle-stop-early-answer");
+      const providerThread = makeProviderThread({
+        idAllocator: session.idAllocator,
+        threadId: session.threadId,
+        providerSessionId: session.providerSessionId,
+        now: session.now,
+      });
+      const pending = yield* makePendingRuntimeRequestEvents({
+        idAllocator: session.idAllocator,
+        threadId: session.threadId,
+        providerSessionId: session.providerSessionId,
+        providerThread,
+        now: session.now,
+      });
+      yield* session.eventSink.write({ events: pending.events });
+      yield* advance("30 seconds");
+      const requestEvent = pending.events.find(
+        (event) => event.type === "runtime-request.updated",
+      )!;
+      yield* session.eventSink.write({
+        events: [
+          {
+            ...requestEvent,
+            id: yield* session.idAllocator.allocate.event({ threadId: session.threadId }),
+            payload: {
+              ...requestEvent.payload,
+              status: "resolved",
+              resolvedAt: yield* DateTime.now,
+            },
+          },
+        ],
+      });
+      yield* advance("1770 seconds");
+      assert.equal(yield* closes(state), 0);
+      yield* advance("30 seconds");
+      assert.equal(yield* closes(state), 1);
+    });
+    yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 30 * 60 * 1000 })));
+  }),
+);
+
+it.effect("FORK: a process hold that ends before the first check restarts the window", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const hold = yield* Ref.make<{ readonly held: boolean; readonly lastHeldAtMs: number | null }>({
+      held: true,
+      lastHeldAtMs: null,
+    });
+    const effect = Effect.gen(function* () {
+      yield* openIdleStopSession("idle-stop-early-process-hold");
+      yield* advance("30 seconds");
+      yield* Ref.set(hold, { held: false, lastHeldAtMs: yield* Clock.currentTimeMillis });
+      yield* advance("1770 seconds");
+      assert.equal(yield* closes(state), 0);
+      yield* advance("30 seconds");
+      assert.equal(yield* closes(state), 1);
+    });
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({ state, idleTimeoutMs: 30 * 60 * 1000, readIdleStopHold: Ref.get(hold) }),
+      ),
+    );
+  }),
+);
+
+it.effect("FORK: background work that ends before the first check restarts the window", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const pendingWork = yield* Ref.make(true);
+    const effect = Effect.gen(function* () {
+      yield* openIdleStopSession("idle-stop-early-background-work");
+      yield* advance("30 seconds");
+      yield* Ref.set(pendingWork, false);
+      // Its end is not recorded, so the window starts at the check that finds it gone.
+      yield* advance("30 minutes");
+      assert.equal(yield* closes(state), 0);
+      yield* advance("30 seconds");
+      assert.equal(yield* closes(state), 1);
+    });
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 30 * 60 * 1000,
+          hasPendingBackgroundWork: Ref.get(pendingWork),
+        }),
+      ),
+    );
+  }),
 );
 
 it.effect("FORK: holds an idle session whose background-work probe fails", () =>
