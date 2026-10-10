@@ -5115,15 +5115,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerCollapsedMobile,
   });
   const showInlineTasksBadge = tasksSurface.inlineBadge;
-  const inlineTasksBadge = showInlineTasksBadge ? (
-    <ComposerTasksBadge
-      expanded={false}
-      onToggle={toggleTasksDrawer}
-      placement="inline"
-      progress={activeTasksProgress}
-      steps={activeTaskSteps}
-    />
-  ) : null;
+  const inlineTasksBadge =
+    showInlineTasksBadge && activeTasksProgress && activeTaskSteps ? (
+      <ComposerTasksBadge
+        expanded={false}
+        onToggle={toggleTasksDrawer}
+        placement="inline"
+        progress={activeTasksProgress}
+        steps={activeTaskSteps}
+      />
+    ) : null;
   const hasImageAttachmentAttention = standaloneComposerImages.some((image) => {
     const upload = uploadsByImageId[image.id];
     const failedInCurrentEnvironment =
@@ -6785,7 +6786,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               </ComposerBanner.Root>
             </ComposerBanner.Attachment>
           ) : null}
-          {showTasksTab ? (
+          {showTasksTab && activeTasksProgress && activeTaskSteps ? (
             <ComposerBanner.Attachment>
               <ComposerTasksBadge
                 expanded={false}
