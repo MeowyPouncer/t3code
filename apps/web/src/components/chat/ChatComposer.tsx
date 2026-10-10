@@ -131,6 +131,7 @@ import { useComposerMenuState } from "./useComposerMenuState";
 import { useComposerTriggerState } from "./useComposerTriggerState";
 import { useComposerFocusState } from "./useComposerFocusState";
 import { useComposerMultilinePrompt } from "./useComposerMultilinePrompt";
+import { resolveComposerTasksSurface } from "./composerTasksSurface";
 import {
   ComposerTasksBadge,
   ComposerTasksContent,
@@ -5103,12 +5104,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const hasBannerItems = props.bannerItems.length > 0;
   const hasBlockingComposerTopDrawer =
     activePendingApproval !== null || pendingUserInputs.length > 0;
-  const showInlineTasksBadge =
-    activeTasksProgress !== null &&
-    activeTaskSteps !== null &&
-    !isTasksDrawerOpen &&
-    !hasBlockingComposerTopDrawer &&
-    (hasBannerItems || showComposerTopDrawer || isComposerCollapsedMobile);
+  // A pending question or approval does not hide the tasks list: the badge and
+  // the opened list dock above its panel (FORK-015).
+  const tasksSurface = resolveComposerTasksSurface({
+    hasTasks: activeTasksProgress !== null && activeTaskSteps !== null,
+    totalSteps: activeTasksProgress?.totalSteps ?? 0,
+    drawerOpen: isTasksDrawerOpen,
+    hasBannerItems,
+    showComposerTopDrawer,
+    isComposerCollapsedMobile,
+  });
+  const showInlineTasksBadge = tasksSurface.inlineBadge;
   const inlineTasksBadge = showInlineTasksBadge ? (
     <ComposerTasksBadge
       expanded={false}
@@ -5571,18 +5577,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       </>
     </>
   );
-  const showTasksTab =
-    !hasBannerItems &&
-    !showComposerTopDrawer &&
-    !isTasksDrawerOpen &&
-    !isComposerCollapsedMobile &&
-    activeTasksProgress !== null &&
-    activeTaskSteps !== null &&
-    activeTasksProgress.totalSteps > 0;
+  const showTasksTab = tasksSurface.tab;
   const activityStackContent = hasBannerItems ? (
     shownSyncPhase ? (
       <ComposerActivityRow phase={shownSyncPhase} />
-    ) : !hasBlockingComposerTopDrawer && activeTasksProgress && activeTaskSteps ? (
+    ) : activeTasksProgress && activeTaskSteps ? (
       <ComposerTasksContent
         expanded={isTasksDrawerOpen}
         onToggle={toggleTasksDrawer}
@@ -5607,12 +5606,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setIsTasksDrawerOpen(false);
     }
   }, [activeTaskSteps, activeTasksProgress]);
-
-  useEffect(() => {
-    if (hasBlockingComposerTopDrawer) {
-      setIsTasksDrawerOpen(false);
-    }
-  }, [hasBlockingComposerTopDrawer]);
 
   useEffect(() => {
     setIsTasksDrawerOpen(false);
@@ -6653,6 +6646,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               </ComposerBanner.Root>
             </ComposerBanner.Attachment>
           ) : null}
+          {!activityStackItem && tasksSurface.drawer && activeTasksProgress && activeTaskSteps ? (
+            <ComposerTasksDrawer
+              onCollapse={toggleTasksDrawer}
+              progress={activeTasksProgress}
+              steps={activeTaskSteps}
+            />
+          ) : null}
           {showComposerTopDrawer && (!isTasksDrawerOpen || hasBlockingComposerTopDrawer) ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root
@@ -6784,17 +6784,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 ) : null}
               </ComposerBanner.Root>
             </ComposerBanner.Attachment>
-          ) : null}
-          {!activityStackItem &&
-          isTasksDrawerOpen &&
-          !hasBlockingComposerTopDrawer &&
-          activeTasksProgress &&
-          activeTaskSteps ? (
-            <ComposerTasksDrawer
-              onCollapse={toggleTasksDrawer}
-              progress={activeTasksProgress}
-              steps={activeTaskSteps}
-            />
           ) : null}
           {showTasksTab ? (
             <ComposerBanner.Attachment>
