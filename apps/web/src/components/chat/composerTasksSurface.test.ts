@@ -11,6 +11,7 @@ const base: ComposerTasksSurfaceInput = {
   drawerOpen: false,
   hasBannerItems: false,
   showComposerTopDrawer: false,
+  hasBlockingComposerTopDrawer: false,
   isComposerCollapsedMobile: false,
 };
 
@@ -35,7 +36,12 @@ describe("resolveComposerTasksSurface", () => {
 
   it("opens the list above a pending question without dropping it", () => {
     expect(
-      resolveComposerTasksSurface({ ...base, showComposerTopDrawer: true, drawerOpen: true }),
+      resolveComposerTasksSurface({
+        ...base,
+        showComposerTopDrawer: true,
+        hasBlockingComposerTopDrawer: true,
+        drawerOpen: true,
+      }),
     ).toEqual({ inlineBadge: false, tab: false, drawer: true, sharesScrollBudget: true });
   });
 
@@ -57,5 +63,11 @@ describe("resolveComposerTasksSurface", () => {
       drawer: false,
       sharesScrollBudget: false,
     });
+  });
+
+  it("keeps the whole height for the list when only a plan follow-up is shown", () => {
+    expect(
+      resolveComposerTasksSurface({ ...base, showComposerTopDrawer: true, drawerOpen: true }),
+    ).toEqual({ inlineBadge: false, tab: false, drawer: true, sharesScrollBudget: false });
   });
 });

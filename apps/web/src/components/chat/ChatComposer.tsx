@@ -5112,6 +5112,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     drawerOpen: isTasksDrawerOpen,
     hasBannerItems,
     showComposerTopDrawer,
+    hasBlockingComposerTopDrawer,
     isComposerCollapsedMobile,
   });
   const showInlineTasksBadge = tasksSurface.inlineBadge;

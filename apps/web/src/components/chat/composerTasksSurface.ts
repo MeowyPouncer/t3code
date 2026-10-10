@@ -9,6 +9,8 @@ export interface ComposerTasksSurfaceInput {
   readonly drawerOpen: boolean;
   readonly hasBannerItems: boolean;
   readonly showComposerTopDrawer: boolean;
+  /** A question or approval is actually pending (not just a plan follow-up). */
+  readonly hasBlockingComposerTopDrawer: boolean;
   readonly isComposerCollapsedMobile: boolean;
 }
 
@@ -38,6 +40,6 @@ export function resolveComposerTasksSurface(
       !showComposerTopDrawer &&
       !isComposerCollapsedMobile,
     drawer: hasTasks && drawerOpen,
-    sharesScrollBudget: hasTasks && drawerOpen && showComposerTopDrawer,
+    sharesScrollBudget: hasTasks && drawerOpen && input.hasBlockingComposerTopDrawer,
   };
 }
