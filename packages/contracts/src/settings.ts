@@ -91,6 +91,18 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 );
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
+/**
+ * FORK (T3MIG-FORK-014): how many minutes a thread's provider session (its
+ * `claude`, `codex` … process) may sit idle before T3 stops it. The next
+ * message resumes the same conversation. `null` and 0 mean never.
+ */
+export const MIN_PROVIDER_SESSION_IDLE_STOP_MINUTES = 1;
+export const MAX_PROVIDER_SESSION_IDLE_STOP_MINUTES = 1440;
+export const ProviderSessionIdleStopMinutes = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: MAX_PROVIDER_SESSION_IDLE_STOP_MINUTES }),
+);
+export type ProviderSessionIdleStopMinutes = typeof ProviderSessionIdleStopMinutes.Type;
+export const DEFAULT_PROVIDER_SESSION_IDLE_STOP_MINUTES: ProviderSessionIdleStopMinutes = 30;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -1303,6 +1315,15 @@ export const ServerSettings = Schema.Struct({
   enableChildAgentBrowserAccess: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  /**
+   * FORK (T3MIG-FORK-014): minutes of idleness after which a thread's provider
+   * session is stopped; `null` or 0 never stops it. A thread with a running
+   * turn, a pending approval or question, live background work, a scheduled
+   * wakeup, or delegated work still running is never idle.
+   */
+  providerSessionIdleStopMinutes: Schema.NullOr(ProviderSessionIdleStopMinutes).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_SESSION_IDLE_STOP_MINUTES)),
+  ),
   defaultAutoPull: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   defaultProjectScripts: Schema.Array(ProjectScript).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1701,6 +1722,7 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
   enableChildAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  providerSessionIdleStopMinutes: Schema.optionalKey(Schema.NullOr(ProviderSessionIdleStopMinutes)),
   defaultAutoPull: Schema.optionalKey(Schema.Boolean),
   defaultProjectScripts: Schema.optionalKey(Schema.Array(ProjectScript)),
   projectScriptOverrides: Schema.optionalKey(

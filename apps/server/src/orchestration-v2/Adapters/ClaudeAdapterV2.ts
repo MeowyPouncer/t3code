@@ -1,5 +1,12 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
+  applyClaudeIdleStopFrame,
+  applyClaudeStopHookInput,
+  type ClaudeIdleStopWork,
+  claudeIdleStopWorkHolds,
+  updateClaudeIdleStopWork,
+} from "./ClaudeIdleStopWork.ts";
+import {
   dynamicToolTitle,
   formatReadToolLabel,
   formatSearchToolLabel,
@@ -9,6 +16,7 @@ import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsa
 import {
   type CanUseTool,
   forkSession as forkClaudeSession,
+  type HookCallback,
   type ForkSessionOptions,
   type ForkSessionResult,
   getSubagentMessages,
@@ -837,6 +845,8 @@ export function makeClaudeQueryOptions(input: {
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
+  /** FORK (T3MIG-FORK-014): SDK callback hooks, such as the Stop hook that reports session crons. */
+  readonly hooks?: ClaudeQueryOptions["hooks"];
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
   const {
@@ -912,6 +922,7 @@ export function makeClaudeQueryOptions(input: {
         ? {}
         : { settings: effectiveQuerySettings }),
     ...(input.onUserDialog === undefined ? {} : { onUserDialog: input.onUserDialog }),
+    ...(input.hooks === undefined ? {} : { hooks: input.hooks }),
     ...(input.supportedDialogKinds === undefined
       ? {}
       : { supportedDialogKinds: input.supportedDialogKinds }),
@@ -3253,6 +3264,19 @@ export function makeClaudeAdapterV2(
         const pendingBackgroundTasksByNativeThread = yield* Ref.make(
           new Map<string, Map<string, OrchestrationV2PendingBackgroundTask>>(),
         );
+        // FORK (T3MIG-FORK-014): per native session, the process's live
+        // background tasks of every type and its crons, which hold an idle
+        // stop. Per CLI process like the roster: reset when it starts or goes.
+        const idleStopWorkByNativeThread = yield* Ref.make<ReadonlyMap<string, ClaudeIdleStopWork>>(
+          new Map(),
+        );
+        const forgetClaudeIdleStopWork = (nativeThreadId: string) =>
+          Ref.update(idleStopWorkByNativeThread, (current) => {
+            if (!current.has(nativeThreadId)) return current;
+            const updated = new Map(current);
+            updated.delete(nativeThreadId);
+            return updated;
+          });
         // Wake eligibility is separate from the Waiting roster. It survives
         // empty background_tasks_changed levels (SDK: empty level can precede
         // task_notification) and is consumed when the first idle notification
@@ -3917,6 +3941,7 @@ export function makeClaudeAdapterV2(
           const preservedOpaqueTombstones = [...priorOpaqueTombstones].filter((taskId) =>
             bufferedTaskNotificationIds.has(taskId),
           );
+          yield* forgetClaudeIdleStopWork(nativeThreadId);
           yield* clearPendingBackgroundTasksForNativeThread(nativeThreadId);
           yield* clearNativeThreadTaskIdSet(
             wakeEligibleBackgroundTasksByNativeThread,
@@ -5755,6 +5780,11 @@ export function makeClaudeAdapterV2(
           // Before any routing: a Monitor started during an idle wake turn
           // reports its task before the drain replays the tool call.
           yield* trackClaudeBackgroundCalls(message, liveQuery.nativeThreadId);
+          yield* Ref.update(idleStopWorkByNativeThread, (current) =>
+            updateClaudeIdleStopWork(current, liveQuery.nativeThreadId, (work) =>
+              applyClaudeIdleStopFrame(work, message),
+            ),
+          );
           // Before routing too: the wake gate reads it while the root is idle.
           if (
             message.type === "system" &&
@@ -7338,6 +7368,25 @@ export function makeClaudeAdapterV2(
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          // FORK (T3MIG-FORK-014): the CLI gives its Stop and SubagentStop
+          // hooks the session's crons, which hold an idle stop. Only the
+          // reports of the live process count.
+          const hookOwner: { query?: ClaudeAgentSdkQuerySession } = {};
+          const recordSessionCrons: HookCallback = (hookInput) =>
+            runPromise(
+              Effect.gen(function* () {
+                const live = yield* Ref.get(queryContext);
+                if (hookOwner.query === undefined || live?.query !== hookOwner.query) return;
+                yield* Ref.update(idleStopWorkByNativeThread, (current) =>
+                  updateClaudeIdleStopWork(current, nativeThreadId, (work) =>
+                    applyClaudeStopHookInput(work, hookInput),
+                  ),
+                );
+              }).pipe(
+                Effect.as({}),
+                Effect.catchCause(() => Effect.succeed({})),
+              ),
+            );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -7362,6 +7411,10 @@ export function makeClaudeAdapterV2(
             canUseTool,
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
+            hooks: {
+              Stop: [{ hooks: [recordSessionCrons] }],
+              SubagentStop: [{ hooks: [recordSessionCrons] }],
+            },
           });
           const querySession = yield* queryRunner
             .open({
@@ -7407,6 +7460,7 @@ export function makeClaudeAdapterV2(
           yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
             status: "active",
           });
+          hookOwner.query = querySession;
           const closed = yield* Deferred.make<void, never>();
           const context: ClaudeLiveQueryContext = {
             nativeThreadId,
@@ -7456,6 +7510,8 @@ export function makeClaudeAdapterV2(
                 if (ownsLiveQuery) {
                   // Also when idle: a wake turn's call can outlive its process.
                   yield* forgetClaudeBackgroundCalls(context.nativeThreadId);
+                  // FORK (T3MIG-FORK-014): its tasks and crons died with it.
+                  yield* forgetClaudeIdleStopWork(context.nativeThreadId);
                   yield* finalizeActiveTurnAfterQueryExit(
                     exit._tag === "Failure" ? exit.cause : undefined,
                   );
@@ -7859,6 +7915,13 @@ export function makeClaudeAdapterV2(
                     message.type === "result",
                 )
               ) {
+                return true;
+              }
+            }
+            // FORK (T3MIG-FORK-014): workflows and other background tasks the
+            // roster does not show, and crons that will wake the process.
+            for (const work of (yield* Ref.get(idleStopWorkByNativeThread)).values()) {
+              if (claudeIdleStopWorkHolds(work).length > 0) {
                 return true;
               }
             }

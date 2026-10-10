@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSessionId,
+  type ServerSettings as ServerSettingsValue,
   ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
@@ -28,6 +29,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -445,7 +447,8 @@ function makeProviderAdapter(
 
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
-  readonly idleTimeoutMs: number;
+  /** FORK: omitted, the window comes from `serverSettingsLayer` (or the 30-minute default). */
+  readonly idleTimeoutMs?: number;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -521,7 +524,7 @@ function layerTest(input: {
     IdAllocator.layer,
     layerConfiguredMcpRegistry,
     ProviderSessionManager.layerWithOptions({
-      idleTimeoutMs: input.idleTimeoutMs,
+      ...(input.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: input.idleTimeoutMs }),
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
     }).pipe(
       Layer.provide(
@@ -4570,4 +4573,448 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+// FORK (T3MIG-FORK-014): the idle stop. Its window comes from the server
+// setting `providerSessionIdleStopMinutes` (30 by default, null or 0 never);
+// a session is never stopped while its thread holds work, and the window
+// starts once the last hold has ended. These tests count closes instead of
+// calling `manager.get`, which is activity and would restart the clock.
+
+/** Test settings whose updates reach subscribers, as the real service's do. */
+function makeSettingsHandle(overrides: Parameters<typeof ServerSettings.layerTest>[0] = {}) {
+  return Effect.gen(function* () {
+    const service = yield* Ref.make<ServerSettings.ServerSettingsService["Service"] | null>(null);
+    const layer = Layer.effect(
+      ServerSettings.ServerSettingsService,
+      Effect.gen(function* () {
+        const base = yield* ServerSettings.ServerSettingsService;
+        const changes = yield* PubSub.unbounded<ServerSettingsValue>();
+        const publishing = ServerSettings.ServerSettingsService.of({
+          ...base,
+          updateSettings: (patch) =>
+            base
+              .updateSettings(patch)
+              .pipe(Effect.tap((settings) => PubSub.publish(changes, settings))),
+          streamChanges: Stream.fromPubSub(changes),
+          subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
+        });
+        yield* Ref.set(service, publishing);
+        return publishing;
+      }),
+    ).pipe(Layer.provide(ServerSettings.layerTest(overrides)));
+    const update = (minutes: number | null) =>
+      Effect.gen(function* () {
+        const current = yield* Ref.get(service);
+        if (current === null) return yield* Effect.die("settings layer not built");
+        yield* current.updateSettings({ providerSessionIdleStopMinutes: minutes });
+        for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+      });
+    return { layer, update };
+  });
+}
+
+const openIdleStopSession = (fixtureName: string) =>
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const now = yield* DateTime.now;
+    const projectId = yield* idAllocator.allocate.project({ fixtureName });
+    const threadId = yield* idAllocator.allocate.thread({ fixtureName, projectId });
+    const providerSessionId = yield* idAllocator.allocate.providerSession({
+      providerInstanceId: modelSelection.instanceId,
+      threadId,
+    });
+    yield* eventSink.write({
+      events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now, projectId })],
+    });
+    const runtime = yield* manager.open({
+      threadId,
+      providerSessionId,
+      modelSelection,
+      runtimePolicy,
+    });
+    return {
+      eventSink,
+      idAllocator,
+      manager,
+      now,
+      projectId,
+      threadId,
+      providerSessionId,
+      runtime,
+    };
+  });
+
+const advance = (duration: Parameters<typeof TestClock.adjust>[0]) =>
+  Effect.gen(function* () {
+    yield* TestClock.adjust(duration);
+    for (let i = 0; i < 20; i += 1) yield* Effect.yieldNow;
+  });
+
+const closes = (state: Ref.Ref<TestProviderRuntimeState>) =>
+  Ref.get(state).pipe(Effect.map((current) => current.closeCount));
+
+it.effect("FORK: stops an idle session after the setting's 30 default minutes", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const settings = yield* makeSettingsHandle();
+    const effect = Effect.gen(function* () {
+      const session = yield* openIdleStopSession("idle-stop-default");
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      yield* advance("29 minutes");
+      assert.equal(yield* closes(state), 0);
+      yield* advance("1 minute");
+      assert.equal(yield* closes(state), 1);
+      const projection = yield* projectionStore.getThreadProjection(session.threadId);
+      assert.equal(projection.providerSessions.at(-1)?.status, "stopped");
+    });
+    yield* effect.pipe(Effect.provide(layerTest({ state, serverSettingsLayer: settings.layer })));
+  }),
+);
+
+it.effect.each([
+  { label: "off", minutes: null },
+  { label: "0", minutes: 0 },
+] as const)("FORK: never stops an idle session when the setting is $label", ({ label, minutes }) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const settings = yield* makeSettingsHandle({ providerSessionIdleStopMinutes: minutes });
+    const effect = Effect.gen(function* () {
+      const session = yield* openIdleStopSession(`idle-stop-${label}`);
+      const settingsService = yield* ServerSettings.ServerSettingsService;
+      assert.strictEqual(
+        (yield* settingsService.getSettings).providerSessionIdleStopMinutes,
+        minutes,
+      );
+      yield* advance("3 days");
+      assert.equal(yield* closes(state), 0);
+      assert.isTrue(Option.isSome(yield* session.manager.get(session.providerSessionId)));
+    });
+    yield* effect.pipe(
+      Effect.provide(
+        Layer.merge(layerTest({ state, serverSettingsLayer: settings.layer }), settings.layer),
+      ),
+    );
+  }),
+);
+
+it.effect("FORK: a changed setting restarts the idle clocks with its window", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const settings = yield* makeSettingsHandle({ providerSessionIdleStopMinutes: null });
+    const effect = Effect.gen(function* () {
+      yield* openIdleStopSession("idle-stop-setting-on");
+      yield* advance("2 hours");
+      assert.equal(yield* closes(state), 0);
+
+      // Turned on: the session gets the new window from the change.
+      yield* settings.update(5);
+      yield* advance("4 minutes");
+      assert.equal(yield* closes(state), 0);
+      yield* advance("1 minute");
+      assert.equal(yield* closes(state), 1);
+
+      // Turned off before the window ends: the clock stops.
+      yield* openIdleStopSession("idle-stop-setting-off");
+      yield* advance("4 minutes");
+      yield* settings.update(null);
+      yield* advance("1 day");
+      assert.equal(yield* closes(state), 1);
+
+      // Lengthened: the clock restarts with the longer window.
+      yield* settings.update(5);
+      yield* advance("4 minutes");
+      yield* settings.update(60);
+      yield* advance("59 minutes");
+      assert.equal(yield* closes(state), 1);
+      yield* advance("1 minute");
+      assert.equal(yield* closes(state), 2);
+    });
+    yield* effect.pipe(Effect.provide(layerTest({ state, serverSettingsLayer: settings.layer })));
+  }),
+);
+
+it.effect(
+  "FORK: holds an idle session while an approval is pending, then waits a whole window",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const session = yield* openIdleStopSession("idle-stop-pending-request");
+        const providerThread = makeProviderThread({
+          idAllocator: session.idAllocator,
+          threadId: session.threadId,
+          providerSessionId: session.providerSessionId,
+          now: session.now,
+        });
+        const pending = yield* makePendingRuntimeRequestEvents({
+          idAllocator: session.idAllocator,
+          threadId: session.threadId,
+          providerSessionId: session.providerSessionId,
+          providerThread,
+          now: session.now,
+        });
+        yield* session.eventSink.write({ events: pending.events });
+
+        yield* advance("10 minutes");
+        assert.equal(yield* closes(state), 0);
+
+        const requestEvent = pending.events.find(
+          (event) => event.type === "runtime-request.updated",
+        );
+        assert.isDefined(requestEvent);
+        yield* session.eventSink.write({
+          events: [
+            {
+              ...requestEvent!,
+              id: yield* session.idAllocator.allocate.event({ threadId: session.threadId }),
+              payload: { ...requestEvent!.payload, status: "resolved", resolvedAt: session.now },
+            },
+          ],
+        });
+        // The next check finds it answered and starts a whole window from there.
+        yield* advance("1 minute");
+        assert.equal(yield* closes(state), 0);
+        yield* advance("59 seconds");
+        assert.equal(yield* closes(state), 0);
+        yield* advance("1 second");
+        assert.equal(yield* closes(state), 1);
+      });
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect("FORK: holds an idle session while its thread has an active run", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      const session = yield* openIdleStopSession("idle-stop-active-run");
+      const runId = session.idAllocator.derive.run({ threadId: session.threadId, ordinal: 1 });
+      const run = {
+        id: runId,
+        threadId: session.threadId,
+        ordinal: 1,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: yield* session.idAllocator.allocate.message({
+          threadId: session.threadId,
+          ordinal: 1,
+        }),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "waiting" as const,
+        requestedAt: session.now,
+        startedAt: session.now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const writeRun = (status: "waiting" | "completed") =>
+        Effect.gen(function* () {
+          yield* session.eventSink.write({
+            events: [
+              {
+                id: yield* session.idAllocator.allocate.event({ threadId: session.threadId }),
+                type: "run.updated",
+                threadId: session.threadId,
+                runId,
+                occurredAt: session.now,
+                payload: {
+                  ...run,
+                  status,
+                  completedAt: status === "completed" ? session.now : null,
+                },
+              },
+            ],
+          });
+        });
+      yield* writeRun("waiting");
+      yield* advance("1 hour");
+      assert.equal(yield* closes(state), 0);
+      yield* writeRun("completed");
+      yield* advance("2 minutes");
+      assert.equal(yield* closes(state), 1);
+    });
+    yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
+it.effect(
+  "FORK: holds an orchestrator while its delegated child works or waits for its own children",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const session = yield* openIdleStopSession("idle-stop-delegated");
+        const childThreadId = ThreadId.make("idle-stop-delegated-child");
+        const grandchildThreadId = ThreadId.make("idle-stop-delegated-grandchild");
+        yield* session.eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator: session.idAllocator,
+              threadId: childThreadId,
+              now: session.now,
+              projectId: session.projectId,
+            }),
+          ],
+        });
+        const writeTask = (input: {
+          readonly parent: ThreadId;
+          readonly child: ThreadId;
+          readonly status: "running" | "completed";
+        }) =>
+          Effect.gen(function* () {
+            const nodeId = NodeId.make(`delegated-task-${input.child}`);
+            yield* session.eventSink.write({
+              events: [
+                {
+                  id: yield* session.idAllocator.allocate.event({ threadId: input.parent }),
+                  type: "subagent.updated",
+                  threadId: input.parent,
+                  nodeId,
+                  driver: CODEX_DRIVER,
+                  occurredAt: session.now,
+                  payload: {
+                    id: nodeId,
+                    threadId: input.parent,
+                    runId: null,
+                    parentNodeId: nodeId,
+                    origin: "app_owned",
+                    createdBy: "agent",
+                    driver: CODEX_DRIVER,
+                    providerInstanceId: modelSelection.instanceId,
+                    providerThreadId: null,
+                    childThreadId: input.child,
+                    nativeTaskRef: null,
+                    prompt: "Do the work.",
+                    title: null,
+                    model: null,
+                    status: input.status,
+                    result: null,
+                    startedAt: session.now,
+                    completedAt: input.status === "completed" ? session.now : null,
+                    updatedAt: session.now,
+                  },
+                },
+              ],
+            });
+          });
+
+        yield* writeTask({ parent: session.threadId, child: childThreadId, status: "running" });
+        yield* advance("1 hour");
+        assert.equal(yield* closes(state), 0);
+
+        // The child finished its run but still waits for a child of its own.
+        yield* writeTask({ parent: session.threadId, child: childThreadId, status: "completed" });
+        yield* writeTask({ parent: childThreadId, child: grandchildThreadId, status: "running" });
+        yield* advance("1 hour");
+        assert.equal(yield* closes(state), 0);
+
+        yield* writeTask({ parent: childThreadId, child: grandchildThreadId, status: "completed" });
+        yield* advance("2 minutes");
+        assert.equal(yield* closes(state), 1);
+      });
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect("FORK: holds an idle session whose background-work probe fails", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      yield* openIdleStopSession("idle-stop-probe-fails");
+      yield* advance("3 hours");
+      assert.equal(yield* closes(state), 0);
+    });
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          hasPendingBackgroundWork: Effect.die("probe failed"),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect(
+  "FORK: holds live background work past upstream's 4-hour cap, then waits a whole window",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const pendingWork = yield* Ref.make(true);
+      const effect = Effect.gen(function* () {
+        yield* openIdleStopSession("idle-stop-background-work");
+        yield* advance("5 hours");
+        assert.equal(yield* closes(state), 0);
+
+        yield* Ref.set(pendingWork, false);
+        // The next check (at most a minute later) starts a whole window.
+        yield* advance("1 minute");
+        yield* advance("9 minutes");
+        assert.equal(yield* closes(state), 0);
+        yield* advance("1 minute");
+        assert.equal(yield* closes(state), 1);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 10 * 60 * 1000,
+            hasPendingBackgroundWork: Ref.get(pendingWork),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("FORK: a session stopped for idleness resumes the same provider thread", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const effect = Effect.gen(function* () {
+      const session = yield* openIdleStopSession("idle-stop-resume");
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const providerThread = makeProviderThread({
+        idAllocator: session.idAllocator,
+        threadId: session.threadId,
+        providerSessionId: session.providerSessionId,
+        now: session.now,
+      });
+      yield* session.runtime.resumeThread({ providerThread, threadId: session.threadId });
+      assert.equal((yield* Ref.get(state)).resumeCount, 1);
+
+      yield* advance("2 minutes");
+      assert.equal(yield* closes(state), 1);
+      const stopped = (yield* projectionStore.getThreadProjection(
+        session.threadId,
+      )).providerSessions.at(-1);
+      assert.equal(stopped?.status, "stopped");
+
+      // The next message opens the session again under the same id and
+      // resumes the same native thread, the way it does after a restart.
+      const reopened = yield* session.manager.open({
+        threadId: session.threadId,
+        providerSessionId: session.providerSessionId,
+        modelSelection,
+        runtimePolicy,
+        resumeFromSession: stopped!,
+      });
+      const resumed = yield* reopened.resumeThread({ providerThread, threadId: session.threadId });
+      const after = yield* Ref.get(state);
+      assert.equal(after.openCount, 2);
+      assert.equal(after.resumeCount, 2);
+      assert.equal(resumed.id, providerThread.id);
+      assert.equal(resumed.nativeThreadRef?.nativeId, providerThread.nativeThreadRef?.nativeId);
+      const live = (yield* projectionStore.getThreadProjection(
+        session.threadId,
+      )).providerSessions.at(-1);
+      assert.equal(live?.id, session.providerSessionId);
+      assert.equal(live?.status, "ready");
+    });
+    yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
 );

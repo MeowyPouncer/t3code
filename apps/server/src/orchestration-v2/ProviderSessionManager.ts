@@ -66,9 +66,17 @@ import {
 } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import {
+  IDLE_STOP_HOLD_RECHECK_MS,
+  type IdleStopHold,
+  idleStopTimeoutMs,
+  threadIdleStopHolds,
+} from "./ProviderSessionIdleStop.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
+// FORK (T3MIG-FORK-014): no cap on how long live work defers idle release — a
+// session with live work is never stopped (mp, 2026-10-10). Upstream released
+// it after 4 hours anyway; `maxIdlePinMs` sets such a cap again.
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
 
 /** The identity a turn's start and its `turn.terminal` share. */
@@ -248,8 +256,13 @@ type ProviderSessionEventSignal =
     };
 
 export interface ProviderSessionManagerV2LayerOptions {
+  /**
+   * FORK (T3MIG-FORK-014): fixes the idle window. Without it the window is the
+   * server setting `providerSessionIdleStopMinutes` (null or 0 = never stop),
+   * or 30 minutes when no settings service is provided.
+   */
   readonly idleTimeoutMs?: number;
-  /** Cap on how long idle release may be deferred for pending background work. */
+  /** Cap on how long idle release may be deferred for pending work; none by default. */
   readonly maxIdlePinMs?: number;
   /** Test replay harnesses can omit T3's MCP server from provider protocol fixtures. */
   readonly configureMcp?: boolean;
@@ -475,8 +488,39 @@ export const layerWithOptions = (
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
       }) => `${input.providerSessionId}\u0000${input.threadId}`;
-      const idleTimeoutMs = Math.max(1, options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
-      const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
+      const maxIdlePinMs =
+        options.maxIdlePinMs === undefined ? null : Math.max(0, options.maxIdlePinMs);
+      // FORK (T3MIG-FORK-014): the idle window, read from the server settings
+      // once and then kept current by their change stream (below). Null never
+      // stops a session.
+      const idleStopSetting = yield* Ref.make(Option.none<number | null>());
+      const resolveIdleTimeoutMs: Effect.Effect<number | null> =
+        options.idleTimeoutMs !== undefined
+          ? Effect.succeed(Math.max(1, options.idleTimeoutMs))
+          : Option.isNone(serverSettings)
+            ? Effect.succeed(DEFAULT_IDLE_TIMEOUT_MS)
+            : Ref.get(idleStopSetting).pipe(
+                Effect.flatMap(
+                  Option.match({
+                    onSome: Effect.succeed,
+                    onNone: () =>
+                      serverSettings.value.getSettings.pipe(
+                        Effect.map((settings) =>
+                          idleStopTimeoutMs(settings.providerSessionIdleStopMinutes),
+                        ),
+                        Effect.tap((timeoutMs) => Ref.set(idleStopSetting, Option.some(timeoutMs))),
+                        // Unreadable settings stop nothing; the next activity reads
+                        // them again (quietly: activity comes with every event).
+                        Effect.catchCause((cause) =>
+                          Effect.logDebug(
+                            "orchestration-v2.driver-session.idle-stop-setting-unreadable",
+                            { cause },
+                          ).pipe(Effect.as(null)),
+                        ),
+                      ),
+                  }),
+                ),
+              );
       interface PreparedMcpCredential {
         readonly mcpCredentialId: string | undefined;
         /** True when this call minted the credential (vs reusing a live one). */
@@ -1101,11 +1145,35 @@ export const layerWithOptions = (
           ),
         );
 
+      // FORK (T3MIG-FORK-014): everything that keeps an idle session open —
+      // the adapter's live background work (a probe that fails counts as
+      // work; upstream counted it as none), and each attached thread's
+      // active runs, pending requests and delegated work.
+      const idleStopHolds = (entry: LiveSessionEntry) =>
+        Effect.gen(function* () {
+          const holds: Array<IdleStopHold> = [];
+          if (
+            entry.runtime.hasPendingBackgroundWork !== undefined &&
+            (yield* entry.runtime.hasPendingBackgroundWork.pipe(
+              Effect.catchCause(() => Effect.succeed(true)),
+            ))
+          ) {
+            holds.push("background_work");
+          }
+          for (const threadId of entry.attachedThreadIds) {
+            holds.push(...(yield* threadIdleStopHolds(projectionStore, threadId)));
+          }
+          return holds;
+        });
+
       // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
       // inference cycle introduced by the pin re-arm below.
       const releaseIfStillIdle = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly generation: number;
+        readonly idleTimeoutMs: number;
+        /** FORK: the previous check found a hold, so a clear one starts a fresh idle window. */
+        readonly heldOnLastCheck?: boolean;
       }): Effect.Effect<void> =>
         Effect.gen(function* () {
           const current = yield* Ref.get(sessions);
@@ -1121,16 +1189,11 @@ export const layerWithOptions = (
           // Capture runtime identity before yielding: a replacement session
           // can reuse the same providerSessionId while this fiber is parked.
           const probedRuntime = entry.runtime;
-          const hasPendingWork =
-            probedRuntime.hasPendingBackgroundWork === undefined
-              ? false
-              : yield* probedRuntime.hasPendingBackgroundWork.pipe(
-                  Effect.catchCause(() => Effect.succeed(false)),
-                );
-          if (hasPendingWork) {
+          const holds = yield* idleStopHolds(entry);
+          if (holds.length > 0) {
             const now = yield* Clock.currentTimeMillis;
             const pinnedSinceMs = entry.pinnedSinceMs ?? now;
-            if (now - pinnedSinceMs < maxIdlePinMs) {
+            if (maxIdlePinMs === null || now - pinnedSinceMs < maxIdlePinMs) {
               const shouldContinuePin = yield* Ref.modify(sessions, (latest) => {
                 const latestEntry = latest.get(key);
                 if (
@@ -1150,22 +1213,34 @@ export const layerWithOptions = (
                 // the current owner of the entry owns idle release.
                 return;
               }
-              yield* Effect.logInfo("orchestration-v2.driver-session.idle-release-deferred", {
-                providerSessionId: input.providerSessionId,
-                pinnedForMs: now - pinnedSinceMs,
-              });
-              // Re-check on this fiber after another idle window. Do not call
-              // scheduleIdleReleaseInternal: that cancels entry.idleFiber, which
-              // is this fiber, and can self-deadlock on Fiber.interrupt.
-              yield* Effect.sleep(Duration.millis(idleTimeoutMs));
-              return yield* releaseIfStillIdle(input);
+              if (input.heldOnLastCheck !== true) {
+                yield* Effect.logInfo("orchestration-v2.driver-session.idle-release-deferred", {
+                  providerSessionId: input.providerSessionId,
+                  pinnedForMs: now - pinnedSinceMs,
+                  holds,
+                });
+              }
+              // Re-check on this fiber. Do not call scheduleIdleReleaseInternal:
+              // that cancels entry.idleFiber, which is this fiber, and can
+              // self-deadlock on Fiber.interrupt. FORK: every minute rather than
+              // every idle window, so the window after the work ends is not late.
+              yield* Effect.sleep(
+                Duration.millis(Math.min(input.idleTimeoutMs, IDLE_STOP_HOLD_RECHECK_MS)),
+              );
+              return yield* releaseIfStillIdle({ ...input, heldOnLastCheck: true });
             }
             yield* Effect.logWarning("orchestration-v2.driver-session.idle-release-pin-expired", {
               providerSessionId: input.providerSessionId,
               pinnedForMs: now - pinnedSinceMs,
+              holds,
             });
+          } else if (input.heldOnLastCheck === true) {
+            // FORK (T3MIG-FORK-014): the idle clock starts once the last hold
+            // has ended, so the session gets a whole idle window after it.
+            yield* Effect.sleep(Duration.millis(input.idleTimeoutMs));
+            return yield* releaseIfStillIdle({ ...input, heldOnLastCheck: false });
           }
-          // hasPendingBackgroundWork yields to the adapter, so the idle
+          // The hold checks yield to the adapter and the store, so the idle
           // decision above can go stale; the generation guard revalidates
           // busyTurns and idleGeneration inside releaseEntry's atomic
           // entry removal.
@@ -1210,10 +1285,17 @@ export const layerWithOptions = (
 
           yield* cancelIdleFiber(entry.idleFiber);
           const generation = entry.idleGeneration + 1;
-          const idleFiber = yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
-            Effect.andThen(releaseIfStillIdle({ providerSessionId, generation })),
-            Effect.forkIn(layerScope),
-          );
+          // FORK (T3MIG-FORK-014): with idle stop off the session keeps no timer.
+          const idleTimeoutMs = yield* resolveIdleTimeoutMs;
+          const idleFiber =
+            idleTimeoutMs === null
+              ? null
+              : yield* Effect.sleep(Duration.millis(idleTimeoutMs)).pipe(
+                  Effect.andThen(
+                    releaseIfStillIdle({ providerSessionId, generation, idleTimeoutMs }),
+                  ),
+                  Effect.forkIn(layerScope),
+                );
           const lastActivityAtMs = yield* Clock.currentTimeMillis;
           yield* Ref.update(sessions, (latest) => {
             const latestEntry = latest.get(key);
@@ -1883,6 +1965,33 @@ export const layerWithOptions = (
           Effect.ensuring(closeScopeWithin(sessionScopes, { reason: "server_shutdown" })),
         ),
       );
+
+      // FORK (T3MIG-FORK-014): a changed idle-stop setting restarts every idle
+      // session's clock with the new window, or stops the clocks when it is off.
+      if (options.idleTimeoutMs === undefined && Option.isSome(serverSettings)) {
+        const settingsChanges = yield* serverSettings.value.subscribeChanges;
+        yield* settingsChanges.pipe(
+          Stream.runForEach((settings) =>
+            Effect.gen(function* () {
+              const timeoutMs = idleStopTimeoutMs(settings.providerSessionIdleStopMinutes);
+              const previous = yield* Ref.getAndSet(idleStopSetting, Option.some(timeoutMs));
+              if (Option.isSome(previous) && previous.value === timeoutMs) return;
+              const live = [...(yield* Ref.get(sessions)).values()];
+              yield* Effect.forEach(
+                live,
+                (entry) => scheduleIdleReleaseInternal(entry.runtime.providerSessionId),
+                { discard: true },
+              );
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.driver-session.idle-stop-setting-stream-failed", {
+              cause,
+            }),
+          ),
+          Effect.forkIn(layerScope),
+        );
+      }
 
       return ProviderSessionManagerV2.of({
         shutdown,
