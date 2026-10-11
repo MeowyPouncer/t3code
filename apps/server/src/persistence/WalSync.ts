@@ -78,12 +78,13 @@ export const layer: Layer.Layer<never, never, SqlClient.SqlClient> = Layer.effec
     // Logging with this layer's context keeps the server's loggers. The worker
     // reports the first failure of a run of failures.
     const log = Effect.runForkWith(yield* Effect.context<never>());
-    worker.unref();
     worker.on("message", (message) => {
       log(Effect.logWarning("Failed to sync the SQLite WAL", { walPath, message }));
     });
     worker.on("error", (cause) => {
       log(Effect.logWarning("The SQLite WAL sync worker stopped", { walPath, cause }));
     });
+    // After the listeners: attaching a message listener refs the worker again.
+    worker.unref();
   }),
 );
