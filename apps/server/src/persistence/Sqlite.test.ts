@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { WAL_SIZE_LIMIT_BYTES } from "./Sqlite.ts";
+import { WAL_AUTOCHECKPOINT_PAGES, WAL_SIZE_LIMIT_BYTES } from "./Sqlite.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
 
 const lockHolderSource = `
@@ -89,5 +89,18 @@ it.effect("applies busy_timeout in the shared persistence setup", () =>
     const sql = yield* SqlClient.SqlClient;
     const rows = yield* sql<{ readonly timeout: number }>`PRAGMA busy_timeout`;
     assert.equal(rows[0]?.timeout, 5000);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("syncs at checkpoints and checkpoints after WAL_AUTOCHECKPOINT_PAGES", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const sync = yield* sql<{ readonly synchronous: number }>`PRAGMA synchronous`;
+    const checkpoint = yield* sql<{
+      readonly wal_autocheckpoint: number;
+    }>`PRAGMA wal_autocheckpoint`;
+    // 1 is NORMAL.
+    assert.equal(sync[0]?.synchronous, 1);
+    assert.equal(checkpoint[0]?.wal_autocheckpoint, WAL_AUTOCHECKPOINT_PAGES);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
