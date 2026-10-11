@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
@@ -305,6 +306,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
+    // FORK: the server runs synchronous=NORMAL (persistence/Sqlite.ts), where a
+    // commit reaches the disk within a second (WalSync.ts). Effects act outside the
+    // database, so claims and settlements commit with FULL, which syncs the WAL
+    // at commit whatever readers hold: what led to an effect (a command receipt,
+    // a thread deletion) is on disk before it runs, and a finished rollback or
+    // capture is not replayed over newer work after a power loss. An empty claim
+    // writes nothing, so the idle poll costs two pragmas and no fsync.
+    const durableCommits = yield* Semaphore.make(1);
+    const durably = <A, E, R>(statement: Effect.Effect<A, E, R>) =>
+      durableCommits.withPermit(
+        Effect.acquireUseRelease(
+          sql`PRAGMA synchronous = FULL`.pipe(Effect.withTracerEnabled(false)),
+          () => statement,
+          () =>
+            Effect.ignore(sql`PRAGMA synchronous = NORMAL`.pipe(Effect.withTracerEnabled(false))),
+        ),
+      );
     // Each thread runs its effects one at a time, in enqueue (rowid) order. An earlier
     // effect waiting out a retry backoff still blocks later ones, so a turn
     // cannot start while a failed rollback is about to restore files. A claim
@@ -544,7 +562,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
             RETURNING *
           `;
-          const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
+          const rows = yield* durably(claimStatement.pipe(Effect.withTracerEnabled(false)));
           const row = rows[0];
           if (row === undefined) return Option.none();
           cancellationSignals.set(row.effect_id, Deferred.makeUnsafe<void>());
@@ -576,7 +594,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const rows = yield* durably(sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'succeeded',
@@ -589,7 +607,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND status = 'running'
               AND lease_owner = ${workerId}
             RETURNING effect_id
-          `;
+          `);
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* notifyAvailable();
@@ -634,7 +652,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       fail: ({ effectId, workerId, error }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const rows = yield* durably(sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'failed',
@@ -647,7 +665,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND status = 'running'
               AND lease_owner = ${workerId}
             RETURNING effect_id
-          `;
+          `);
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* notifyAvailable();
