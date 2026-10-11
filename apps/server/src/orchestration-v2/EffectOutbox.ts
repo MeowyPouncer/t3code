@@ -307,7 +307,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
     // FORK: the server runs synchronous=NORMAL (persistence/Sqlite.ts), where a
-    // commit reaches the disk at the next checkpoint. Effects act outside the
+    // commit reaches the disk within a second (WalSync.ts). Effects act outside the
     // database, so claims and settlements commit with FULL, which syncs the WAL
     // at commit whatever readers hold: what led to an effect (a command receipt,
     // a thread deletion) is on disk before it runs, and a finished rollback or

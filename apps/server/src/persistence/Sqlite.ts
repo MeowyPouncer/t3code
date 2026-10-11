@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
+import * as WalSync from "./WalSync.ts";
 import * as ServerConfig from "../config.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
@@ -28,8 +29,10 @@ const layerSetup = Layer.effectDiscard(
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     // The default FULL fsyncs the WAL on every commit, which is about one fsync per
-    // event. NORMAL syncs at checkpoints: a power loss or OS crash can drop the
-    // newest commits, an application crash cannot, and the database stays intact.
+    // event. NORMAL syncs at checkpoints, and layerFromPath adds a sync at most once
+    // a second (WalSync.ts): a power loss or OS crash can drop the last second of
+    // commits, an application crash cannot, and the database stays intact. Outbox
+    // claims and settlements still commit with FULL (EffectOutbox.ts).
     yield* sql`PRAGMA synchronous = NORMAL;`;
     yield* sql.unsafe(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES};`);
     yield* sql.unsafe(`PRAGMA cache_size = -${PAGE_CACHE_KIB};`);
@@ -46,15 +49,18 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
-  return Layer.provideMerge(
-    layerSetup,
-    NodeSqliteClient.layer({
-      filename: dbPath,
-      spanAttributes: {
-        "db.name": path.basename(dbPath),
-        "service.name": "t3code-server",
-      },
-    }),
+  return Layer.merge(
+    Layer.provideMerge(
+      layerSetup,
+      NodeSqliteClient.layer({
+        filename: dbPath,
+        spanAttributes: {
+          "db.name": path.basename(dbPath),
+          "service.name": "t3code-server",
+        },
+      }),
+    ),
+    WalSync.layer(dbPath),
   );
 }, Layer.unwrap);
 
