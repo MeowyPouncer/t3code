@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
@@ -124,14 +125,6 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "thread-title.generate",
   "delegated-tasks.stop",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
-
-// FORK: replaying these after their settlement is destructive (a rollback
-// restores files again, over edits made since). Under synchronous=NORMAL a
-// commit survives a power loss only once the WAL is synced, so settling one
-// runs a checkpoint, which syncs it.
-export const DURABLE_SETTLEMENT_EFFECT_TYPES: ReadonlyArray<string> = [
-  "provider-thread.rollback",
-] satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.start",
@@ -313,12 +306,23 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
-    // A PASSIVE checkpoint syncs the WAL before it copies any frame back, so a
-    // settlement that must survive a power loss is on disk before the caller moves on.
-    const syncDurableSettlement = (rows: ReadonlyArray<{ readonly effect_type: string }>) =>
-      rows.length === 1 && DURABLE_SETTLEMENT_EFFECT_TYPES.includes(rows[0]!.effect_type)
-        ? Effect.asVoid(sql`PRAGMA wal_checkpoint(PASSIVE)`)
-        : Effect.void;
+    // FORK: the server runs synchronous=NORMAL (persistence/Sqlite.ts), where a
+    // commit reaches the disk at the next checkpoint. Effects act outside the
+    // database, so claims and settlements commit with FULL, which syncs the WAL
+    // at commit whatever readers hold: what led to an effect (a command receipt,
+    // a thread deletion) is on disk before it runs, and a finished rollback or
+    // capture is not replayed over newer work after a power loss. An empty claim
+    // writes nothing, so the idle poll costs two pragmas and no fsync.
+    const durableCommits = yield* Semaphore.make(1);
+    const durably = <A, E, R>(statement: Effect.Effect<A, E, R>) =>
+      durableCommits.withPermit(
+        Effect.acquireUseRelease(
+          sql`PRAGMA synchronous = FULL`.pipe(Effect.withTracerEnabled(false)),
+          () => statement,
+          () =>
+            Effect.ignore(sql`PRAGMA synchronous = NORMAL`.pipe(Effect.withTracerEnabled(false))),
+        ),
+      );
     // Each thread runs its effects one at a time, in enqueue (rowid) order. An earlier
     // effect waiting out a retry backoff still blocks later ones, so a turn
     // cannot start while a failed rollback is about to restore files. A claim
@@ -558,7 +562,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
             RETURNING *
           `;
-          const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
+          const rows = yield* durably(claimStatement.pipe(Effect.withTracerEnabled(false)));
           const row = rows[0];
           if (row === undefined) return Option.none();
           cancellationSignals.set(row.effect_id, Deferred.makeUnsafe<void>());
@@ -590,7 +594,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string; readonly effect_type: string }>`
+          const rows = yield* durably(sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'succeeded',
@@ -602,9 +606,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
-            RETURNING effect_id, effect_type
-          `;
-          yield* syncDurableSettlement(rows);
+            RETURNING effect_id
+          `);
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* notifyAvailable();
@@ -649,7 +652,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       fail: ({ effectId, workerId, error }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string; readonly effect_type: string }>`
+          const rows = yield* durably(sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'failed',
@@ -661,9 +664,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
-            RETURNING effect_id, effect_type
-          `;
-          yield* syncDurableSettlement(rows);
+            RETURNING effect_id
+          `);
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* notifyAvailable();
