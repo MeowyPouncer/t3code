@@ -49,7 +49,8 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
-  return Layer.merge(
+  return Layer.provideMerge(
+    WalSync.layer,
     Layer.provideMerge(
       layerSetup,
       NodeSqliteClient.layer({
@@ -60,7 +61,6 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
         },
       }),
     ),
-    WalSync.layer(dbPath),
   );
 }, Layer.unwrap);
 

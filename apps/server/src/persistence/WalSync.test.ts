@@ -10,27 +10,34 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "./Sqlite.ts";
-import { makeWalSync } from "./WalSync.ts";
+import { walPathOf } from "./WalSync.ts";
 
-it.effect("syncs the WAL once per batch of commits and skips it when nothing committed", () => {
+it.effect("syncs the WAL SQLite uses, behind a symlinked directory", () => {
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-wal-sync-"));
-  const dbPath = NodePath.join(tempDir, "state.sqlite");
+  const realDir = NodePath.join(tempDir, "real");
+  const linkDir = NodePath.join(tempDir, "link");
+  NodeFS.mkdirSync(realDir);
+  NodeFS.symlinkSync(realDir, linkDir);
 
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // The layer's own once-a-second loop shares the file; this instance keeps its own counter.
-    const walSync = makeWalSync(dbPath);
     yield* sql`CREATE TABLE wal_sync_probe(value INTEGER)`;
     yield* sql`INSERT INTO wal_sync_probe(value) VALUES (1)`;
-    assert.isTrue(yield* walSync.syncIfChanged);
-    assert.isFalse(yield* walSync.syncIfChanged);
-    yield* sql`INSERT INTO wal_sync_probe(value) VALUES (2)`;
-    yield* sql`INSERT INTO wal_sync_probe(value) VALUES (3)`;
-    assert.isTrue(yield* walSync.syncIfChanged);
-    assert.isFalse(yield* walSync.syncIfChanged);
-    assert.isFalse(yield* makeWalSync(NodePath.join(tempDir, "missing.sqlite")).syncIfChanged);
+    const walPath = yield* walPathOf;
+    assert.equal(walPath, NodePath.join(NodeFS.realpathSync(realDir), "state.sqlite-wal"));
+    assert.isTrue(NodeFS.existsSync(walPath!));
   }).pipe(
-    Effect.provide(SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer))),
+    Effect.provide(
+      SqlitePersistence.layerFromPath(NodePath.join(linkDir, "state.sqlite")).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
+
+it.effect("has no WAL to sync for an in-memory database", () =>
+  Effect.gen(function* () {
+    assert.isUndefined(yield* walPathOf);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
