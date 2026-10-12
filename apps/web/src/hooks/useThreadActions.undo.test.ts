@@ -15,6 +15,8 @@ const commands = vi.hoisted(() => ({
   unsettle: vi.fn(),
   snooze: vi.fn(),
   unsnooze: vi.fn(),
+  shelve: vi.fn(),
+  unshelve: vi.fn(),
 }));
 const router = vi.hoisted(() => ({
   navigate: vi.fn(async () => {}),
@@ -43,6 +45,8 @@ const threadShell = vi.hoisted(() => ({
   pinOrderKey: "a0",
   pinnedAt: null as string | null,
   snoozedUntil: null as string | null,
+  settledOverride: null as "settled" | null,
+  shelvedAt: null as string | null,
   projectId: "project",
   environmentId: "undo-env",
   session: null,
@@ -52,6 +56,7 @@ vi.mock("../state/entities", async (original) => ({
   readEnvironmentSupportsPinning: () => true,
   readEnvironmentSupportsPinReorder: () => true,
   readEnvironmentSupportsSettlement: () => true,
+  readEnvironmentSupportsShelf: () => true,
   readEnvironmentSupportsSnooze: () => true,
   readThreadShell: () => threadShell,
 }));
@@ -74,6 +79,10 @@ vi.mock("../state/use-atom-command", () => ({
         return commands.snooze;
       case threadEnvironment.unsnooze:
         return commands.unsnooze;
+      case threadEnvironment.shelve:
+        return commands.shelve;
+      case threadEnvironment.unshelve:
+        return commands.unshelve;
       default:
         return vi.fn();
     }
@@ -99,6 +108,8 @@ beforeEach(() => {
   router.state.matches[0]!.params = {};
   threadShell.pinnedAt = null;
   threadShell.snoozedUntil = null;
+  threadShell.settledOverride = null;
+  threadShell.shelvedAt = null;
 });
 afterEach(() => {
   vi.runAllTimers();
@@ -219,5 +230,38 @@ describe("settle and snooze Undo", () => {
       environmentId: target.environmentId,
       input: { threadId: target.threadId, reason: "user" },
     });
+  });
+});
+
+describe("shelve Undo", () => {
+  it("puts a settled thread back in Settled and a pinned one back on its pin", async () => {
+    const actions = useThreadActions();
+    threadShell.settledOverride = "settled";
+    await actions.shelveThread(target, "Benchmarks");
+    expect(commands.shelve).toHaveBeenCalledExactlyOnceWith({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId, note: "Benchmarks" },
+    });
+    expect(useThreadUndoNotice.getState().notice).toMatchObject({ action: "Shelved", count: 1 });
+    await currentUndo()();
+    expect(commands.settle).toHaveBeenCalledOnce();
+    expect(commands.unshelve).not.toHaveBeenCalled();
+
+    threadShell.settledOverride = null;
+    threadShell.pinnedAt = "2026-01-01T00:00:00.000Z";
+    await actions.shelveThread(target, null);
+    await currentUndo()();
+    expect(commands.unshelve).toHaveBeenCalledOnce();
+    expect(commands.pin).toHaveBeenCalledExactlyOnceWith({
+      environmentId: target.environmentId,
+      input: { threadId: target.threadId, orderKey: "a0" },
+    });
+  });
+
+  it("offers no Undo for a note edit on a shelved thread", async () => {
+    threadShell.shelvedAt = "2026-01-01T00:00:00.000Z";
+    await useThreadActions().shelveThread(target, "Updated note");
+    expect(commands.shelve).toHaveBeenCalledOnce();
+    expect(useThreadUndoNotice.getState().notice).toBeNull();
   });
 });

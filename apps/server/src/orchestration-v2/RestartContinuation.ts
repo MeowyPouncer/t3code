@@ -44,6 +44,8 @@ function restartContinuationBlocked(
     thread.archivedAt !== null ||
     thread.deletedAt !== null ||
     thread.settledOverride === "settled" ||
+    // FORK: the shelf puts a thread away like settling does.
+    thread.shelvedAt != null ||
     (thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now))
   )
     return true;

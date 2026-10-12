@@ -3578,6 +3578,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE t.deleted_at IS NULL
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            -- FORK: a shelved thread stays put away, like a settled one.
+            AND json_extract(t.payload_json, '$.shelvedAt') IS NULL
             AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
             AND json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
             AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
@@ -6297,7 +6299,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 ({ thread }) =>
                   thread.deletedAt === null &&
                   thread.archivedAt === null &&
-                  thread.settledOverride !== "settled",
+                  thread.settledOverride !== "settled" &&
+                  thread.shelvedAt == null,
               )
               .map(threadShellFromProjection)
               .filter(

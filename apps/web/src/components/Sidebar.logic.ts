@@ -130,17 +130,21 @@ export const animateSidebarLayoutChanges: AnimateLayoutChanges = (args) =>
 // order. Snoozed rows can leave the shelf, but dropping into it is not
 // supported because snoozing requires a wake time. The Working shelf (beta)
 // follows live status, so it is neither a drag source nor a destination.
+// FORK: neither is the Shelf, whose rows leave through their own action and
+// enter with a note.
 
-export type SidebarSection = "pinned" | "active" | "working" | "snoozed" | "settled";
+export type SidebarSection = "pinned" | "active" | "working" | "snoozed" | "shelved" | "settled";
 
 /** Resolve the shelf a visible thread belongs to. Snooze is temporary and
  * wins until its wake boundary; settlement then wins over a stale pin. */
 export function resolveSidebarThreadSection(input: {
   readonly snoozed: boolean;
+  readonly shelved?: boolean;
   readonly settled: boolean;
   readonly pinned: boolean;
 }): SidebarSection {
   if (input.snoozed) return "snoozed";
+  if (input.shelved) return "shelved";
   if (input.settled) return "settled";
   if (input.pinned) return "pinned";
   return "active";
@@ -160,6 +164,7 @@ export type SidebarListMarker =
   | "pinned-divider"
   | "working-header"
   | "snoozed-header"
+  | "shelved-header"
   | "settled-header";
 
 export function sidebarMarkerId(marker: SidebarListMarker): string {
@@ -186,13 +191,14 @@ function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number):
     if (item.marker === "pinned-divider") section = "active";
     else if (item.marker === "working-header") section = "working";
     else if (item.marker === "snoozed-header") section = "snoozed";
+    else if (item.marker === "shelved-header") section = "shelved";
     else if (item.marker === "settled-header") section = "settled";
   }
   return section;
 }
 
 /** Resolve the destination section and manual order from an arrayMove across
- * the separators. The working and snoozed shelves are never destinations. */
+ * the separators. The working, snoozed and shelved sections are never destinations. */
 export type SidebarDropTarget = {
   readonly section: "pinned" | "active" | "settled";
   readonly pinnedOrder: readonly string[];
@@ -210,7 +216,7 @@ export function resolveSidebarDropTarget(
   const moved = items.filter((_, index) => index !== activeIndex);
   moved.splice(overIndex, 0, items[activeIndex]!);
   const section = sectionAtSidebarSlot(moved, overIndex);
-  if (section === "working" || section === "snoozed") return null;
+  if (section === "working" || section === "snoozed" || section === "shelved") return null;
   const pinnedOrder: string[] = [];
   const activeOrder: string[] = [];
   let currentSection: SidebarSection = "pinned";
@@ -220,6 +226,7 @@ export function resolveSidebarDropTarget(
       else if (
         item.marker === "working-header" ||
         item.marker === "snoozed-header" ||
+        item.marker === "shelved-header" ||
         item.marker === "settled-header"
       )
         break;
@@ -259,14 +266,16 @@ export type SidebarThreadDropPlan =
 
 /** What dropping in `to` does to a thread lifted from `from`, for the badge
     on the lifted row. Null while reordering inside one section and for the
-    working and snoozed shelves, which cannot be drop targets. */
+    working, snoozed and shelved sections, which cannot be drop targets. */
 export type SidebarDropVerb = "pin" | "unpin" | "settle" | "unsettle" | "wake";
 
 export function resolveSidebarDropVerb(
   from: SidebarSection,
   to: SidebarSection | null,
 ): SidebarDropVerb | null {
-  if (to === null || to === from || to === "working" || to === "snoozed") return null;
+  if (to === null || to === from || to === "working" || to === "snoozed" || to === "shelved") {
+    return null;
+  }
   if (to === "pinned") return "pin";
   if (to === "settled") return "settle";
   if (from === "pinned") return "unpin";
@@ -1072,16 +1081,19 @@ export { sortPinnedThreadsByOrderKey as sortPinnedThreadsForSidebar } from "@t3t
 const EMPTY_CONTENT_MATCH_KEYS: ReadonlySet<string> = new Set<string>();
 
 /**
- * Search the already-ordered sidebar thread collection by title or linked PR,
- * plus any thread whose messages the server matched (`contentMatchKeys`, keyed
- * by `threadSearchMatchKey`). Keeping the input order means lifecycle ordering
- * (active, snoozed, settled) remains stable while the user narrows the list.
+ * Search the already-ordered sidebar thread collection by title, shelf note
+ * or linked PR, plus any thread whose messages the server matched
+ * (`contentMatchKeys`, keyed by `threadSearchMatchKey`). Keeping the input
+ * order means lifecycle ordering (active, snoozed, settled) remains stable
+ * while the user narrows the list.
  */
 export function searchSidebarThreads<
   T extends {
     readonly environmentId: EnvironmentId;
     readonly id: ThreadId;
     readonly title: string;
+    /** FORK: why the thread went on the shelf. */
+    readonly shelfNote?: string | null;
   } & Parameters<typeof threadPullRequestSearchTerms>[0],
 >(
   threads: readonly T[],
@@ -1093,9 +1105,11 @@ export function searchSidebarThreads<
   const titleMatches: T[] = [];
   const contentMatches: T[] = [];
   for (const thread of threads) {
-    const matchesTitle = [thread.title, ...threadPullRequestSearchTerms(thread)].some((term) =>
-      term.toLowerCase().includes(normalizedQuery),
-    );
+    const matchesTitle = [
+      thread.title,
+      ...(thread.shelfNote ? [thread.shelfNote] : []),
+      ...threadPullRequestSearchTerms(thread),
+    ].some((term) => term.toLowerCase().includes(normalizedQuery));
     if (matchesTitle) {
       titleMatches.push(thread);
     } else if (

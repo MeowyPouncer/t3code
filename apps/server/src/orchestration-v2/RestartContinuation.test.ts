@@ -914,20 +914,23 @@ it.effect.each([
     }),
 );
 
-it.effect("does not wake a snoozed or settled thread, but continues once a snooze elapsed", () =>
-  Effect.gen(function* () {
-    const live = makeProjection();
-    for (const held of [
-      { snoozedUntil: DateTime.add(now, { days: 1 }) },
-      { settledOverride: "settled" as const },
-    ]) {
-      const thread = { ...live.thread, ...held };
-      assert.isUndefined(restartContinuationRun({ ...live, thread }, now));
-      assert.deepEqual(yield* continuationTexts({ ...cutMidTurn(), thread }), []);
-    }
-    const thread = { ...live.thread, snoozedUntil: DateTime.subtract(now, { minutes: 1 }) };
-    assert.equal(restartContinuationRun({ ...live, thread }, now)?.id, runId);
-  }),
+it.effect(
+  "does not wake a snoozed, settled or shelved thread, but continues once a snooze elapsed",
+  () =>
+    Effect.gen(function* () {
+      const live = makeProjection();
+      for (const held of [
+        { snoozedUntil: DateTime.add(now, { days: 1 }) },
+        { settledOverride: "settled" as const },
+        { shelvedAt: now },
+      ]) {
+        const thread = { ...live.thread, ...held };
+        assert.isUndefined(restartContinuationRun({ ...live, thread }, now));
+        assert.deepEqual(yield* continuationTexts({ ...cutMidTurn(), thread }), []);
+      }
+      const thread = { ...live.thread, snoozedUntil: DateTime.subtract(now, { minutes: 1 }) };
+      assert.equal(restartContinuationRun({ ...live, thread }, now)?.id, runId);
+    }),
 );
 
 it.effect("does not continue a run waiting on a secret the restart closed", () =>

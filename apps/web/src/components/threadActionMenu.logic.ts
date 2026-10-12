@@ -20,6 +20,9 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
+  | "shelve"
+  | "edit-shelf-note"
+  | "unshelve"
   | "rename"
   | "regenerate-title"
   | "mark-unread"
@@ -87,6 +90,7 @@ export interface ThreadActionMenuState {
   readonly autoSettleEnabled: boolean;
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
+  readonly isShelved: boolean;
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
@@ -96,6 +100,8 @@ export interface ThreadActionMenuState {
     readonly autoSettleOptOut: boolean;
     readonly snooze: boolean;
     readonly pinning: boolean;
+    /** FORK: server understands thread.shelve. */
+    readonly shelf: boolean;
     readonly titleRegeneration: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
@@ -167,6 +173,16 @@ export function buildThreadActionMenuItems(
                 ],
               },
         ]
+      : []),
+    // FORK: the shelf keeps finished threads worth coming back to, each with
+    // an optional note on why.
+    ...(state.supports.shelf
+      ? state.isShelved
+        ? [
+            { id: "edit-shelf-note" as const, label: "Edit shelf note…", icon: "sticky-note" },
+            { id: "unshelve" as const, label: "Take off shelf", icon: "library" },
+          ]
+        : [{ id: "shelve" as const, label: "Move to shelf…", icon: "library" }]
       : []),
     { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },
     ...(state.supports.titleRegeneration

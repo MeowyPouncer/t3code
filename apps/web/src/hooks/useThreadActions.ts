@@ -42,6 +42,7 @@ import {
   readEnvironmentSupportsPinReorder,
   readEnvironmentSupportsActiveReorder,
   readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsShelf,
   readEnvironmentSupportsSnooze,
   readEnvironmentSupportsVisitedTracking,
   readEnvironmentThreadRefs,
@@ -95,6 +96,19 @@ export class ThreadSnoozeUnsupportedError extends Schema.TaggedError<ThreadSnooz
 ) {
   override get message(): string {
     return "This environment's server does not support snoozing yet. Update the server to use Snooze.";
+  }
+}
+
+/** FORK: the shelf needs a server that knows thread.shelve. */
+export class ThreadShelfUnsupportedError extends Schema.TaggedError<ThreadShelfUnsupportedError>()(
+  "ThreadShelfUnsupportedError",
+  {
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return "This environment's server does not support the shelf yet. Update the server to use it.";
   }
 }
 
@@ -303,6 +317,12 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
+    reportFailure: false,
+  });
+  const shelveThreadMutation = useOrchestrationCommand(threadEnvironment.shelve, {
+    reportFailure: false,
+  });
+  const unshelveThreadMutation = useOrchestrationCommand(threadEnvironment.unshelve, {
     reportFailure: false,
   });
   const markThreadUnread = useMarkThreadUnread();
@@ -976,6 +996,104 @@ export function useThreadActions() {
     [resolveThreadTarget, snoozeThreadMutation, unsnoozeThread],
   );
 
+  /** FORK: takes a thread off the shelf back to the active list. */
+  const unshelveThread = useCallback(
+    async (target: ScopedThreadRef) => {
+      if (!readEnvironmentSupportsShelf(target.environmentId)) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadShelfUnsupportedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+      ThreadUndo.invalidate("shelve", scopedThreadKey(target));
+      return unshelveThreadMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId },
+      });
+    },
+    [unshelveThreadMutation],
+  );
+
+  /**
+   * FORK: puts a thread on the shelf with the note the user wrote (null for
+   * none). Shelving drops the pin, the snooze and the settled mark server-side,
+   * so Undo puts the one the thread had back.
+   */
+  const shelveThread = useCallback(
+    async (target: ScopedThreadRef, note: string | null) => {
+      if (!readEnvironmentSupportsShelf(target.environmentId)) {
+        return AsyncResult.failure(
+          Cause.fail(
+            new ThreadShelfUnsupportedError({
+              environmentId: target.environmentId,
+              threadId: target.threadId,
+            }),
+          ),
+        );
+      }
+      const thread = resolveThreadTarget(target)?.thread ?? null;
+      const wasShelved = thread?.shelvedAt != null;
+      const wasSettled = thread?.settledOverride === "settled";
+      const pinOrderKey = thread?.pinnedAt != null ? thread.pinOrderKey : null;
+      const wasPinned = thread?.pinnedAt != null;
+      const snoozedUntil = thread?.snoozedUntil ?? null;
+      ThreadUndo.invalidate("pin", scopedThreadKey(target));
+      ThreadUndo.invalidate("snooze", scopedThreadKey(target));
+      ThreadUndo.invalidate("settle", scopedThreadKey(target));
+      const action = ThreadUndo.begin("shelve", scopedThreadKey(target));
+      const result = await shelveThreadMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, note },
+      });
+      // A note edit leaves the thread where it is: nothing to undo.
+      if (result._tag !== "Success" || wasShelved) {
+        action.finish();
+        return result;
+      }
+      showThreadUndoNotice({
+        action: "Shelved",
+        claim: action,
+        undo: async () => {
+          if (wasSettled) {
+            return settleThreadMutation({
+              environmentId: target.environmentId,
+              input: { threadId: target.threadId },
+            });
+          }
+          const unshelved = await unshelveThreadMutation({
+            environmentId: target.environmentId,
+            input: { threadId: target.threadId },
+          });
+          if (unshelved._tag !== "Success") return unshelved;
+          if (wasPinned) {
+            return pinThread(target, pinOrderKey == null ? {} : { orderKey: pinOrderKey });
+          }
+          if (snoozedUntil !== null) {
+            return snoozeThreadMutation({
+              environmentId: target.environmentId,
+              input: { threadId: target.threadId, snoozedUntil },
+            });
+          }
+          return unshelved;
+        },
+        failureTitle: "Failed to undo shelving",
+      });
+      return result;
+    },
+    [
+      pinThread,
+      resolveThreadTarget,
+      settleThreadMutation,
+      shelveThreadMutation,
+      snoozeThreadMutation,
+      unshelveThreadMutation,
+    ],
+  );
+
   const confirmAndDeleteThread = useCallback(
     async (target: ScopedThreadRef) => {
       const permissionFailure = threadOperationFailure(target);
@@ -1017,6 +1135,8 @@ export function useThreadActions() {
       unsettleThread,
       snoozeThread,
       unsnoozeThread,
+      shelveThread,
+      unshelveThread,
       pinThread,
       unpinThread,
       confirmAndUnpinThread,
@@ -1036,10 +1156,12 @@ export function useThreadActions() {
       reorderActiveThread,
       setThreadAutoSettle,
       settleThread,
+      shelveThread,
       snoozeThread,
       unarchiveThread,
       unpinThread,
       unsettleThread,
+      unshelveThread,
       unsnoozeThread,
     ],
   );

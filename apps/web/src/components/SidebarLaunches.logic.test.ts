@@ -52,6 +52,7 @@ function sections(
     active: input.active ?? [],
     working: input.working ?? [],
     snoozed: input.snoozed ?? [],
+    shelved: input.shelved ?? [],
     settled: input.settled ?? [],
   };
 }
@@ -62,6 +63,7 @@ function nest(input: SidebarLaunchSections<Thread>, extra: readonly Thread[] = [
     ...input.active,
     ...input.working,
     ...input.snoozed,
+    ...input.shelved,
     ...input.settled,
     ...extra,
   ];
@@ -175,6 +177,24 @@ describe("nestSidebarLaunchedThreads", () => {
     expect(ids(result.sections.active)).toEqual(["inbox-orchestrator", "live-under-settled"]);
     expect(ids(result.sections.snoozed)).toEqual(["snoozed-child"]);
     expect(ids(result.sections.settled)).toEqual(["settled-child", "settled-orchestrator"]);
+  });
+
+  it("puts a shelved thread's finished children on the shelf with it, never its live ones", () => {
+    const shelvedOrchestrator = thread("shelved-orchestrator");
+    const finished = launched("finished", "shelved-orchestrator");
+    const live = launched("live", "shelved-orchestrator");
+
+    const result = nest(
+      sections({ active: [live], shelved: [shelvedOrchestrator], settled: [finished] }),
+    );
+
+    expect(result.forest.parentKeyByChildKey.get(key("finished"))).toBe(
+      key("shelved-orchestrator"),
+    );
+    expect(result.nestedSectionByKey.get(key("finished"))).toBe("settled");
+    expect(ids(result.sections.shelved)).toEqual(["shelved-orchestrator"]);
+    expect(ids(result.sections.settled)).toEqual([]);
+    expect(ids(result.sections.active)).toEqual(["live"]);
   });
 
   it("brings a working group back to the inbox while a child needs the user", () => {

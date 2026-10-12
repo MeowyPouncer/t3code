@@ -2792,6 +2792,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         !Number.isFinite(resetMs) ||
         thread.archivedAt !== null ||
         thread.settledOverride === "settled" ||
+        thread.shelvedAt != null ||
         run?.id !== command.limitRecovery.runId ||
         failure?.class !== "usage_limit" ||
         failure.resetAt !== command.limitRecovery.resetAt ||
@@ -4753,6 +4754,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
           projection.thread.settledOverride === "settled" ||
+          projection.thread.shelvedAt != null ||
           projection.thread.providerInstanceId !== run.providerInstanceId ||
           projection.runtimeRequests.some((request) => request.status === "pending") ||
           (projection.thread.snoozedUntil != null &&

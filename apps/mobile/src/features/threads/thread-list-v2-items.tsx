@@ -133,6 +133,17 @@ const SNOOZED_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+// FORK: the shelf.
+const SHELVE_MENU_ACTION: MenuAction = {
+  id: "shelve",
+  title: "Move to shelf…",
+  image: "books.vertical",
+};
+const SHELVED_MENU_ACTIONS: MenuAction[] = [
+  { id: "unshelve", title: "Take off shelf", image: "arrow.uturn.backward" },
+  { id: "edit-shelf-note", title: "Edit shelf note…", image: "note.text" },
+];
+
 // Pre-settlement servers: no lifecycle items, archive fills the gap.
 const LEGACY_MENU_ACTIONS: MenuAction[] = [
   { id: "archive", title: "Archive", image: "archivebox" },
@@ -235,7 +246,12 @@ type ThreadListV2ShelfHeaderProps = {
   readonly pane?: "screen" | "sidebar";
 };
 
-const SHELF_LABEL = { working: "Working", snoozed: "Snoozed", settled: "Settled" } as const;
+const SHELF_LABEL = {
+  working: "Working",
+  snoozed: "Snoozed",
+  shelved: "Shelf",
+  settled: "Settled",
+} as const;
 
 function ThreadListV2ShelfHeader(
   props: ThreadListV2ShelfHeaderProps & { readonly kind: keyof typeof SHELF_LABEL },
@@ -267,6 +283,12 @@ export const ThreadListV2SnoozedShelfHeader = memo(function ThreadListV2SnoozedS
   props: ThreadListV2ShelfHeaderProps,
 ) {
   return <ThreadListV2ShelfHeader {...props} kind="snoozed" />;
+});
+
+export const ThreadListV2ShelvedShelfHeader = memo(function ThreadListV2ShelvedShelfHeader(
+  props: ThreadListV2ShelfHeaderProps,
+) {
+  return <ThreadListV2ShelfHeader {...props} kind="shelved" />;
 });
 
 export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledShelfHeader(
@@ -504,6 +526,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly snoozed?: boolean;
   /** Pinned-block row: shows the pin glyph and offers Unpin. */
   readonly pinned?: boolean;
+  /** FORK: Shelf row: shows its note and offers Take off shelf. */
+  readonly shelved?: boolean;
   /** Preformatted against the parent minute tick so this memoized row's
       countdown keeps moving. */
   readonly snoozeWakeLabelText?: string;
@@ -556,6 +580,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onPinThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnpinThread: (thread: EnvironmentThreadShell) => void;
   readonly onSetThreadAutoSettle: (thread: EnvironmentThreadShell, enabled: boolean) => void;
+  /** FORK: asks for the note, then shelves the thread or saves its new note. */
+  readonly onShelveThread: (thread: EnvironmentThreadShell) => void;
+  readonly onUnshelveThread: (thread: EnvironmentThreadShell) => void;
+  /** FORK: false on servers that predate thread.shelve/unshelve. */
+  readonly shelfSupported: boolean;
   /** False on environments whose server predates thread.settle/unsettle:
       swipe + menu fall back to Archive instead of failing on use. */
   readonly settlementSupported: boolean;
@@ -602,9 +631,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onPinThread,
     onUnpinThread,
     onSetThreadAutoSettle,
+    onShelveThread,
+    onUnshelveThread,
     onMoveThread,
   } = props;
   const snoozedRow = props.snoozed === true;
+  const shelvedRow = props.shelved === true;
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
 
@@ -678,6 +710,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleUnsnooze = useCallback(() => onUnsnoozeThread(thread), [onUnsnoozeThread, thread]);
   const handleUnsettle = useCallback(() => onUnsettleThread(thread), [onUnsettleThread, thread]);
+  const handleShelve = useCallback(() => onShelveThread(thread), [onShelveThread, thread]);
+  const handleUnshelve = useCallback(() => onUnshelveThread(thread), [onUnshelveThread, thread]);
   const handlePin = useCallback(() => onPinThread(thread), [onPinThread, thread]);
   const handleUnpin = useCallback(() => onUnpinThread(thread), [onUnpinThread, thread]);
   const handleSetAutoSettle = useCallback(
@@ -707,6 +741,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     snoozeSupported: props.snoozeSupported,
     snoozable: canSnooze(thread, { now: new Date().toISOString() }),
     snoozed: snoozedRow,
+    shelved: shelvedRow,
   });
   const snoozePresets = useMemo(
     () => (swipeActions.secondary === "snooze" ? resolveSnoozePresets(new Date()) : ([] as const)),
@@ -799,6 +834,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ],
     [props.titleRegenerationSupported, thread.titleRegeneration],
   );
+  // FORK: Move to shelf follows the lifecycle verbs wherever the server has it.
+  const shelveMenuItems = useMemo<MenuAction[]>(
+    () => (props.shelfSupported ? [SHELVE_MENU_ACTION] : []),
+    [props.shelfSupported],
+  );
   const snoozableCardMenuActions = useMemo<MenuAction[]>(
     () => [
       { id: "settle", title: "Settle", image: "checkmark" },
@@ -808,28 +848,37 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         image: "clock",
         subactions: snoozePresetActions,
       },
+      ...shelveMenuItems,
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [arrangementMenuItems, autoSettleMenuItems, snoozePresetActions, titleMenuItems],
+    [
+      arrangementMenuItems,
+      autoSettleMenuItems,
+      shelveMenuItems,
+      snoozePresetActions,
+      titleMenuItems,
+    ],
   );
   const cardMenuActions = useMemo<MenuAction[]>(
     () => [
       CARD_MENU_ACTIONS[0]!,
+      ...shelveMenuItems,
       ...arrangementMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       ...CARD_MENU_ACTIONS.slice(1),
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, shelveMenuItems, titleMenuItems],
   );
   // Settled and snoozed rows keep the setting too, matching web where every
   // row shares one menu builder.
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
       SLIM_MENU_ACTIONS[0]!,
+      ...shelveMenuItems,
       ...arrangementMenuItems.filter(
         (action) => action.id !== "move-up" && action.id !== "move-down",
       ),
@@ -837,16 +886,25 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ...autoSettleMenuItems,
       SLIM_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [arrangementMenuItems, autoSettleMenuItems, shelveMenuItems, titleMenuItems],
   );
   const snoozedMenuActions = useMemo<MenuAction[]>(
     () => [
       SNOOZED_MENU_ACTIONS[0]!,
+      ...shelveMenuItems,
       ...titleMenuItems,
       ...autoSettleMenuItems,
       SNOOZED_MENU_ACTIONS[1]!,
     ],
-    [autoSettleMenuItems, titleMenuItems],
+    [autoSettleMenuItems, shelveMenuItems, titleMenuItems],
+  );
+  const shelvedMenuActions = useMemo<MenuAction[]>(
+    () => [
+      ...SHELVED_MENU_ACTIONS,
+      ...titleMenuItems,
+      { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+    ],
+    [titleMenuItems],
   );
   const legacyMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -863,6 +921,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
       if (nativeEvent.event === "unsnooze") handleUnsnooze();
+      if (nativeEvent.event === "shelve" || nativeEvent.event === "edit-shelf-note") handleShelve();
+      if (nativeEvent.event === "unshelve") handleUnshelve();
       if (nativeEvent.event === "pin") handlePin();
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
@@ -903,10 +963,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleMoveUp,
       handlePin,
       handleSettle,
+      handleShelve,
       handleSnooze,
       handleSetAutoSettle,
       handleUnpin,
       handleUnsettle,
+      handleUnshelve,
       handleUnsnooze,
       setCustomSnoozeOpen,
       snoozePresets,
@@ -932,6 +994,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         onPress: handleUnsnooze,
       };
     }
+    if (swipeActions.primary === "unshelve") {
+      return {
+        accessibilityLabel: `Take ${thread.title} off the shelf`,
+        icon: "arrow.uturn.backward" as const,
+        label: "Take off",
+        onPress: handleUnshelve,
+      };
+    }
     return swipeActions.primary === "unsettle"
       ? {
           accessibilityLabel: `Un-settle ${thread.title}`,
@@ -949,6 +1019,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     handleArchive,
     handleSettle,
     handleUnsettle,
+    handleUnshelve,
     handleUnsnooze,
     swipeActions.primary,
     thread.title,
@@ -1280,6 +1351,20 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             >
               {thread.title}
             </Text>
+            {/* FORK: why the thread is on the shelf. */}
+            {shelvedRow && thread.shelfNote ? (
+              <Text
+                className={cn(
+                  "text-xs",
+                  selected
+                    ? selectedThreadRowColors.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+                )}
+                numberOfLines={2}
+              >
+                {thread.shelfNote}
+              </Text>
+            ) : null}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}
@@ -1332,7 +1417,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         onSwipeableWillOpen={props.onSwipeableWillOpen}
         primaryAction={primaryAction}
         secondaryAction={secondaryAction}
-        resetKey={`${thread.environmentId}:${thread.id}:${variant}:${snoozedRow}:${thread.settledAt}:${thread.unsettledAt}:${thread.snoozedUntil}`}
+        resetKey={`${thread.environmentId}:${thread.id}:${variant}:${snoozedRow}:${shelvedRow}:${thread.settledAt}:${thread.unsettledAt}:${thread.snoozedUntil}`}
         simultaneousWith={props.simultaneousSwipeGesture}
         threadTitle={thread.title}
       >
@@ -1351,13 +1436,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               { id: "copy-thread-id", title: "Copy thread ID", image: "doc.on.doc" },
               ...(snoozedRow
                 ? snoozedMenuActions
-                : !props.settlementSupported
-                  ? legacyMenuActions
-                  : canUnsettle
-                    ? slimMenuActions
-                    : swipeActions.secondary === "snooze"
-                      ? snoozableCardMenuActions
-                      : cardMenuActions),
+                : shelvedRow
+                  ? shelvedMenuActions
+                  : !props.settlementSupported
+                    ? legacyMenuActions
+                    : canUnsettle
+                      ? slimMenuActions
+                      : swipeActions.secondary === "snooze"
+                        ? snoozableCardMenuActions
+                        : cardMenuActions),
             ]}
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress

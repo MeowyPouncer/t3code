@@ -15,6 +15,7 @@ const baseState: ThreadActionMenuState = {
   autoSettleEnabled: true,
   isSnoozed: false,
   canSnoozeNow: true,
+  isShelved: false,
   isRegeneratingTitle: false,
   isRunning: false,
   supports: {
@@ -22,6 +23,7 @@ const baseState: ThreadActionMenuState = {
     autoSettleOptOut: true,
     snooze: true,
     pinning: true,
+    shelf: false,
     titleRegeneration: true,
   },
   snoozePresets: [
@@ -100,6 +102,7 @@ describe("buildThreadActionMenuItems", () => {
           autoSettleOptOut: false,
           snooze: false,
           pinning: false,
+          shelf: false,
           titleRegeneration: false,
         },
       }),
@@ -210,10 +213,28 @@ describe("buildThreadActionMenuItems", () => {
           autoSettleOptOut: false,
           snooze: false,
           pinning: false,
+          shelf: false,
           titleRegeneration: false,
         },
       }),
     ).toContain("archive");
+  });
+
+  it("offers the shelf by the thread's place and keeps it a mutation", () => {
+    const supports = { ...baseState.supports, shelf: true };
+    const items = ids({ ...baseState, supports });
+    expect(items[items.indexOf("snooze") + 1]).toBe("shelve");
+    const shelved = ids({ ...baseState, supports, isShelved: true });
+    expect(shelved).toEqual(expect.arrayContaining(["edit-shelf-note", "unshelve"]));
+    expect(shelved).not.toContain("shelve");
+    expect(
+      buildThreadActionMenuItems({ ...baseState, supports, isShelved: true, canOperate: false })
+        .filter((item) => item.id === "edit-shelf-note" || item.id === "unshelve")
+        .every((item) => item.disabled),
+    ).toBe(true);
+    expect(allIds(baseState).filter((id) => id.includes("shelf") || id.includes("shelve"))).toEqual(
+      [],
+    );
   });
 
   it("disables archive while the thread is running", () => {

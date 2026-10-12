@@ -1,5 +1,6 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
+import { requestShelfNote } from "../components/ShelfNoteDialog";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -29,6 +30,7 @@ import {
   readEnvironmentSupportsAutoSettleOptOut,
   readEnvironmentSupportsPinning,
   readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsShelf,
   readEnvironmentSupportsSnooze,
   readEnvironmentSupportsTitleRegeneration,
   readThreadShell,
@@ -93,6 +95,8 @@ export function useThreadActionMenu(input: {
     unsettleThread,
     snoozeThread,
     unsnoozeThread,
+    shelveThread,
+    unshelveThread,
     pinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
@@ -143,6 +147,7 @@ export function useThreadActionMenu(input: {
           autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
           snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
+          shelf: readEnvironmentSupportsShelf(threadRef.environmentId),
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
@@ -156,6 +161,7 @@ export function useThreadActionMenu(input: {
           autoSettleEnabled: thread.autoSettleDisabledAt == null,
           isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
+          isShelved: supports.shelf && thread.shelvedAt != null,
           isRegeneratingTitle,
           isRunning: !threadRuntimeCanArchive(thread.runtime),
           supports,
@@ -236,6 +242,23 @@ export function useThreadActionMenu(input: {
             return;
           case "unsnooze":
             await reportFailure("Failed to wake thread", () => unsnoozeThread(threadRef));
+            return;
+          case "shelve":
+          case "edit-shelf-note": {
+            const choice = await requestShelfNote({
+              mode: action === "shelve" ? "shelve" : "edit",
+              threadTitle: thread.title,
+              note: thread.shelfNote,
+            });
+            if (!choice) return;
+            await reportFailure(
+              action === "shelve" ? "Failed to shelve thread" : "Failed to save shelf note",
+              () => shelveThread(threadRef, choice.note),
+            );
+            return;
+          }
+          case "unshelve":
+            await reportFailure("Failed to take thread off shelf", () => unshelveThread(threadRef));
             return;
           case "pin":
             await reportFailure("Failed to pin thread", () => pinThread(threadRef));
@@ -360,10 +383,12 @@ export function useThreadActionMenu(input: {
       router,
       setThreadAutoSettle,
       settleThread,
+      shelveThread,
       snoozeThread,
       threadRef,
       timestampFormat,
       unsettleThread,
+      unshelveThread,
       unsnoozeThread,
       updateThreadMetadata,
     ],

@@ -57,6 +57,12 @@ const ICON_PATHS: Record<string, ReadonlyArray<{ tag: string; attrs: Record<stri
     { tag: "line", attrs: { x1: "10", x2: "8", y1: "3", y2: "21" } },
     { tag: "line", attrs: { x1: "16", x2: "14", y1: "3", y2: "21" } },
   ],
+  library: [
+    { tag: "path", attrs: { d: "m16 6 4 14" } },
+    { tag: "path", attrs: { d: "M12 6v14" } },
+    { tag: "path", attrs: { d: "M8 8v12" } },
+    { tag: "path", attrs: { d: "M4 4v16" } },
+  ],
   "mail-open": [
     {
       tag: "path",
@@ -110,6 +116,15 @@ const ICON_PATHS: Record<string, ReadonlyArray<{ tag: string; attrs: Record<stri
       },
     },
     { tag: "circle", attrs: { cx: "12", cy: "12", r: "3" } },
+  ],
+  "sticky-note": [
+    {
+      tag: "path",
+      attrs: {
+        d: "M21 9a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 15 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z",
+      },
+    },
+    { tag: "path", attrs: { d: "M15 3v5a1 1 0 0 0 1 1h5" } },
   ],
   "folder-tree": [
     {

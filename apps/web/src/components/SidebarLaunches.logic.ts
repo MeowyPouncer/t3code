@@ -47,7 +47,7 @@ export function resolveSidebarLauncherKey(
 
 /** Where a thread sits on its own. The inbox and the Working shelf are one
     place here: a group moves between them as a whole. */
-export type SidebarLaunchPlacement = "pinned" | "inbox" | "snoozed" | "settled";
+export type SidebarLaunchPlacement = "pinned" | "inbox" | "snoozed" | "shelved" | "settled";
 
 export function sidebarLaunchPlacement(section: SidebarSection): SidebarLaunchPlacement {
   return section === "active" || section === "working" ? "inbox" : section;
@@ -57,13 +57,18 @@ export function sidebarLaunchPlacement(section: SidebarSection): SidebarLaunchPl
  * A launched thread nests only where it would sit anyway, or in the inbox
  * under a pinned parent. A pinned, snoozed or settled child keeps the place
  * the user gave it, and a live child never hides in a snoozed or settled
- * parent's shelf.
+ * parent's shelf. FORK: a finished child goes on the Shelf with its parent,
+ * since shelving settles the threads that worked for it.
  */
 export function canNestSidebarLaunch(
   child: SidebarLaunchPlacement,
   parent: SidebarLaunchPlacement,
 ): boolean {
-  return child === parent || (child === "inbox" && parent === "pinned");
+  return (
+    child === parent ||
+    (child === "inbox" && parent === "pinned") ||
+    (child === "settled" && parent === "shelved")
+  );
 }
 
 export interface SidebarLaunchForest {
@@ -175,10 +180,11 @@ export interface SidebarLaunchSections<T> {
   readonly active: readonly T[];
   readonly working: readonly T[];
   readonly snoozed: readonly T[];
+  readonly shelved: readonly T[];
   readonly settled: readonly T[];
 }
 
-const SIDEBAR_SECTIONS = ["pinned", "active", "working", "snoozed", "settled"] as const;
+const SIDEBAR_SECTIONS = ["pinned", "active", "working", "snoozed", "shelved", "settled"] as const;
 
 /**
  * Take nested threads out of the sections, which then hold only the rows the
@@ -247,6 +253,7 @@ export function nestSidebarLaunchedThreads<
       active,
       working,
       snoozed: roots("snoozed"),
+      shelved: roots("shelved"),
       settled: roots("settled"),
     },
     forest,

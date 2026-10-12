@@ -48,6 +48,17 @@ function environmentSupportsSnooze(environmentId: EnvironmentThreadShell["enviro
   );
 }
 
+/** FORK: the shelf, under the same version-skew rule. */
+function environmentSupportsShelf(environmentId: EnvironmentThreadShell["environmentId"]) {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadShelf === true
+  );
+}
+
+/** The server's limit on a shelf note. */
+const SHELF_NOTE_MAX_LENGTH = 500;
+
 function environmentSupportsPinning(environmentId: EnvironmentThreadShell["environmentId"]) {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
@@ -251,6 +262,9 @@ export function useThreadListActions(): {
   readonly snoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => Promise<boolean>;
   readonly unsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  /** FORK: asks for the optional note, then shelves the thread or saves its new note. */
+  readonly shelveThread: (thread: EnvironmentThreadShell) => void;
+  readonly unshelveThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly pinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unpinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   /** Sets per-thread automatic settlement on or off. */
@@ -268,6 +282,8 @@ export function useThreadListActions(): {
   const executeAction = useThreadActionExecutor();
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
   const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
+  const shelveMutation = useAtomCommand(threadEnvironment.shelve, { reportFailure: false });
+  const unshelveMutation = useAtomCommand(threadEnvironment.unshelve, { reportFailure: false });
   const pinMutation = useAtomCommand(threadEnvironment.pin, { reportFailure: false });
   const unpinMutation = useAtomCommand(threadEnvironment.unpin, { reportFailure: false });
   const setAutoSettleMutation = useAtomCommand(threadEnvironment.setAutoSettle, {
@@ -392,6 +408,89 @@ export function useThreadListActions(): {
   const unsettleThread = useCallback(
     async (thread: EnvironmentThreadShell) => (await executeAction("unsettle", thread)) === true,
     [executeAction],
+  );
+  const shelveThread = useCallback(
+    (thread: EnvironmentThreadShell) => {
+      const editing = thread.shelvedAt != null;
+      const failureTitle = editing ? "Could not save shelf note" : "Could not shelve thread";
+      if (!checkThreadOperationPermission(thread, failureTitle)) return;
+      if (!environmentSupportsShelf(thread.environmentId)) {
+        Alert.alert(
+          failureTitle,
+          "This environment's server does not support the shelf yet. Update the server to use it.",
+        );
+        return;
+      }
+      const commit = (text: string) => {
+        const note = text.trim().slice(0, SHELF_NOTE_MAX_LENGTH);
+        selectionHaptic();
+        void shelveMutation({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id, note: note === "" ? null : note },
+        }).then((result) => {
+          if (result._tag === "Success") return;
+          const error = Cause.squash(result.cause);
+          Alert.alert(
+            failureTitle,
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "The thread could not be shelved.",
+          );
+        });
+      };
+      const title = editing ? "Edit shelf note" : "Move to shelf";
+      if (Platform.OS === "ios") {
+        Alert.prompt(
+          title,
+          "Optional: what is worth coming back to.",
+          (note) => commit(note ?? ""),
+          "plain-text",
+          thread.shelfNote ?? "",
+        );
+        return;
+      }
+      showTextInputDialog({
+        title,
+        initialValue: thread.shelfNote ?? "",
+        confirmText: editing ? "Save" : "Shelve",
+        onConfirm: commit,
+      });
+    },
+    [shelveMutation],
+  );
+  const unshelveThread = useCallback(
+    async (thread: EnvironmentThreadShell) => {
+      if (!checkThreadOperationPermission(thread, "Could not take thread off shelf")) return false;
+      if (!environmentSupportsShelf(thread.environmentId)) {
+        Alert.alert(
+          "Could not take thread off shelf",
+          "This environment's server does not support the shelf yet. Update the server to use it.",
+        );
+        return false;
+      }
+      selectionHaptic();
+      const result = await withThreadDismissal(
+        scopedThreadKey(thread.environmentId, thread.id),
+        () =>
+          unshelveMutation({
+            environmentId: thread.environmentId,
+            input: { threadId: thread.id },
+          }),
+        (result) => result._tag === "Success",
+      );
+      if (result._tag === "Failure") {
+        const error = Cause.squash(result.cause);
+        Alert.alert(
+          "Could not take thread off shelf",
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "The thread could not be taken off the shelf.",
+        );
+        return false;
+      }
+      return true;
+    },
+    [unshelveMutation],
   );
   const pinThread = useCallback(
     async (thread: EnvironmentThreadShell) => {
@@ -639,6 +738,11 @@ export function useThreadListActions(): {
             config.environment.capabilities.threadSnooze === true ? [id] : [],
           ),
         ),
+        shelfEnvironmentIds: new Set(
+          [...configs].flatMap(([id, config]) =>
+            config.environment.capabilities.threadShelf === true ? [id] : [],
+          ),
+        ),
       });
       const assignments = createThreadMovePlanner({
         allThreads: shells,
@@ -760,6 +864,8 @@ export function useThreadListActions(): {
     snoozeThread,
     unsnoozeThread,
     unsettleThread,
+    shelveThread,
+    unshelveThread,
     pinThread,
     unpinThread,
     setThreadAutoSettle,

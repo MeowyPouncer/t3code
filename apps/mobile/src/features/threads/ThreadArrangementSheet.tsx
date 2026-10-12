@@ -189,12 +189,19 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
           config.environment.capabilities.threadSnooze ? [id] : [],
         ),
       ),
+      shelfEnvironmentIds: new Set(
+        [...configs].flatMap(([id, config]) =>
+          config.environment.capabilities.threadShelf ? [id] : [],
+        ),
+      ),
     };
     const pinned = getThreadListV2OrderedSection({ ...shared, section: "pinned" });
     const active = getThreadListV2OrderedSection({ ...shared, section: "active" });
     const visible = new Set([...pinned, ...active].map(keyOf));
+    // FORK: the Shelf is left out; its rows leave through Take off shelf.
     const parked = threads.filter(
-      (thread) => thread.archivedAt === null && !visible.has(keyOf(thread)),
+      (thread) =>
+        thread.archivedAt === null && !visible.has(keyOf(thread)) && thread.shelvedAt == null,
     );
     return {
       pinned,

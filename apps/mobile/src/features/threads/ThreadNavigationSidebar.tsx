@@ -60,6 +60,7 @@ import {
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
+  ThreadListV2ShelvedShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
   ThreadListV2WorkingShelfHeader,
@@ -152,6 +153,8 @@ function ThreadNavigationSidebarPane(
     snoozeThread,
     unsnoozeThread,
     unsettleThread,
+    shelveThread,
+    unshelveThread,
     pinThread,
     unpinThread,
     setThreadAutoSettle,
@@ -294,10 +297,12 @@ function ThreadNavigationSidebarPane(
   const {
     loaded: shelfPreferencesLoaded,
     settledShelfExpanded,
+    shelvedShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
     toggleSettledShelf,
+    toggleShelvedShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
@@ -326,6 +331,7 @@ function ThreadNavigationSidebarPane(
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     titleRegenerationEnvironmentIds,
+    shelfEnvironmentIds,
   } = listEnvironments;
   const resolveProviderInstance = useThreadRowProviderInstanceResolver(providersByEnvironmentId);
   const pendingOrder = usePendingThreadOrder(nowMinute, snoozeWakeTick);
@@ -347,6 +353,7 @@ function ThreadNavigationSidebarPane(
           now: new Date().toISOString(),
           settlementEnvironmentIds,
           snoozeEnvironmentIds,
+          shelfEnvironmentIds,
           queuedThreadKeys,
         }),
       });
@@ -363,6 +370,7 @@ function ThreadNavigationSidebarPane(
     pendingOrder,
     queuedThreadKeys,
     settlementEnvironmentIds,
+    shelfEnvironmentIds,
     snoozeEnvironmentIds,
     nowMinute,
     snoozeWakeTick,
@@ -378,6 +386,7 @@ function ThreadNavigationSidebarPane(
       matchedThreadKeys,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
+      shelfEnvironmentIds,
       queuedThreadKeys,
       settledLimit: settledVisibleCount,
       now: new Date().toISOString(),
@@ -385,6 +394,7 @@ function ThreadNavigationSidebarPane(
       workingShelfExpanded,
       inboxReturnAt: threadListInboxReturns.returnedAt,
       snoozedShelfExpanded,
+      shelvedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: props.selectedThreadKey ?? null,
     });
@@ -396,6 +406,7 @@ function ThreadNavigationSidebarPane(
     nowMinute,
     snoozeWakeTick,
     snoozedShelfExpanded,
+    shelvedShelfExpanded,
     settledShelfExpanded,
     props.selectedThreadKey,
     options.selectedEnvironmentId,
@@ -403,6 +414,7 @@ function ThreadNavigationSidebarPane(
     matchedThreadKeys,
     settledVisibleCount,
     settlementEnvironmentIds,
+    shelfEnvironmentIds,
     snoozeEnvironmentIds,
     threads,
     selectedProjectScope,
@@ -448,6 +460,9 @@ function ThreadNavigationSidebarPane(
       snoozedCount: threadListV2Layout.snoozedCount,
       snoozedShelfExpanded,
       snoozedShelfHeaderIndex: threadListV2Layout.snoozedShelfHeaderIndex,
+      shelvedCount: threadListV2Layout.shelvedCount,
+      shelvedShelfExpanded,
+      shelvedShelfHeaderIndex: threadListV2Layout.shelvedShelfHeaderIndex,
       settledCount: threadListV2Layout.settledCount,
       settledShelfExpanded,
       settledShelfHeaderIndex: threadListV2Layout.settledShelfHeaderIndex,
@@ -476,6 +491,7 @@ function ThreadNavigationSidebarPane(
     selectedProjectRefs,
     settledShelfExpanded,
     shelfPreferencesLoaded,
+    shelvedShelfExpanded,
     snoozedShelfExpanded,
     snoozeEnvironmentIds,
     threadListV2Layout,
@@ -700,6 +716,7 @@ function ThreadNavigationSidebarPane(
               familyWorking={item.familyWorking}
               snoozed={item.item.snoozed}
               pinned={item.item.pinned}
+              shelved={item.item.shelved}
               snoozePresetMinute={item.snoozePresetMinute ?? ""}
               snoozeWakeLabelText={item.snoozeWakeLabelText}
               timeLabel={item.timeLabel}
@@ -746,6 +763,9 @@ function ThreadNavigationSidebarPane(
               onSnoozeThread={snoozeThread}
               onUnsnoozeThread={unsnoozeThread}
               onUnsettleThread={unsettleThread}
+              onShelveThread={shelveThread}
+              onUnshelveThread={unshelveThread}
+              shelfSupported={shelfEnvironmentIds.has(thread.environmentId)}
               onPinThread={pinThread}
               onUnpinThread={unpinThread}
               onSetThreadAutoSettle={setThreadAutoSettle}
@@ -773,6 +793,16 @@ function ThreadNavigationSidebarPane(
               disabled={item.disabled}
               expanded={item.expanded}
               onToggle={toggleSnoozedShelf}
+              pane="sidebar"
+            />
+          );
+        case "v2-shelved-shelf":
+          return (
+            <ThreadListV2ShelvedShelfHeader
+              count={item.count}
+              disabled={item.disabled}
+              expanded={item.expanded}
+              onToggle={toggleShelvedShelf}
               pane="sidebar"
             />
           );
@@ -828,15 +858,19 @@ function ThreadNavigationSidebarPane(
       titleRegenerationEnvironmentIds,
       settleThread,
       settlementEnvironmentIds,
+      shelfEnvironmentIds,
+      shelveThread,
       showMoreSettled,
       sidebarScrollGesture,
       snoozeEnvironmentIds,
       snoozeThread,
       toggleSettledShelf,
+      toggleShelvedShelf,
       toggleSnoozedShelf,
       toggleWorkingShelf,
       unpinThread,
       unsettleThread,
+      unshelveThread,
       unsnoozeThread,
       workingShelfEnabled,
     ],
