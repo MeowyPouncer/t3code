@@ -1,0 +1,76 @@
+// FORK: native visibility of desktop browser tabs (interactive preview windows).
+// @effect-diagnostics nodeBuiltinImport:off - The channel reads real file descriptors.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+
+import * as ServerConfig from "../config.ts";
+import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
+
+const key = { threadId: "thread-1", tabId: "tab-1" };
+
+/**
+ * The channel over what the desktop sent, a pipe as in the app (the channel reads it as a
+ * socket), and a file where commands go. The pipe's write end stays open for the scope, so
+ * the channel does not see the desktop leave.
+ */
+const channelOver = (events: ReadonlyArray<Record<string, unknown>>) =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-browser-channel-")),
+      ),
+      (directory) => Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+    );
+    const inbound = NodePath.join(directory, "events.fifo");
+    NodeChildProcess.execFileSync("mkfifo", [inbound]);
+    // The read end opens first and without blocking; the channel takes it over.
+    const inboundFd = NodeFS.openSync(
+      inbound,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK,
+    );
+    const desktop = yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.openSync(inbound, "w")),
+      (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+    );
+    NodeFS.writeSync(desktop, events.map((event) => `${JSON.stringify(event)}\n`).join(""));
+    const control = yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.openSync(NodePath.join(directory, "commands.ndjson"), "w")),
+      (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+    );
+    const base = yield* ServerConfig.ServerConfig.pipe(
+      Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-desktop-browser-" })),
+    );
+    const config = Layer.succeed(ServerConfig.ServerConfig, {
+      ...base,
+      desktopBrowserFd: inboundFd,
+      desktopBrowserControlFd: control,
+    });
+    // Built in the caller's scope, so the channel outlives this setup.
+    const context = yield* Layer.build(DesktopBrowserChannel.layer.pipe(Layer.provide(config)));
+    return Context.get(context, DesktopBrowserChannel.DesktopBrowserChannel);
+  });
+
+it.layer(NodeServices.layer)("DesktopBrowserChannel native visibility", (it) => {
+  it.effect("reads visibility without exposing detached or unknown tabs", () =>
+    Effect.gen(function* () {
+      const channel = yield* channelOver([
+        { type: "attached", ...key, visible: true },
+        { type: "visibility", ...key, visible: false },
+        { type: "visibility", ...key, visible: true },
+        { type: "visibility", threadId: "other", tabId: "unknown", visible: true },
+      ]);
+      expect(yield* channel.awaitAttached(key, "1 second")).toBe(true);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+      expect(channel.isVisible(key)).toBe(true);
+      expect(channel.isVisible({ threadId: "other", tabId: "unknown" })).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+});

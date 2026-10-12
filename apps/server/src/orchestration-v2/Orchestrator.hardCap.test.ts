@@ -20,7 +20,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
@@ -32,7 +32,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process needed to answer a request"),
-} as ProviderAdapterV2Shape;
+} as ProviderAdapter.ProviderAdapterV2["Service"];
 const declining = {
   providerInstances: {
     [instanceId]: { driver, hardCap: { declineFileChanges: true } },
@@ -41,14 +41,16 @@ const declining = {
 
 const layerFor = (settings: Parameters<typeof ServerSettings.layerTest>[0]) => {
   const layerDatabase = SqlitePersistence.layerMemory;
+  // One settings service for the test and the orchestrator, so a cap set here reaches it.
+  const layerSettings = ServerSettings.layerTest(settings).pipe(Layer.orDie);
   return Layer.mergeAll(
     ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
     ProviderReplayHarness.layerWithRegistry(
       { name: "hard-cap-respond" },
       ProviderAdapterRegistry.layerFromAdapters([adapter]),
-      { databaseLayer: layerDatabase, runEffectWorker: false },
+      { databaseLayer: layerDatabase, runEffectWorker: false, serverSettingsLayer: layerSettings },
     ),
-  ).pipe(Layer.provideMerge(ServerSettings.layerTest(settings).pipe(Layer.orDie)));
+  ).pipe(Layer.provideMerge(layerSettings));
 };
 
 /** A thread on the codex instance with one pending file-change approval. */

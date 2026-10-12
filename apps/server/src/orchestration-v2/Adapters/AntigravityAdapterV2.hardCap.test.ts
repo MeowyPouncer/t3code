@@ -27,14 +27,15 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
-import * as ServerConfig from "../../config.ts";
-import type * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
+import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { makeAntigravityAcpRuntime } from "../../provider/acp/AntigravityAcpSupport.ts";
-import * as IdAllocator from "../IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import {
   ProviderAdapterV2RuntimePolicy,
   type ProviderAdapterV2SessionRuntime,
-} from "../ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeAntigravityAdapterV2 } from "./AntigravityAdapterV2.ts";
 
 /**
@@ -46,9 +47,8 @@ import { makeAntigravityAdapterV2 } from "./AntigravityAdapterV2.ts";
 const layerSession = Layer.mergeAll(
   NodeServices.layer,
   IdAllocator.layer,
-  ServerConfig.layerTest(process.cwd(), { prefix: "t3-antigravity-hard-cap-" }).pipe(
-    Layer.provide(NodeServices.layer),
-  ),
+  McpProviderSessions.layer,
+  TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
 );
 
 const decodeRequestLine = Schema.decodeUnknownOption(
@@ -105,23 +105,16 @@ const openAntigravitySession = (input: {
 }) =>
   Effect.gen(function* () {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const serverConfig = yield* ServerConfig.ServerConfig;
     const crypto = yield* Crypto.Crypto;
     const mockAgentPath = yield* path.fromFileUrl(
       new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
     );
     const instanceId = ProviderInstanceId.make(`antigravity-${input.name}`);
     const threadId = ThreadId.make(`thread-antigravity-${input.name}`);
-    const adapter = makeAntigravityAdapterV2({
+    const adapter = yield* makeAntigravityAdapterV2({
       instanceId,
-      crypto,
       selfInvocation: yield* resolveSelfInvocation(),
-      fileSystem,
-      path,
-      idAllocator: yield* IdAllocator.IdAllocatorV2,
-      serverConfig,
       makeRuntime: (runtimeInput) =>
         makeAntigravityAcpRuntime({
           ...runtimeInput,

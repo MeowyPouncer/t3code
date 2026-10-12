@@ -65,6 +65,8 @@ interface Props {
   separateWindowDisabled?: boolean | undefined;
   /** Profile display name, shown so the menu says which data is being cleared. */
   profileName: string | undefined;
+  /** Reopens the tab in the other browser it can run in. */
+  move?: { readonly label: string; readonly onMove: () => void };
 }
 
 const MenuTriggerButton = () => (
@@ -93,6 +95,7 @@ export function PreviewMoreMenu({
   nativePictureInPicture,
   separateWindowDisabled = false,
   profileName,
+  move,
 }: Props) {
   const zoomLabel = `${Math.round(zoomFactor * 100)}%`;
   const disabled = !enabled;
@@ -118,6 +121,7 @@ export function PreviewMoreMenu({
               : "Open separate preview window"}
           </MenuItem>
         ) : null}
+        {move ? <MenuItem onClick={move.onMove}>{move.label}</MenuItem> : null}
         <MenuItem onClick={onToggleDeviceToolbar} disabled={disabled}>
           {deviceToolbarVisible ? "Hide device toolbar" : "Show device toolbar"}
         </MenuItem>

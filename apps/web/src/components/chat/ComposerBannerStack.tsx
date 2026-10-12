@@ -5,6 +5,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ComposerBanner, type ComposerBannerVariant } from "./ComposerBanner";
+import { observeResize } from "~/lib/observeResize";
 
 // Match the duration-220 exit transition before removing a dismissed notice.
 const DISMISS_TRANSITION_MS = 220;
@@ -13,7 +14,6 @@ export interface ComposerBannerStackItem {
   readonly id: string;
   readonly variant: ComposerBannerVariant;
   readonly priority?: "urgent" | "activity" | "notice";
-  readonly compact?: boolean;
   readonly icon: ReactNode;
   readonly title: ReactNode;
   readonly description?: ReactNode;
@@ -252,15 +252,7 @@ export function ComposerBannerStack({ className, items, attachedAbove }: Compose
 }
 
 /** Keep full descriptions reachable when their inline copy is clipped, or details always. */
-function NoticeDescription({
-  children,
-  details,
-  compact,
-}: {
-  children: ReactNode;
-  details?: ReactNode;
-  compact?: boolean;
-}) {
+function NoticeDescription({ children, details }: { children: ReactNode; details?: ReactNode }) {
   const descriptionRef = useRef<HTMLSpanElement>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
   const [showDetails, setShowDetails] = useState(false);
@@ -281,25 +273,21 @@ function NoticeDescription({
       );
     };
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(description);
+    const stopObserving = observeResize(description, measure);
     // A child can reveal new text without resizing its clipped box.
     const mutations = new MutationObserver(measure);
     mutations.observe(description, { childList: true, subtree: true, characterData: true });
     return () => {
-      observer.disconnect();
+      stopObserving();
       mutations.disconnect();
     };
   }, []);
 
   return (
-    <span className={compact ? "contents" : "flex min-w-8 flex-1 items-center gap-1"}>
+    <span className="contents">
       <span
         ref={descriptionRef}
-        className={cn(
-          "min-w-0 truncate text-muted-foreground",
-          compact && "shrink-[9999] @max-[400px]:sr-only",
-        )}
+        className="w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
       >
         {children}
       </span>
@@ -364,16 +352,14 @@ function ComposerBannerStackAlert({
       variant={item.variant}
       density="comfortable"
     >
-      <ComposerBanner.Row layout={item.compact ? "wrap-actions-narrow" : "wrap-actions"}>
+      <ComposerBanner.Row layout="wrap-actions">
         <ComposerBanner.Icon className="h-(--composer-banner-icon-column) self-start">
           {item.icon}
         </ComposerBanner.Icon>
         <ComposerBanner.Content className="whitespace-nowrap">
           <span className="min-w-0 truncate font-medium leading-7 sm:leading-6">{item.title}</span>
           {item.description || item.details !== undefined ? (
-            <NoticeDescription compact={item.compact ?? false} details={item.details}>
-              {item.description}
-            </NoticeDescription>
+            <NoticeDescription details={item.details}>{item.description}</NoticeDescription>
           ) : null}
         </ComposerBanner.Content>
         {item.actions || item.onDismiss ? (
