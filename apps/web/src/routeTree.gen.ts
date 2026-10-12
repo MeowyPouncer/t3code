@@ -34,8 +34,8 @@ import { Route as SettingsAppearanceRouteImport } from './routes/settings.appear
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
 import { Route as ChatTasksRouteImport } from './routes/_chat.tasks'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
-import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatPreviewRouteImport } from './routes/_chat.preview'
+import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 
@@ -164,14 +164,14 @@ const ChatPullRequestsRoute = ChatPullRequestsRouteImport.update({
   path: '/pull-requests',
   getParentRoute: () => ChatRoute,
 } as any)
-const ChatNewRoute = ChatNewRouteImport.update({
-  id: '/new',
-  path: '/new',
-  getParentRoute: () => ChatRoute,
-} as any)
 const ChatPreviewRoute = ChatPreviewRouteImport.update({
   id: '/preview',
   path: '/preview',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatNewRoute = ChatNewRouteImport.update({
+  id: '/new',
+  path: '/new',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatDraftDraftIdRoute = ChatDraftDraftIdRouteImport.update({
@@ -560,18 +560,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatPullRequestsRouteImport
       parentRoute: typeof ChatRoute
     }
-    '/_chat/new': {
-      id: '/_chat/new'
-      path: '/new'
-      fullPath: '/new'
-      preLoaderRoute: typeof ChatNewRouteImport
-      parentRoute: typeof ChatRoute
-    }
     '/_chat/preview': {
       id: '/_chat/preview'
       path: '/preview'
       fullPath: '/preview'
       preLoaderRoute: typeof ChatPreviewRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/new': {
+      id: '/_chat/new'
+      path: '/new'
+      fullPath: '/new'
+      preLoaderRoute: typeof ChatNewRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/draft/$draftId': {
