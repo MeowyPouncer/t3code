@@ -22,7 +22,8 @@ export const runtimeModeConfig: Record<
   },
   "full-access": {
     label: "Full access",
-    description: "Allow commands and edits without prompts.",
+    description:
+      "Request unrestricted access with approval prompts disabled. Command rules still apply.",
     icon: LockOpenIcon,
   },
 };

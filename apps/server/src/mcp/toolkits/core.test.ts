@@ -492,7 +492,10 @@ it.effect("a read-only client reads threads and is refused every write before it
       threadId: "other-project-thread",
     });
     expect(configuration.isError).toBe(false);
-    expect(configuration.structuredContent).toMatchObject({ runtimeMode: "auto" });
+    expect(configuration.structuredContent).toMatchObject({
+      runtimeMode: "auto",
+      reportedPermissions: { sandbox: "read-only", approvalPolicy: "never" },
+    });
 
     const pinned = yield* call("t3_thread_organize", {
       action: "pin",
@@ -529,7 +532,26 @@ it.effect("a read-only client reads threads and is refused every write before it
                   runtimeMode: "auto",
                   interactionMode: "default",
                   deletedAt: null,
+                  activeProviderThreadId: "native-thread",
                 },
+                providerThreads: [
+                  {
+                    id: "native-thread",
+                    driver: "codex",
+                    providerInstanceId: "codex",
+                    appThreadId: "other-project-thread",
+                    nativeMetadata: {
+                      permissions: {
+                        source: "codex",
+                        reportedAt: "2026-10-12T09:00:00.000Z",
+                        sandbox: "read-only",
+                        networkAccess: "restricted",
+                        approvalPolicy: "never",
+                        approvalsReviewer: "user",
+                      },
+                    },
+                  },
+                ],
               } as never),
             dispatch: () =>
               Effect.sync(() => {

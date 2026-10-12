@@ -5,7 +5,7 @@ import {
 } from "./chatAttachment.ts";
 import * as Schema from "effect/Schema";
 
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
@@ -21,6 +21,33 @@ export const ProviderSandboxMode = Schema.Literals([
   "danger-full-access",
 ]);
 export type ProviderSandboxMode = typeof ProviderSandboxMode.Type;
+
+/** Native core permissions, separate from T3's requested preset and command rules. */
+export const ProviderReportedPermissions = Schema.Struct({
+  source: Schema.Literal("codex"),
+  reportedAt: IsoDateTime,
+  sandbox: Schema.Literals([
+    "read-only",
+    "workspace-write",
+    "danger-full-access",
+    "external-sandbox",
+  ]),
+  networkAccess: Schema.Literals(["enabled", "restricted", "not-reported"]),
+  approvalPolicy: Schema.Union([
+    ProviderApprovalPolicy,
+    Schema.Struct({
+      granular: Schema.Struct({
+        rules: Schema.Boolean,
+        sandbox_approval: Schema.Boolean,
+        mcp_elicitations: Schema.Boolean,
+        skill_approval: Schema.optional(Schema.Boolean),
+        request_permissions: Schema.optional(Schema.Boolean),
+      }),
+    }),
+  ]),
+  approvalsReviewer: Schema.Literals(["user", "auto_review", "guardian_subagent"]),
+});
+export type ProviderReportedPermissions = typeof ProviderReportedPermissions.Type;
 
 export const RuntimeMode = Schema.Literals([
   "approval-required",

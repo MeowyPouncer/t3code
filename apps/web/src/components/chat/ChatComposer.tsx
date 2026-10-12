@@ -263,6 +263,8 @@ import {
 } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { describeReportedPermissions } from "@t3tools/shared/providerPermissions";
+import type { ProviderReportedPermissions } from "@t3tools/contracts";
 import { ComposerStatusLine } from "./ComposerStatusLine";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
@@ -1238,6 +1240,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
+  reportedPermissions: ProviderReportedPermissions | null;
   size?: "sm" | "xs";
   hidden?: boolean;
   onToggleInteractionMode: () => void;
@@ -1250,6 +1253,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
     props.runtimeModeOptions.find((option) => option.mode === props.runtimeMode) ??
     supervisedRuntimeModeOption;
   const RuntimeModeIcon = runtimeModeOption.icon;
+  const permissionReport = describeReportedPermissions(props.reportedPermissions);
   const interactionModeTooltip =
     props.interactionMode === "plan"
       ? "Plan mode — click to return to normal build mode"
@@ -1309,14 +1313,21 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
               <ComposerSelectControl
                 data-composer-shortcut="composer.mode"
                 size={size}
-                aria-label="Runtime mode"
+                aria-label={`Requested mode: ${runtimeModeOption.label}. ${permissionReport.label}`}
               />
             }
           >
             <ComposerControlIcon icon={RuntimeModeIcon} size={size} />
-            <SelectValue data-composer-control-label>{runtimeModeOption.label}</SelectValue>
+            <SelectValue data-composer-control-label>
+              {runtimeModeOption.label} · {permissionReport.label}
+            </SelectValue>
           </TooltipTrigger>
           <SelectPopup alignItemWithTrigger={false} {...composerFloatingLayerProps}>
+            <div className="max-w-80 px-3 py-2 text-xs text-muted-foreground">
+              <p>{permissionReport.detail}</p>
+              {permissionReport.approvalNotice ? <p>{permissionReport.approvalNotice}</p> : null}
+              <p className="mt-2 font-medium">Requested mode</p>
+            </div>
             {props.runtimeModeOptions.map((option) => {
               const OptionIcon = option.icon;
               return (
@@ -1342,7 +1353,9 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             })}
           </SelectPopup>
         </Select>
-        <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
+        <TooltipPopup side="top">
+          {permissionReport.detail} {permissionReport.approvalNotice}
+        </TooltipPopup>
       </Tooltip>
 
       {interactionModeToggle}
@@ -1580,6 +1593,7 @@ export interface ChatComposerProps {
 
   // Mode
   runtimeMode: RuntimeMode;
+  reportedPermissions?: ProviderReportedPermissions | null;
   interactionMode: ProviderInteractionMode;
 
   // Provider / model
@@ -1738,6 +1752,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     showPlanFollowUpPrompt,
     activeProposedPlan,
     runtimeMode,
+    reportedPermissions = null,
     interactionMode: requestedInteractionMode,
     lockedProvider,
     providerStatuses,
@@ -5404,6 +5419,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           interactionMode={interactionMode}
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
+          reportedPermissions={reportedPermissions}
           size={composerControlsCollapsed ? "xs" : "sm"}
           hidden={composerControlsHidden || restingHiddenBlockCount > 0}
           onToggleInteractionMode={toggleInteractionMode}
@@ -5566,6 +5582,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             interactionMode={interactionMode}
             runtimeMode={compatibleRuntimeMode}
             runtimeModeOptions={compatibleRuntimeModeOptions}
+            reportedPermissions={reportedPermissions}
             size={composerControlsCollapsed ? "xs" : "sm"}
             hidden={composerControlsHidden || hiddenRestingBlockIds.length === 0}
             showInteractionModeToggle={planModeUiEnabled && hiddenRestingBlockIds.includes("mode")}

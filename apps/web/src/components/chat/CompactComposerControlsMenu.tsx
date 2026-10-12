@@ -1,4 +1,6 @@
 import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import type { ProviderReportedPermissions } from "@t3tools/contracts";
+import { describeReportedPermissions } from "@t3tools/shared/providerPermissions";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import {
@@ -16,6 +18,7 @@ import { useComposerMenuState } from "./useComposerMenuState";
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  reportedPermissions: ProviderReportedPermissions | null;
   runtimeModeOptions: ReadonlyArray<{
     readonly mode: RuntimeMode;
     readonly label: string;
@@ -35,6 +38,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   const composerFloatingLayerProps = useComposerMenuProps();
   const size = props.size ?? "sm";
   const [open, setOpen] = useComposerMenuState(props.hidden);
+  const permissionReport = describeReportedPermissions(props.reportedPermissions);
 
   return (
     <Menu open={open} onOpenChange={setOpen}>
@@ -75,7 +79,12 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
-        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
+        <div className="max-w-80 px-2 py-1.5 text-muted-foreground text-xs">
+          <p>{permissionReport.label}</p>
+          <p>{permissionReport.detail}</p>
+          {permissionReport.approvalNotice ? <p>{permissionReport.approvalNotice}</p> : null}
+        </div>
+        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Requested mode</div>
         <MenuRadioGroup
           value={props.runtimeMode}
           onValueChange={(value) => {

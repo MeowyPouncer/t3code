@@ -1,4 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
+import { threadReportedPermissions } from "@t3tools/shared/providerPermissions";
+import type { ProviderInstanceId } from "@t3tools/contracts";
 import { deriveReportedModelSelection } from "@t3tools/client-runtime/state/thread-execution";
 
 import { appAtomRegistry } from "./atom-registry";
@@ -95,4 +97,10 @@ const selectReportedModelSelection = (thread: EnvironmentThread | null) =>
 
 export function useThreadReportedModelSelection(ref: ScopedThreadRef) {
   return useAtomValue(environmentThreadDetails.threadAtom(ref), selectReportedModelSelection);
+}
+
+export function useThreadReportedPermissions(ref: ScopedThreadRef, instanceId: ProviderInstanceId) {
+  return useAtomValue(environmentThreadDetails.threadAtom(ref), (thread) =>
+    threadReportedPermissions(thread?.projection, instanceId),
+  );
 }

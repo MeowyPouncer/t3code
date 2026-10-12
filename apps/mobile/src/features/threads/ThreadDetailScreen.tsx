@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useThreadReportedModelSelection } from "../../state/entities";
+import {
+  useThreadReportedModelSelection,
+  useThreadReportedPermissions,
+} from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
@@ -323,6 +326,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
   });
+  const reportedPermissions = useThreadReportedPermissions(
+    { environmentId: props.environmentId, threadId: props.selectedThread.id },
+    props.selectedThread.modelSelection.instanceId,
+  );
   const deviceState = useEnvironmentQuery(
     deviceEnvironment.state({ environmentId: props.environmentId, input: {} }),
   );
@@ -1390,6 +1397,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     <ThreadComposer
                       canOperateThread={props.canOperateThread}
                       reportedModelSelection={reportedModelSelection}
+                      reportedPermissions={reportedPermissions}
                       editorRef={composerEditorRef}
                       draftMessage={props.draftMessage}
                       draftAttachments={props.draftAttachments}

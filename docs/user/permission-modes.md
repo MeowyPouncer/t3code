@@ -1,7 +1,8 @@
 # Permission modes
 
-Permission modes control when an agent needs your approval to act. Choose a mode in the message
-composer; it applies to that thread.
+Permission modes request the provider's sandbox and approval settings. Choose a mode in the
+message composer; it applies to that thread. The permission status alongside it shows the
+provider's last reported settings, which can differ from the requested mode.
 
 Set the default for new threads in **Settings → General → New threads → Permissions**.
 Projects can override the environment default. New threads use this setting rather than the
@@ -13,10 +14,23 @@ and modes you choose in a draft keep their permissions.
 | **Supervised**        | Requests approval for commands and file changes.                                      |
 | **Auto-accept edits** | Approves file edits automatically; other actions can still require approval.          |
 | **Auto**              | Uses the provider's automatic review to approve routine actions and ask about others. |
-| **Full access**       | Allows commands and edits without approval prompts.                                   |
+| **Full access**       | Requests unrestricted access with approval prompts disabled.                          |
 
 Approve or reject requests in the conversation to let the agent continue. Permission modes do
 not prevent the agent from asking questions about the task.
+
+## Reported permissions and blocked approvals
+
+Codex reports its sandbox, network access, approval policy and approval reviewer. T3 displays
+these native settings separately from the selected mode and updates them when Codex reports a
+change. **Permissions not reported** means no native report is available for the selected
+provider; the mode alone does not confirm access. Providers that do not report their settings
+also show this state.
+
+Command rules, permission profiles and external restrictions can still block actions. For
+example, a rule that requires approval for `git commit` blocks it while approval prompts are
+disabled, even in **Full access**. The permission details explain this conflict. Enabling
+prompts requires a mode that allows them; changing the selected mode affects the next turn.
 
 ## Provider differences
 

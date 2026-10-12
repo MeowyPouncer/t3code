@@ -57,6 +57,7 @@ import {
   ProviderApprovalDecision,
   ProviderApprovalOption,
   ProviderInteractionMode,
+  ProviderReportedPermissions,
   ProviderRequestKind,
   ProviderUserInputAnswers,
   UserInputAttachments,
@@ -844,6 +845,8 @@ export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2Pending
 export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   /** Provider-reported selection for display, separate from the app's saved preferences. */
   modelSelection: Schema.optional(ModelSelection),
+  /** Last native report; absence means the provider has not reported its permissions. */
+  permissions: Schema.optional(Schema.NullOr(ProviderReportedPermissions)),
   title: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   updatedAt: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Version 2 scopes provider-derived item ids by provider instance. */

@@ -1,6 +1,7 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import { codexReportedPermissions } from "./CodexReportedPermissions.ts";
 import {
   mcpToolPresentation,
   type McpToolPresentation,
@@ -58,6 +59,7 @@ import type {
   ProviderThreadId,
   ProviderTurnId,
   ProviderInstanceId,
+  ProviderReportedPermissions,
   RuntimeMode,
   RuntimeRequestId,
   ThreadId,
@@ -824,6 +826,7 @@ function providerThreadFromCodexThread(input: {
     readonly updatedAt: number;
   };
   readonly forkedFrom?: OrchestrationV2ProviderThread["forkedFrom"];
+  readonly permissions?: ProviderReportedPermissions | null;
 }): OrchestrationV2ProviderThread {
   return {
     id: input.idAllocator.derive.providerThread({
@@ -846,6 +849,7 @@ function providerThreadFromCodexThread(input: {
     lastRunOrdinal: null,
     handoffIds: [],
     forkedFrom: input.forkedFrom ?? null,
+    nativeMetadata: { permissions: input.permissions ?? null },
     createdAt: codexTimestamp(input.thread.createdAt),
     updatedAt: codexTimestamp(input.thread.updatedAt),
   };
@@ -1319,7 +1323,12 @@ export function codexThreadRuntimeParams(input: {
 }
 
 const decodeCodexResumeMetadata = Schema.decodeUnknownEffect(
-  Schema.Struct({ thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }) }),
+  Schema.Struct({
+    thread: Schema.Struct({ id: Schema.String, updatedAt: Schema.Number }),
+    approvalPolicy: Schema.optional(Schema.Unknown),
+    approvalsReviewer: Schema.optional(Schema.Unknown),
+    sandbox: Schema.optional(Schema.Unknown),
+  }),
 );
 
 const decodeCodexChildModel = Schema.decodeUnknownEffect(
@@ -1846,8 +1855,28 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const latestGoalTurnId = (providerTurnId: ProviderTurnId) =>
           goalRuns.get(providerTurnId)?.at(-1)?.providerTurnId ?? providerTurnId;
 
-        const emitProviderEvent = (event: ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        const reportedPermissions = new Map<string, ProviderReportedPermissions | null>();
+        const withReportedPermissions = (providerThread: OrchestrationV2ProviderThread) => {
+          const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+          if (nativeThreadId == null || !reportedPermissions.has(nativeThreadId))
+            return providerThread;
+          return {
+            ...providerThread,
+            nativeMetadata: {
+              ...providerThread.nativeMetadata,
+              permissions: reportedPermissions.get(nativeThreadId) ?? null,
+            },
+          };
+        };
+        const emitProviderEvent = (event: ProviderAdapterV2Event) => {
+          // Turn contexts retain older thread objects. Their status/goal updates
+          // must not overwrite a newer native permissions notification.
+          const updatedEvent =
+            event.type === "provider_thread.updated"
+              ? { ...event, providerThread: withReportedPermissions(event.providerThread) }
+              : event;
+          return Queue.offer(events, updatedEvent).pipe(Effect.asVoid);
+        };
 
         /** Writes the thread's current native goal onto its root provider thread. */
         const emitGoalUpdate = Effect.fnUntraced(function* (nativeThreadId: string) {
@@ -1869,7 +1898,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         ) {
           const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
           if (nativeThreadId == null) return;
-          rootProviderThreads.set(nativeThreadId, providerThread);
+          rootProviderThreads.set(nativeThreadId, withReportedPermissions(providerThread));
           yield* emitGoalUpdate(nativeThreadId);
         });
 
@@ -4070,7 +4099,27 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         );
 
         yield* client.handleServerNotification("thread/settings/updated", (payload) =>
-          updateSubagentModel(payload.threadId, payload.threadSettings.model),
+          Effect.gen(function* () {
+            yield* updateSubagentModel(payload.threadId, payload.threadSettings.model);
+            const providerThread =
+              rootProviderThreads.get(payload.threadId) ??
+              (yield* Ref.get(subagentThreads)).get(payload.threadId)?.providerThread;
+            // Shared runtimes can announce unrelated native threads.
+            if (providerThread === undefined) return;
+            const now = yield* DateTime.now;
+            reportedPermissions.set(
+              payload.threadId,
+              codexReportedPermissions(payload.threadSettings, DateTime.formatIso(now)),
+            );
+            const updated = withReportedPermissions({ ...providerThread, updatedAt: now });
+            if (rootProviderThreads.has(payload.threadId))
+              rootProviderThreads.set(payload.threadId, updated);
+            yield* emitProviderEvent({
+              type: "provider_thread.updated",
+              driver: CODEX_PROVIDER,
+              providerThread: updated,
+            });
+          }),
         );
         yield* client.handleServerNotification("model/rerouted", (payload) =>
           updateSubagentModel(payload.threadId, payload.toModel),
@@ -5926,7 +5975,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           Effect.gen(function* () {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             // Goal notifications during the command belong to this run's snapshot.
-            rootProviderThreads.set(threadId, turnInput.providerThread);
+            rootProviderThreads.set(threadId, withReportedPermissions(turnInput.providerThread));
             const readGoal = client
               .request("thread/goal/get", { threadId })
               .pipe(
@@ -6093,14 +6142,24 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
                 ),
               ),
-              Effect.map((response): OrchestrationV2ProviderThread =>
-                providerThreadFromCodexThread({
-                  appThreadId: threadInput.threadId,
-                  idAllocator,
-                  ownerNodeId: null,
-                  providerSessionId: input.providerSessionId,
-                  providerInstanceId: adapterOptions.instanceId,
-                  thread: response.thread,
+              Effect.flatMap((response) =>
+                Effect.gen(function* () {
+                  const permissions = codexReportedPermissions(
+                    response,
+                    DateTime.formatIso(yield* DateTime.now),
+                  );
+                  reportedPermissions.set(response.thread.id, permissions);
+                  const providerThread = providerThreadFromCodexThread({
+                    appThreadId: threadInput.threadId,
+                    idAllocator,
+                    ownerNodeId: null,
+                    providerSessionId: input.providerSessionId,
+                    providerInstanceId: adapterOptions.instanceId,
+                    thread: response.thread,
+                    permissions,
+                  });
+                  yield* rememberRootProviderThread(providerThread);
+                  return providerThread;
                 }),
               ),
               Effect.mapError(
@@ -6153,7 +6212,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               );
               // Codex follows a resume with a goal snapshot notification; the
               // run's first turn writes it if it differs from the stored goal.
-              return {
+              const permissions = codexReportedPermissions(
+                response,
+                DateTime.formatIso(yield* DateTime.now),
+              );
+              reportedPermissions.set(response.thread.id, permissions);
+              const providerThread = {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
                 providerInstanceId: adapterOptions.instanceId,
@@ -6164,8 +6228,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   strength: "strong",
                 },
                 nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
+                nativeMetadata: { ...threadInput.providerThread.nativeMetadata, permissions },
                 updatedAt: codexTimestamp(response.thread.updatedAt),
               } satisfies OrchestrationV2ProviderThread;
+              yield* rememberRootProviderThread(providerThread);
+              return providerThread;
             }).pipe(
               Effect.mapError(
                 (cause) =>
@@ -6943,13 +7010,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   ),
                 )).thread;
               }
-              return providerThreadFromCodexThread({
+              const permissions = codexReportedPermissions(
+                response,
+                DateTime.formatIso(yield* DateTime.now),
+              );
+              reportedPermissions.set(forkedThread.id, permissions);
+              const providerThread = providerThreadFromCodexThread({
                 appThreadId: threadInput.targetThreadId,
                 idAllocator,
                 ownerNodeId: threadInput.ownerNodeId ?? null,
                 providerSessionId: input.providerSessionId,
                 providerInstanceId: adapterOptions.instanceId,
                 thread: forkedThread,
+                permissions,
                 forkedFrom: {
                   providerThreadId: threadInput.sourceProviderThread.id,
                   ...(threadInput.providerTurnId === undefined
@@ -6957,6 +7030,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     : { providerTurnId: threadInput.providerTurnId }),
                 },
               });
+              yield* rememberRootProviderThread(providerThread);
+              return providerThread;
             }).pipe(
               Effect.mapError(
                 (cause) =>
