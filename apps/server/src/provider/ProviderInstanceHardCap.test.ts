@@ -10,8 +10,10 @@ import {
 import * as Effect from "effect/Effect";
 
 import type { ServerSettingsService } from "../serverSettings.ts";
+import { BUILT_IN_DRIVERS } from "./builtInDrivers.ts";
 import {
   clampRuntimeModeToHardCap,
+  DEFAULT_INSTANCE_DRIVERS,
   hardCapFor,
   hardCapRuntimeModeCeiling,
   hardCapWithheldCapabilities,
@@ -186,6 +188,15 @@ describe("ProviderInstanceHardCap", () => {
     }),
   );
 
+  it("lists the built-in drivers the registry gives a default instance", () => {
+    assert.sameMembers(
+      [...DEFAULT_INSTANCE_DRIVERS],
+      BUILT_IN_DRIVERS.filter((driver) => driver.metadata.hasDefaultInstance !== false).map(
+        (driver) => driver.driverKind,
+      ),
+    );
+  });
+
   it("puts remembered caps back on default settings without inventing instances", () => {
     const antigravity = ProviderInstanceId.make("antigravity");
     const custom = ProviderInstanceId.make("agy-work");
@@ -201,7 +212,7 @@ describe("ProviderInstanceHardCap", () => {
     // Every instance the registry would build, uncapped ones and the
     // built-in defaults that no entry names included.
     assert.deepEqual(remembered.instances[codex], { driver: ProviderDriverKind.make("codex") });
-    for (const driver of Object.keys(DEFAULT_SERVER_SETTINGS.providers)) {
+    for (const driver of DEFAULT_INSTANCE_DRIVERS) {
       assert.isDefined(remembered.instances[driver], driver);
     }
     const inForce = rememberedHardCapsInForce(remembered);
@@ -212,7 +223,6 @@ describe("ProviderInstanceHardCap", () => {
     // The built-in instance gets the entry the registry would build, with its cap.
     assert.deepEqual(restored.providerInstances[antigravity], {
       driver: ProviderDriverKind.make("antigravity"),
-      config: DEFAULT_SERVER_SETTINGS.providers.antigravity,
       hardCap: agyCap,
     });
     // An instance only the lost settings named does not come back.

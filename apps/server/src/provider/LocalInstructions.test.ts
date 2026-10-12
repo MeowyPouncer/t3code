@@ -11,7 +11,7 @@ import {
   buildRuntimeInstructions,
   localInstructions,
   localInstructionsPath,
-} from "./RuntimeInstructions.ts";
+} from "@t3tools/provider-core/server/runtimeInstructions";
 
 describe("local instructions", () => {
   let directory: string;

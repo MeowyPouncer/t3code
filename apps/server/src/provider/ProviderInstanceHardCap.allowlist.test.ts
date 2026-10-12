@@ -7,13 +7,12 @@ import {
 } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
-import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../orchestration-v2/ProviderAdapter.ts";
+import { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   acpMcpToolApprovalElicitationDisposition,
   acpPermissionDisposition,
-} from "./acp/AcpClientPolicy.ts";
+} from "@t3tools/provider-acp/server/clientPolicy";
 import {
   clampRuntimeModeToHardCap,
   shouldAutoDeclineRuntimeRequest,
@@ -74,26 +73,20 @@ describe("ProviderInstanceHardCap approval-required allowlist path", () => {
     assert.equal(uncapped.permissionMode, "bypassPermissions");
     assert.isFalse(uncapped.installPermissionCallback);
 
-    const threadId = ThreadId.make("thread:hard-cap-allowlist");
-    McpProviderSession.setMcpProviderSession({
-      environmentId: EnvironmentId.make("environment:hard-cap-allowlist"),
-      threadId,
-      providerSessionId: "mcp-session:hard-cap-allowlist",
-      providerInstanceId: ProviderInstanceId.make("ClaudeCatz"),
-      endpoint: "http://127.0.0.1:43123/mcp",
-      authorizationHeader: "Bearer hard-cap-token",
-      browserToolsAvailable: false,
+    const overrides = ClaudeAdapterV2.claudeMcpQueryOverrides({
+      mcpSession: {
+        environmentId: EnvironmentId.make("environment:hard-cap-allowlist"),
+        threadId: ThreadId.make("thread:hard-cap-allowlist"),
+        providerSessionId: "mcp-session:hard-cap-allowlist",
+        providerInstanceId: ProviderInstanceId.make("ClaudeCatz"),
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer hard-cap-token",
+        browserToolsAvailable: false,
+      },
+      readOnlySandbox: false,
+      ...(capped.allowedTools === undefined ? {} : { allowedTools: capped.allowedTools }),
     });
-    try {
-      const overrides = ClaudeAdapterV2.claudeMcpQueryOverrides({
-        threadId,
-        readOnlySandbox: false,
-        ...(capped.allowedTools === undefined ? {} : { allowedTools: capped.allowedTools }),
-      });
-      assert.deepEqual(overrides.allowedTools, [ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD]);
-    } finally {
-      McpProviderSession.clearMcpProviderSession(threadId);
-    }
+    assert.deepEqual(overrides.allowedTools, [ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD]);
   });
 
   it("makes an ACP child ask before edits and MCP tool calls, then declines the edit", () => {

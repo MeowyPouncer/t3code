@@ -9,6 +9,12 @@ export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
+  | {
+      readonly kind: "child-input";
+      readonly label: string;
+      readonly accessibilityLabel: string;
+      readonly onPress: () => void;
+    }
   // The turn settled while background work it started still runs. `waiting`
   // is false when only commands remain, such as a dev server: the agent is done.
   // Tapping it says what each piece of work is and how long it has run.

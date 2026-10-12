@@ -30,11 +30,12 @@ import { TestClock } from "effect/testing";
 import * as ClaudeAdapterV2 from "./Adapters/ClaudeAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
-import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
+import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
 const sessionId = "idle-stop-child-wake-session";
 const settings = Schema.decodeSync(ClaudeSettings)({});
@@ -107,7 +108,7 @@ it.effect("FORK: a parent stopped while idle resumes its session on a child's re
         closed: boolean;
       }> = [];
       const offers: SDKUserMessage[] = [];
-      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+      const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: modelSelection.instanceId,
         settings,
         environment: {},
@@ -131,6 +132,7 @@ it.effect("FORK: a parent stopped while idle resumes its session on a child's re
                   }),
                 setModel: () => Effect.void,
                 setPermissionMode: () => Effect.void,
+                stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.sync(() => {
                   process.closed = true;
@@ -328,6 +330,10 @@ it.effect("FORK: a parent stopped while idle resumes its session on a child's re
           ),
         ),
       );
-    }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   ),
 );

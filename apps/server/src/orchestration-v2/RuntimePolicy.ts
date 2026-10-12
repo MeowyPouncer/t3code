@@ -17,10 +17,7 @@ import {
 } from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  ProviderAdapterV2RuntimePolicy,
-  type ProviderAdapterV2RuntimePolicy as ProviderAdapterV2RuntimePolicyType,
-} from "./ProviderAdapter.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 
 /**
@@ -57,7 +54,7 @@ export interface RuntimePolicyV2Shape {
   readonly resolve: (input: {
     readonly thread: OrchestrationV2AppThread;
     readonly modelSelection: ModelSelection;
-  }) => Effect.Effect<ProviderAdapterV2RuntimePolicyType, RuntimePolicyV2Error>;
+  }) => Effect.Effect<ProviderAdapter.ProviderAdapterV2RuntimePolicy, RuntimePolicyV2Error>;
 }
 
 export class RuntimePolicyV2 extends Context.Service<RuntimePolicyV2, RuntimePolicyV2Shape>()(
@@ -174,7 +171,7 @@ export const layerFromProjectStore: Layer.Layer<
                 ),
                 Effect.orElseSucceed(() => undefined),
               );
-        return ProviderAdapterV2RuntimePolicy.make({
+        return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode,
           interactionMode: input.thread.interactionMode,
           cwd,
@@ -197,7 +194,7 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              ProviderAdapterV2RuntimePolicy.make({
+              ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
                 ...policy,
                 ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
                 ...(override.approvalPolicy === undefined

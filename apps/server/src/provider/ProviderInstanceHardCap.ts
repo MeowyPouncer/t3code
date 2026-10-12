@@ -4,6 +4,7 @@ import {
   type ProviderInstanceCappedCapability,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
+  defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderInstanceHardCap,
   type ProviderInstanceId,
@@ -229,9 +230,25 @@ export const RememberedHardCaps = Schema.Struct({
 export type RememberedHardCaps = typeof RememberedHardCaps.Type;
 
 /**
+ * The built-in drivers whose default instance (id = driver) the registry builds
+ * when no entry names it (`deriveProviderInstanceConfigMap`). Listed here
+ * because the registry's driver list would pull every provider into the
+ * settings module; a test keeps the two in step.
+ */
+export const DEFAULT_INSTANCE_DRIVERS: ReadonlyArray<ProviderDriverKind> = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "grok",
+  "opencode",
+  "antigravity",
+  "pi",
+  "muse",
+].map((driver) => ProviderDriverKind.make(driver));
+
+/**
  * Every instance the registry builds from these settings: each entry, and a
- * built-in driver's default instance (id = driver) from `providers.<driver>`
- * when no entry names it.
+ * built-in driver's default instance when no entry names it.
  */
 export function rememberedHardCapsOf(settings: ServerSettings): RememberedHardCaps {
   const instances: Record<string, RememberedHardCaps["instances"][string]> = {};
@@ -241,10 +258,9 @@ export function rememberedHardCapsOf(settings: ServerSettings): RememberedHardCa
         ? { driver: instance.driver }
         : { driver: instance.driver, hardCap: instance.hardCap };
   }
-  for (const driver of Object.keys(settings.providers)) {
-    if (!Object.hasOwn(instances, driver)) {
-      instances[driver] = { driver: ProviderDriverKind.make(driver) };
-    }
+  for (const driver of DEFAULT_INSTANCE_DRIVERS) {
+    const instanceId = defaultInstanceIdForDriver(driver);
+    if (!Object.hasOwn(instances, instanceId)) instances[instanceId] = { driver };
   }
   return { instances };
 }
@@ -264,8 +280,8 @@ export function rememberedHardCapsInForce(
  * Puts remembered caps back on settings that came from defaults, so the
  * settings page shows them and a save from this state keeps them. An instance
  * the settings list gets its cap; a built-in driver's default instance, which
- * the registry builds from `providers.<driver>` when no entry names it, gets
- * the same entry the registry would build, with the cap. Other remembered
+ * the registry builds when no entry names it, gets the same entry the registry
+ * would build, with the cap. Other remembered
  * instances are not added back; their caps still hold by id through
  * {@link rememberedHardCapsInForce}.
  */
@@ -281,12 +297,11 @@ export function withRememberedHardCaps(
     const existing = providerInstances[instanceId];
     if (existing !== undefined) {
       providerInstances[instanceId] = { ...existing, hardCap };
-    } else if (instanceId === driver && Object.hasOwn(settings.providers, driver)) {
-      providerInstances[instanceId] = {
-        driver,
-        config: settings.providers[driver as keyof ServerSettings["providers"]],
-        hardCap,
-      };
+    } else if (
+      instanceId === defaultInstanceIdForDriver(driver) &&
+      DEFAULT_INSTANCE_DRIVERS.includes(driver)
+    ) {
+      providerInstances[instanceId] = { driver, hardCap };
     }
   }
   return {
