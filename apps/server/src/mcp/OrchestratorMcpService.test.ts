@@ -2329,6 +2329,7 @@ describe("OrchestratorMcpService provider instance hard cap", () => {
               ? parentProjection(delegated ? [task] : [])
               : childProjection,
           ),
+        hasReceipt: () => Effect.succeed(false),
         dispatch: (command) =>
           Ref.update(dispatched, (commands) => [...commands, command]).pipe(
             Effect.andThen(
@@ -2545,7 +2546,7 @@ describe("OrchestratorMcpService provider instance hard cap", () => {
     }),
   );
 
-  it.effect("applies no cap when no settings service is present", () =>
+  it.effect("applies no cap when the settings set none", () =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
       yield* run(

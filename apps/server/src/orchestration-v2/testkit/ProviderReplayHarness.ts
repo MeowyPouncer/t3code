@@ -275,6 +275,8 @@ export function layerWithRegistry<Error>(
     // as server startup does after a crash or restart.
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    /** FORK: the settings the orchestrator reads, such as provider instance hard caps. */
+    readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -301,12 +303,14 @@ export function layerWithRegistry<Error>(
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
-  const layerServerSettings = ServerSettings.layerTest({
-    responseStreamingMode: "turn",
-    ...(options.continueThreadsAfterServerUpdate === undefined
-      ? {}
-      : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
-  }).pipe(Layer.orDie);
+  const layerServerSettings =
+    options.serverSettingsLayer ??
+    ServerSettings.layerTest({
+      responseStreamingMode: "turn",
+      ...(options.continueThreadsAfterServerUpdate === undefined
+        ? {}
+        : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+    }).pipe(Layer.orDie);
   const layerStores = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
