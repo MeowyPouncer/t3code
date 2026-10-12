@@ -201,6 +201,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "autoSettleDisabledAt"
   | "snoozedUntil"
   | "snoozedAt"
+  | "shelvedAt"
   | "latestRunId"
   | "latestRunRequestedAt"
   | "latestRunStartedAt"
@@ -415,7 +416,7 @@ export interface ProjectionStoreV2Shape {
   /**
    * FORK: the threads working for `threadId` that settling it takes along: its
    * subagent threads and the threads it launched (launchedByThreadIdForShell),
-   * oldest first. Direct children only; deleted, archived and settled ones are left out.
+   * oldest first. Direct children only; deleted, archived, settled and shelved ones are left out.
    */
   readonly getSettleChildren: (
     threadId: ThreadId,
@@ -740,6 +741,8 @@ export function applyToProjection(
     case "thread.unsettled":
     case "thread.snoozed":
     case "thread.unsnoozed":
+    case "thread.shelved":
+    case "thread.unshelved":
     case "thread.auto-settle-set":
     case "thread.pinned":
     case "thread.unpinned":
@@ -1585,6 +1588,8 @@ export function threadShellFromProjection(
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
+    shelvedAt: projection.thread.shelvedAt ?? null,
+    shelfNote: projection.thread.shelfNote ?? null,
     pinnedAt: projection.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
@@ -1844,6 +1849,8 @@ function shellFromState(input: {
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
+    shelvedAt: input.state.thread.shelvedAt ?? null,
+    shelfNote: input.state.thread.shelfNote ?? null,
     pinnedAt: input.state.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,
@@ -1885,6 +1892,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           case "thread.unsettled":
           case "thread.snoozed":
           case "thread.unsnoozed":
+          case "thread.shelved":
+          case "thread.unshelved":
+          case "thread.shelved":
+          case "thread.unshelved":
           case "thread.auto-settle-set":
           case "thread.pinned":
           case "thread.unpinned":
@@ -5578,6 +5589,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND json_extract(t.payload_json, '$.archivedAt') IS NULL
               AND json_extract(t.payload_json, '$.settledOverride') IS NULL
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
+              AND json_extract(t.payload_json, '$.shelvedAt') IS NULL
               AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL
               AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs active
@@ -5661,6 +5673,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           AND t.thread_id != ${threadId}
           AND json_extract(t.payload_json, '$.archivedAt') IS NULL
           AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+          AND json_extract(t.payload_json, '$.shelvedAt') IS NULL
           AND (
             (
               json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
@@ -6192,6 +6205,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 thread.archivedAt === null &&
                 thread.settledOverride === null &&
                 thread.pinnedAt == null &&
+                thread.shelvedAt == null &&
                 thread.autoSettleDisabledAt == null &&
                 !runs.some(isActivityRunForShell) &&
                 !runtimeRequests.some((request) => request.status === "pending"),
@@ -6219,7 +6233,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                   thread.id === threadId ||
                   thread.deletedAt !== null ||
                   thread.archivedAt !== null ||
-                  thread.settledOverride === "settled"
+                  thread.settledOverride === "settled" ||
+                  thread.shelvedAt != null
                 ) {
                   return false;
                 }

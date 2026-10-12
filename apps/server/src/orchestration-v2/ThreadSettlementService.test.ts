@@ -124,6 +124,10 @@ describe("isAutoSettlementCandidate", () => {
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(shell({ pinnedAt: at(-1) }), NOW_MS),
     ).toBe(false);
+    // FORK: the user keeps a shelved thread to come back to.
+    expect(
+      ThreadSettlementService.isAutoSettlementCandidate(shell({ shelvedAt: at(-1) }), NOW_MS),
+    ).toBe(false);
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(
         shell({ autoSettleDisabledAt: at(-1) }),

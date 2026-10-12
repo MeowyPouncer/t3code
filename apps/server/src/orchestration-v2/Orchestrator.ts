@@ -148,6 +148,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
  */
 export function threadSettleBlocker(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "runtimeRequests" | "messages">,
+  action: "settling" | "shelving" = "settling",
 ) {
   const automaticMessageIds = new Set(
     projection.messages
@@ -175,11 +176,11 @@ export function threadSettleBlocker(
   );
   // The reason is shown to the user, so it names what to clear first.
   const blocker = blockingRequestExists
-    ? "is waiting on an approval or question. Answer it before settling."
+    ? `is waiting on an approval or question. Answer it before ${action}.`
     : runningRunExists
-      ? "is still running. Stop it before settling."
+      ? `is still running. Stop it before ${action}.`
       : queuedMessageExists
-        ? "has a queued message. Send it or remove it from the queue before settling."
+        ? `has a queued message. Send it or remove it from the queue before ${action}.`
         : null;
   return { automaticQueuedRuns, pendingRequests, blocker };
 }
@@ -492,6 +493,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.unsettle":
     case "thread.snooze":
     case "thread.unsnooze":
+    case "thread.shelve":
+    case "thread.unshelve":
     case "thread.auto-settle.set":
     case "thread.pin":
     case "thread.unpin":
@@ -2468,6 +2471,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.unsettle"
           | "thread.snooze"
           | "thread.unsnooze"
+          | "thread.shelve"
+          | "thread.unshelve"
           | "thread.auto-settle.set"
           | "thread.pin"
           | "thread.unpin"
@@ -2606,6 +2611,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.type === "thread.unsettle" ||
         command.type === "thread.snooze" ||
         command.type === "thread.unsnooze" ||
+        command.type === "thread.shelve" ||
+        command.type === "thread.unshelve" ||
         command.type === "thread.auto-settle.set" ||
         command.type === "thread.pin" ||
         command.type === "thread.unpin" ||
@@ -2675,13 +2682,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
-    if (command.type === "thread.settle") {
+    // FORK: shelving clears the same things a settle does before the thread is parked.
+    if (command.type === "thread.settle" || command.type === "thread.shelve") {
       const projection = yield* loadProjectionForCommand(
         command,
         ["runs", "runtimeRequests", "messages"],
         { turnItemTypes: [], messageRoles: ["user"] },
       );
-      const { automaticQueuedRuns, pendingRequests, blocker } = threadSettleBlocker(projection);
+      const { automaticQueuedRuns, pendingRequests, blocker } = threadSettleBlocker(
+        projection,
+        command.type === "thread.shelve" ? "shelving" : "settling",
+      );
       if (blocker !== null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -2867,7 +2878,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             pinnedAt: null,
             pinOrderKey: null,
             activeOrderKey: null,
-            updatedAt: alreadySettled ? thread.updatedAt : now,
+            // FORK: the shelf is a place of its own; settling moves the thread off it.
+            shelvedAt: null,
+            updatedAt: alreadySettled && thread.shelvedAt == null ? thread.updatedAt : now,
           };
         }
         case "thread.unsettle": {
@@ -2891,7 +2904,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             snoozedUntil,
             limitRecovery: thread.limitRecovery ? { ...thread.limitRecovery, snooze: false } : null,
             snoozedAt: existingSnoozedAt ?? now,
-            updatedAt: existingSnoozedAt === null ? now : thread.updatedAt,
+            // FORK: a snoozed thread comes back at its time, so it leaves the shelf.
+            shelvedAt: null,
+            updatedAt:
+              existingSnoozedAt === null || thread.shelvedAt != null ? now : thread.updatedAt,
           };
         }
         case "thread.unsnooze": {
@@ -2902,6 +2918,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             snoozedAt: null,
             lastSnoozeWakeAt: alreadyAwake ? thread.lastSnoozeWakeAt : now,
             updatedAt: alreadyAwake ? thread.updatedAt : now,
+          };
+        }
+        case "thread.shelve": {
+          // FORK: the shelf keeps a finished thread to come back to. It is a
+          // place of its own, so the thread leaves settled, snoozed and pinned;
+          // automatic settlement passes it by. Shelving it again edits the note.
+          const note = command.note === undefined ? (thread.shelfNote ?? null) : command.note;
+          const unchanged = thread.shelvedAt != null && note === (thread.shelfNote ?? null);
+          return {
+            ...thread,
+            shelvedAt: thread.shelvedAt ?? now,
+            shelfNote: note,
+            settledOverride: null,
+            settledAt: null,
+            unsettledAt: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            pinnedAt: null,
+            pinOrderKey: null,
+            activeOrderKey: null,
+            updatedAt: unchanged ? thread.updatedAt : now,
+          };
+        }
+        case "thread.unshelve": {
+          // Back on top of the active list, like Un-settle. The note stays for
+          // the next time the thread goes on the shelf.
+          const alreadyOff = thread.shelvedAt == null;
+          return {
+            ...thread,
+            shelvedAt: null,
+            unsettledAt: alreadyOff ? (thread.unsettledAt ?? null) : now,
+            updatedAt: alreadyOff ? thread.updatedAt : now,
           };
         }
         case "thread.auto-settle.set": {
@@ -2917,7 +2965,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // silently outranking them — an explicit settle is un-settled and a
           // snooze's return ticket is spent (the thread is on top NOW).
           const alreadyPinned = thread.pinnedAt != null;
-          const promotes = thread.settledOverride === "settled" || thread.snoozedUntil != null;
+          const promotes =
+            thread.settledOverride === "settled" ||
+            thread.snoozedUntil != null ||
+            thread.shelvedAt != null;
           return {
             ...thread,
             pinnedAt: alreadyPinned ? thread.pinnedAt : now,
@@ -2933,6 +2984,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             snoozedUntil: null,
             snoozedAt: null,
             lastSnoozeWakeAt: thread.snoozedUntil == null ? thread.lastSnoozeWakeAt : now,
+            // FORK: pinning takes a thread off the shelf too.
+            shelvedAt: null,
             updatedAt: alreadyPinned && !promotes ? thread.updatedAt : now,
           };
         }
@@ -3264,6 +3317,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.snoozed" as const;
         case "thread.unsnooze":
           return "thread.unsnoozed" as const;
+        case "thread.shelve":
+          return "thread.shelved" as const;
+        case "thread.unshelve":
+          return "thread.unshelved" as const;
         case "thread.auto-settle.set":
           return "thread.auto-settle-set" as const;
         case "thread.pin":
@@ -3480,16 +3537,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   /**
-   * FORK: settling a thread settles the threads working for it too: its
-   * subagent threads and the threads it launched, at any depth, in the same
-   * transaction. One of them still working or waiting for the user refuses
-   * the whole settle and is named; unsettling the parent brings none back.
+   * FORK: the threads working for a thread at any depth (its subagent threads
+   * and the threads it launched), once the thread and every one of them may be
+   * parked. One still working or waiting for the user refuses, named, so the
+   * family never leaves orphans behind in the active list.
    */
-  const dispatchThreadSettle = Effect.fn("orchestrationV2.dispatch.threadSettle")(function* (
-    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.settle" }>,
-    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
-    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  const parkableFamily = Effect.fn("orchestrationV2.dispatch.parkableFamily")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.settle" | "thread.shelve" }
+    >,
   ) {
+    const action = command.type === "thread.shelve" ? "shelving" : "settling";
     const family: Array<ProjectionSettleChild> = [];
     const seen = new Set<ThreadId>([command.threadId]);
     let parents: ReadonlyArray<ThreadId> = [command.threadId];
@@ -3512,43 +3571,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       parents = next;
     }
-    if (family.length > 0) {
-      // The thread's own blocker reads first, as it would without children.
-      const own = threadSettleBlocker(
-        yield* loadProjectionForCommand(command, ["runs", "runtimeRequests", "messages"], {
-          turnItemTypes: [],
-          messageRoles: ["user"],
-        }),
-      );
-      if (own.blocker !== null) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Thread ${command.threadId} ${own.blocker}`,
-        });
-      }
-      const busy: Array<string> = [];
-      for (const child of family) {
-        const { blocker } = threadSettleBlocker(
-          yield* loadProjectionForCommand(
-            { ...command, threadId: child.id },
-            ["runs", "runtimeRequests", "messages"],
-            { turnItemTypes: [], messageRoles: ["user"] },
-          ),
-        );
-        if (blocker !== null) busy.push(`«${child.title}»`);
-      }
-      if (busy.length > 0) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Thread ${command.threadId} has ${
-            busy.length === 1 ? "a subagent or writer" : `${busy.length} subagents or writers`
-          } still working or waiting for you: ${busy.join(", ")}. Let them finish or stop them before settling.`,
-        });
-      }
+    if (family.length === 0) return family;
+    // The thread's own blocker reads first, as it would without children.
+    const own = threadSettleBlocker(
+      yield* loadProjectionForCommand(command, ["runs", "runtimeRequests", "messages"], {
+        turnItemTypes: [],
+        messageRoles: ["user"],
+      }),
+      action,
+    );
+    if (own.blocker !== null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} ${own.blocker}`,
+      });
     }
-    yield* dispatchThreadMutation(command, events, effects);
+    const busy: Array<string> = [];
+    for (const child of family) {
+      const { blocker } = threadSettleBlocker(
+        yield* loadProjectionForCommand(
+          { ...command, threadId: child.id },
+          ["runs", "runtimeRequests", "messages"],
+          { turnItemTypes: [], messageRoles: ["user"] },
+        ),
+      );
+      if (blocker !== null) busy.push(`«${child.title}»`);
+    }
+    if (busy.length > 0) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} has ${
+          busy.length === 1 ? "a subagent or writer" : `${busy.length} subagents or writers`
+        } still working or waiting for you: ${busy.join(", ")}. Let them finish or stop them before ${action}.`,
+      });
+    }
+    return family;
+  });
+
+  /** Settles the family's threads that work for a parked thread (parkableFamily). */
+  const settleFamily = Effect.fn("orchestrationV2.dispatch.settleFamily")(function* (
+    command: { readonly commandId: CommandId; readonly settledAt?: DateTime.Utc | undefined },
+    family: ReadonlyArray<ProjectionSettleChild>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
     for (const child of family) {
       yield* dispatchThreadMutation(
         {
@@ -3561,6 +3629,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         effects,
       );
     }
+  });
+
+  /**
+   * FORK: settling a thread settles the threads working for it too, in the
+   * same transaction; unsettling the parent brings none back.
+   */
+  const dispatchThreadSettle = Effect.fn("orchestrationV2.dispatch.threadSettle")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.settle" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const family = yield* parkableFamily(command);
+    yield* dispatchThreadMutation(command, events, effects);
+    yield* settleFamily(command, family, events, effects);
+  });
+
+  /**
+   * FORK: the shelf keeps the thread to come back to; the finished threads that
+   * worked for it settle, so none is left behind in the active list.
+   */
+  const dispatchThreadShelve = Effect.fn("orchestrationV2.dispatch.threadShelve")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.shelve" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const family = yield* parkableFamily(command);
+    yield* dispatchThreadMutation(command, events, effects);
+    yield* settleFamily(command, family, events, effects);
   });
 
   const dispatchProviderSessionDetach = Effect.fn("orchestrationV2.dispatch.providerSessionDetach")(
@@ -4755,6 +4851,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command,
         )({
           type: "thread.unsnoozed",
+          threadId: command.threadId,
+          providerInstanceId: thread.providerInstanceId,
+          occurredAt: now,
+          payload: thread,
+        });
+        projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      }
+      // FORK: a message, the user's or an agent's wake, brings a shelved thread
+      // back to the top of the active list; its note stays.
+      if (projection.thread.shelvedAt != null) {
+        const now = yield* DateTime.now;
+        const thread: OrchestrationV2AppThread = {
+          ...projection.thread,
+          shelvedAt: null,
+          unsettledAt: now,
+          updatedAt: now,
+        };
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.unshelved",
           threadId: command.threadId,
           providerInstanceId: thread.providerInstanceId,
           occurredAt: now,
@@ -10808,11 +10926,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.settle":
         yield* dispatchThreadSettle(command, events, effects);
         break;
+      case "thread.shelve":
+        yield* dispatchThreadShelve(command, events, effects);
+        break;
       case "thread.archive":
       case "thread.unarchive":
       case "thread.unsettle":
       case "thread.snooze":
       case "thread.unsnooze":
+      case "thread.unshelve":
       case "thread.auto-settle.set":
       case "thread.pin":
       case "thread.unpin":
