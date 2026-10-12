@@ -9,6 +9,7 @@ import {
   ModelSelection,
   RuntimeMode,
   ProviderInteractionMode,
+  ProviderReportedPermissions,
   RuntimeRequestId,
   ProviderUserInputAnswers,
   IsoDateTime,
@@ -174,13 +175,14 @@ const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
 const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
   ...commandTool,
   description:
-    "Read a thread's provider/model selection and modes. Omit threadId for this thread. orchestrator_capabilities lists available providers and models.",
+    "Read a thread's provider/model selection, requested modes and last provider-reported permissions. runtimeMode is the requested preset, not proof of effective access. reportedPermissions is null until the selected provider reports its native settings; command rules and external restrictions still apply. Omit threadId for this thread. orchestrator_capabilities lists available providers and models.",
   parameters: Schema.Struct({ threadId: Schema.optional(ThreadId) }),
   success: Schema.Struct({
     threadId: ThreadId,
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    reportedPermissions: Schema.NullOr(ProviderReportedPermissions),
   }),
 })
   .annotate(Tool.Readonly, true)

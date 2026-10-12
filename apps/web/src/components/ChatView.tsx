@@ -1,4 +1,5 @@
 import { ChatCanvas } from "./chat/ChatCanvas";
+import { threadReportedPermissions } from "@t3tools/shared/providerPermissions";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
 import {
   resolveBackgroundDraftWorkspaceOptions,
@@ -3663,6 +3664,7 @@ export default function ChatView(props: ChatViewProps) {
     (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
   );
   const statusLineDriverKind = statusLineProviderThread?.driver ?? selectedProvider;
+  const reportedPermissions = threadReportedPermissions(serverProjection, activeProviderInstanceId);
   const statusLineCompactionCount = useMemo(
     () => resolveCompactionCount(serverProjection ?? null),
     [serverProjection],
@@ -11685,6 +11687,7 @@ export default function ChatView(props: ChatViewProps) {
                             <ChatComposer
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
+                              reportedPermissions={reportedPermissions}
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

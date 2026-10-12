@@ -2812,52 +2812,184 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("resumes a provider thread without requesting or decoding its history", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const scenario = "codex-resume-metadata";
-        const nativeThreadId = `native-${scenario}-thread`;
-        const preamble = codexReplayPreamble({
-          nativeThreadId,
-          nativeTurnId: "unused-turn",
-          prompt: "unused-prompt",
-        }).slice(0, 5);
-        const transcript = makeCodexReplayTranscript({
-          scenario,
-          entries: [
-            ...preamble,
-            {
-              type: "expect_outbound",
-              label: "thread/resume",
-              frame: {
-                id: 3,
-                method: "thread/resume",
-                params: {
-                  threadId: nativeThreadId,
-                  excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+  it.effect.each([false, true])(
+    "resumes without history and refreshes native permissions (reported: %s)",
+    (reported) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const scenario = "codex-resume-metadata";
+          const nativeThreadId = `native-${scenario}-thread`;
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5);
+          const transcript = makeCodexReplayTranscript({
+            scenario,
+            entries: [
+              ...preamble,
+              {
+                type: "expect_outbound",
+                label: "thread/resume",
+                frame: {
+                  id: 3,
+                  method: "thread/resume",
+                  params: {
+                    threadId: nativeThreadId,
+                    excludeTurns: true,
+                    config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "thread/resume",
+                frame: {
+                  id: 3,
+                  result: {
+                    thread: { id: nativeThreadId, updatedAt: 1782622450 },
+                    ...(reported
+                      ? {
+                          approvalPolicy: "never",
+                          approvalsReviewer: "user",
+                          sandbox: { type: "dangerFullAccess" },
+                        }
+                      : {}),
+                  },
+                },
+              },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          const resumed = yield* harness.runtime.resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+
+          assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
+          assert.equal(resumed.status, "idle");
+          assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
+          assert.equal(
+            harness.providerThread.nativeMetadata?.permissions?.sandbox,
+            "workspace-write",
+          );
+          if (reported) {
+            assert.equal(resumed.nativeMetadata?.permissions?.sandbox, "danger-full-access");
+            assert.equal(resumed.nativeMetadata?.permissions?.approvalPolicy, "never");
+          } else {
+            assert.isNull(resumed.nativeMetadata?.permissions);
+          }
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect(
+    "keeps a native permission change received before turn start across later status events",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "native-permission-update";
+          const nativeTurnId = "native-permission-turn";
+          const preamble = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId,
+            prompt: "permissions",
+          });
+          const permissionNotification: CodexReplay.CodexAppServerReplayEntry = {
+            type: "emit_inbound",
+            frame: {
+              method: "thread/settings/updated",
+              params: {
+                threadId: nativeThreadId,
+                threadSettings: {
+                  model: "gpt-5.4",
+                  modelProvider: "openai",
+                  cwd: "/workspace",
+                  approvalPolicy: "on-request",
+                  approvalsReviewer: "user",
+                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                  sandboxPolicy: { type: "readOnly", networkAccess: false },
                 },
               },
             },
-            {
-              type: "emit_inbound",
-              label: "thread/resume",
-              frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
-            },
-          ],
-        });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        const resumed = yield* harness.runtime.resumeThread({
-          providerThread: harness.providerThread,
-          modelSelection: CODEX_TEST_MODEL_SELECTION,
-          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-        });
-
-        assert.equal(resumed.nativeThreadRef?.nativeId, nativeThreadId);
-        assert.equal(resumed.status, "idle");
-        assert.equal(DateTime.toEpochMillis(resumed.updatedAt), 1782622450000);
-      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
-    ),
+          };
+          const reported = yield* Deferred.make<void>();
+          const goalReported = yield* Deferred.make<void>();
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "native-permission-update",
+              entries: [
+                ...preamble.slice(0, 6),
+                permissionNotification,
+                ...preamble.slice(6),
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    method: "thread/goal/updated",
+                    params: {
+                      threadId: nativeThreadId,
+                      turnId: nativeTurnId,
+                      goal: {
+                        threadId: nativeThreadId,
+                        objective: "Permission status follow-up",
+                        status: "paused",
+                        tokenBudget: null,
+                        tokensUsed: 0,
+                        timeUsedSeconds: 0,
+                        createdAt: 1782622440,
+                        updatedAt: 1782622450,
+                      },
+                    },
+                  },
+                },
+              ],
+            }),
+            (event) =>
+              event.type !== "provider_thread.updated"
+                ? Effect.void
+                : event.providerThread.goal?.objective === "Permission status follow-up"
+                  ? Deferred.succeed(goalReported, undefined)
+                  : event.providerThread.nativeMetadata?.permissions?.sandbox === "read-only"
+                    ? Deferred.succeed(reported, undefined)
+                    : Effect.void,
+          );
+          assert.equal(
+            harness.providerThread.nativeMetadata?.permissions?.sandbox,
+            "workspace-write",
+          );
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("permission-turn"),
+              text: "permissions",
+            }),
+          );
+          yield* Deferred.await(reported);
+          yield* harness.firstTerminal;
+          yield* Deferred.await(goalReported);
+          const updates = harness.events.flatMap((event) =>
+            event.type === "provider_thread.updated" ? [event.providerThread] : [],
+          );
+          assert.isAtLeast(updates.length, 2);
+          for (const thread of updates) {
+            assert.equal(thread.nativeMetadata?.permissions?.sandbox, "read-only");
+            assert.equal(thread.nativeMetadata?.permissions?.approvalPolicy, "on-request");
+          }
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
   );
 
   it.effect.each(
@@ -7491,6 +7623,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, forkThreadId);
         assert.notEqual(forkedProviderThread.id, harness.providerThread.id);
         assert.equal(forkedProviderThread.forkedFrom?.providerTurnId, firstTurn.id);
+        assert.equal(forkedProviderThread.nativeMetadata?.permissions?.sandbox, "workspace-write");
+        assert.equal(
+          forkedProviderThread.nativeMetadata?.permissions?.approvalPolicy,
+          "on-request",
+        );
         assert.deepEqual(outbound.slice(-2), ["thread/turns/list", "thread/revert"]);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );

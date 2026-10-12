@@ -9,6 +9,8 @@ import type {
 import type { LegendListRenderItemProps } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
+import { describeReportedPermissions } from "@t3tools/shared/providerPermissions";
+import type { ProviderReportedPermissions } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
@@ -246,6 +248,7 @@ type ThreadSettingsSessionProps = {
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly selectedModel: ModelSelection | null;
   readonly reportedModelSelection?: ModelSelection | null;
+  readonly reportedPermissions?: ProviderReportedPermissions | null;
   readonly onSelectModel: (option: ModelOption) => void;
   readonly optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
@@ -307,6 +310,7 @@ type ThreadSettingsSessionValue = {
   readonly displayedDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
   readonly displayedModelSelection: ModelSelection | null;
   readonly reportedModelSelection: ModelSelection | null;
+  readonly reportedPermissions: ProviderReportedPermissions | null;
   readonly providerExpansionOverrides: ReadonlySet<string>;
   readonly hasLegacyModels: boolean;
   readonly pendingModel: ModelOption | null;
@@ -481,6 +485,10 @@ function ThreadSettingsSessionProvider(
       displayedDescriptors,
       displayedModelSelection: pendingModel?.selection ?? props.selectedModel,
       reportedModelSelection: pendingModel ? null : (props.reportedModelSelection ?? null),
+      reportedPermissions:
+        pendingModel && pendingModel.selection.instanceId !== props.selectedModel?.instanceId
+          ? null
+          : (props.reportedPermissions ?? null),
       favoriteKeys,
       favoritesLoaded,
       providerExpansionOverrides,
@@ -514,6 +522,7 @@ function ThreadSettingsSessionProvider(
       props.environmentId,
       props.selectedModel,
       props.reportedModelSelection,
+      props.reportedPermissions,
       props.providerInstanceId,
       pendingModel,
       pressModel,
@@ -718,6 +727,7 @@ function ThreadSettingsOptionsItem(props: {
 }) {
   const insets = useSafeAreaInsets();
   const session = useThreadSettingsSession();
+  const permissionReport = describeReportedPermissions(session.reportedPermissions);
   const configs = useAtomValue(environmentServerConfigsAtom);
   const selectedProvider = session.environmentId
     ? (configs
@@ -778,13 +788,21 @@ function ThreadSettingsOptionsItem(props: {
         <Animated.View layout={THREAD_SETTINGS_OPTIONS_LAYOUT_TRANSITION}>
           <DisclosureRow
             isLast
-            label="Runtime"
+            label="Requested mode"
             value={
               session.runtimeModeChoices.find((choice) => choice.mode === session.runtimeMode)
                 ?.label
             }
             onPress={() => props.onOpenSubmenu({ kind: "runtime" })}
           />
+          <View className="px-5 pb-3">
+            <Text className="text-xs text-foreground-muted">{permissionReport.detail}</Text>
+            {permissionReport.approvalNotice ? (
+              <Text className="text-xs text-foreground-muted">
+                {permissionReport.approvalNotice}
+              </Text>
+            ) : null}
+          </View>
         </Animated.View>
       </Animated.View>
 

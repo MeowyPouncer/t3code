@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
+import { threadReportedPermissions } from "@t3tools/shared/providerPermissions";
 
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -171,14 +172,17 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_configuration: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const {
-        projection: { thread },
-      } = yield* readThread(input.threadId);
+      const { projection } = yield* readThread(input.threadId, ["providerThreads"]);
+      const { thread } = projection;
       return {
         threadId: thread.id,
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
+        reportedPermissions: threadReportedPermissions(
+          projection,
+          thread.modelSelection.instanceId,
+        ),
       };
     }),
   ),
