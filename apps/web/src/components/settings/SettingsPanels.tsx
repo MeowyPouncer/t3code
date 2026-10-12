@@ -49,6 +49,7 @@ import {
   MIN_TERMINAL_FONT_SIZE,
   type QuitConfirmationMode,
   SidebarProjectSortOrder,
+  SidebarThreadLocationLabel,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -195,6 +196,12 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: "Manual",
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+// FORK: thread rows name their branch or the worktree folder they run in.
+const SIDEBAR_THREAD_LOCATION_LABELS: Record<SidebarThreadLocationLabel, string> = {
+  branch: "Branch",
+  worktree: "Worktree folder",
+};
+const isSidebarThreadLocationLabel = Schema.is(SidebarThreadLocationLabel);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -580,6 +587,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
         ? ["Working section"]
         : []),
+      ...(settings.sidebarThreadLocationLabel !==
+      DEFAULT_UNIFIED_SETTINGS.sidebarThreadLocationLabel
+        ? ["Thread location"]
+        : []),
       ...(settings.sidebarAutoSettleAfterDays !==
       DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
         ? ["Auto-settle inactive threads"]
@@ -725,6 +736,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.sidebarProjectGroupingMode,
       settings.sidebarProjectSortOrder,
       settings.sidebarWorkingShelfEnabled,
+      settings.sidebarThreadLocationLabel,
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
       settings.timestampFormat,
@@ -827,6 +839,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
+      sidebarThreadLocationLabel: DEFAULT_UNIFIED_SETTINGS.sidebarThreadLocationLabel,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
@@ -2453,6 +2466,47 @@ export function GeneralSettingsPanel() {
               }
               aria-label="Working section (beta)"
             />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("thread-location-label")}
+          description="What thread rows and their hover cards show below the title: the branch, or the worktree folder the thread runs in."
+          resetAction={
+            settings.sidebarThreadLocationLabel !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarThreadLocationLabel ? (
+              <SettingResetButton
+                label="thread location"
+                onClick={() =>
+                  updateSettings({
+                    sidebarThreadLocationLabel: DEFAULT_UNIFIED_SETTINGS.sidebarThreadLocationLabel,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarThreadLocationLabel}
+              onValueChange={(value) => {
+                if (isSidebarThreadLocationLabel(value)) {
+                  updateSettings({ sidebarThreadLocationLabel: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Thread location">
+                <SelectValue>
+                  {SIDEBAR_THREAD_LOCATION_LABELS[settings.sidebarThreadLocationLabel]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarThreadLocationLabel.literals.map((label) => (
+                  <SelectItem hideIndicator key={label} value={label}>
+                    {SIDEBAR_THREAD_LOCATION_LABELS[label]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
           }
         />
 

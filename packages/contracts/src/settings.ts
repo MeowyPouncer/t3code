@@ -66,6 +66,11 @@ export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 // wire field keeps its decoding default below.
 const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 
+/** FORK: what a sidebar thread row names below its title: its branch, or the folder it runs in. */
+export const SidebarThreadLocationLabel = Schema.Literals(["branch", "worktree"]);
+export type SidebarThreadLocationLabel = typeof SidebarThreadLocationLabel.Type;
+const DEFAULT_SIDEBAR_THREAD_LOCATION_LABEL: SidebarThreadLocationLabel = "branch";
+
 export const SidebarProjectGroupingMode = Schema.Literals([
   "repository",
   "repository_path",
@@ -486,6 +491,10 @@ export const ClientSettingsSchema = Schema.Struct({
   // time, so manual placement there is ignored (and kept) while it is on.
   sidebarWorkingShelfEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  // FORK: the worktree folder tells threads apart where every checkout stays on main.
+  sidebarThreadLocationLabel: SidebarThreadLocationLabel.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_LOCATION_LABEL)),
   ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
@@ -1782,6 +1791,7 @@ export const ClientSettingsPatch = Schema.Struct({
   showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarThreadLocationLabel: Schema.optionalKey(SidebarThreadLocationLabel),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

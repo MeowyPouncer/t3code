@@ -3,6 +3,11 @@
 Use a new thread for a separate task. Choose **New worktree** when its code changes
 need a separate branch and working directory.
 
+On web and desktop, each thread in the sidebar shows its branch below the title. If your
+checkouts rarely leave the default branch, set **Thread location** in **Settings → General**
+to **Worktree folder** to show the folder the thread runs in instead: its worktree, or the
+project's checkout.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

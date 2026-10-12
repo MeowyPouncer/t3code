@@ -26,6 +26,7 @@ import type { SidebarThreadSummary, Thread } from "../types";
 import { cn, normalizeSearchText } from "../lib/utils";
 import { isLatestRunSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
@@ -1049,6 +1050,21 @@ export function resolveSidebarV2TopStatus(input: {
 
 export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolean {
   return status === "working";
+}
+
+/**
+ * FORK: what a thread row names below its title. In worktree mode that is the
+ * folder the thread runs in: its worktree, else the project's checkout.
+ */
+export function resolveSidebarThreadLocation(input: {
+  readonly mode: "branch" | "worktree";
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly workspaceRoot: string | null;
+}): string | null {
+  if (input.mode === "branch") return input.branch;
+  const folder = input.worktreePath?.trim() || input.workspaceRoot?.trim();
+  return folder ? formatWorktreePathForDisplay(folder) : null;
 }
 
 /** First VALID timestamp wins: `a ?? b` falls through on null, but a present-

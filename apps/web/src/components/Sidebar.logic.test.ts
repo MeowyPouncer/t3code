@@ -41,6 +41,7 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   pullRequestMatchesSearchQuery,
+  resolveSidebarThreadLocation,
   searchSidebarThreads,
   shouldClearThreadSelectionOnMouseDown,
   shouldShowSidebarV2Duration,
@@ -1013,6 +1014,34 @@ describe("pullRequestMatchesSearchQuery", () => {
   it("rejects queries with a token the PR does not carry, and blank queries", () => {
     expect(pullRequestMatchesSearchQuery({ branchPullRequest }, "rebase 123")).toBe(false);
     expect(pullRequestMatchesSearchQuery({ branchPullRequest }, "   ")).toBe(false);
+  });
+});
+
+describe("resolveSidebarThreadLocation", () => {
+  const thread = {
+    branch: "task/home-plan-band-001",
+    worktreePath: "/home/me/worktrees/HOME-PLAN-BAND-001/",
+    workspaceRoot: "/home/me/catwolf-project",
+  };
+
+  it("names the branch, or the folder the thread runs in", () => {
+    expect(resolveSidebarThreadLocation({ ...thread, mode: "branch" })).toBe(
+      "task/home-plan-band-001",
+    );
+    expect(resolveSidebarThreadLocation({ ...thread, mode: "worktree" })).toBe(
+      "HOME-PLAN-BAND-001",
+    );
+    expect(resolveSidebarThreadLocation({ ...thread, mode: "worktree", worktreePath: null })).toBe(
+      "catwolf-project",
+    );
+    expect(
+      resolveSidebarThreadLocation({
+        mode: "worktree",
+        branch: "main",
+        worktreePath: null,
+        workspaceRoot: null,
+      }),
+    ).toBeNull();
   });
 });
 
