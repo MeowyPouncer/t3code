@@ -178,6 +178,12 @@ export type ProjectionThreadPullRequests = Pick<
  * Thread activity needed by settlement, without transcript or fork history.
  * Settlement always loads `latestUserAuthoredMessageAt`, so it is required here.
  */
+/** FORK: a thread that a settle of its parent or launcher takes along (getSettleChildren). */
+export interface ProjectionSettleChild {
+  readonly id: ThreadId;
+  readonly title: string;
+}
+
 export type ProjectionSettlementCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
@@ -406,6 +412,14 @@ export interface ProjectionStoreV2Shape {
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
+  /**
+   * FORK: the threads working for `threadId` that settling it takes along: its
+   * subagent threads and the threads it launched (launchedByThreadIdForShell),
+   * oldest first. Direct children only; deleted, archived and settled ones are left out.
+   */
+  readonly getSettleChildren: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ProjectionSettleChild>, ProjectionStoreV2Error>;
   /**
    * Active (not deleted, not archived) threads with at least one pull request
    * link, in shell snapshot order, or only `threadId` when given. Skips run,
@@ -5639,6 +5653,46 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    const getSettleChildren: ProjectionStoreV2Shape["getSettleChildren"] = (threadId) =>
+      sql<{ readonly thread_id: string; readonly title: string }>`
+        SELECT t.thread_id, json_extract(t.payload_json, '$.title') AS title
+        FROM orchestration_v2_projection_threads t
+        WHERE t.deleted_at IS NULL
+          AND t.thread_id != ${threadId}
+          AND json_extract(t.payload_json, '$.archivedAt') IS NULL
+          AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+          AND (
+            (
+              json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+              AND json_extract(t.payload_json, '$.lineage.parentThreadId') = ${threadId}
+            )
+            OR (
+              json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NULL
+              AND (
+                json_extract(t.payload_json, '$.launchedByThreadId') = ${threadId}
+                OR (
+                  json_extract(t.payload_json, '$.launchedByThreadId') IS NULL
+                  AND json_extract(t.payload_json, '$.createdBy') = 'agent'
+                  AND json_extract(t.payload_json, '$.creationSource') = 'mcp'
+                  AND (
+                    SELECT json_extract(message.payload_json, '$.senderThreadId')
+                    FROM orchestration_v2_projection_messages message
+                    WHERE message.thread_id = t.thread_id AND message.role = 'user'
+                    ORDER BY message.created_at ASC, message.message_id ASC
+                    LIMIT 1
+                  ) = ${threadId}
+                )
+              )
+            )
+          )
+        ORDER BY t.created_at ASC, t.thread_id ASC
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({ id: ThreadId.make(row.thread_id), title: row.title })),
+        ),
+        Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+      );
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] = (
       threadId,
     ) =>
@@ -6006,6 +6060,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadShell,
       getThread,
       getSettlementCandidates,
+      getSettleChildren,
       getThreadsWithPullRequests,
       getThreadProjection,
       getTurnStartContext,
@@ -6155,6 +6210,43 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 left.id.localeCompare(right.id),
             );
         }),
+      getSettleChildren: (threadId) =>
+        Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()]
+              .filter(({ thread, messages }) => {
+                if (
+                  thread.id === threadId ||
+                  thread.deletedAt !== null ||
+                  thread.archivedAt !== null ||
+                  thread.settledOverride === "settled"
+                ) {
+                  return false;
+                }
+                if (thread.lineage.relationshipToParent === "subagent") {
+                  return thread.lineage.parentThreadId === threadId;
+                }
+                const launchMessage = messages
+                  .filter((message) => message.role === "user")
+                  .toSorted(
+                    (left, right) =>
+                      DateTime.toEpochMillis(left.createdAt) -
+                        DateTime.toEpochMillis(right.createdAt) || left.id.localeCompare(right.id),
+                  )[0];
+                return (
+                  launchedByThreadIdForShell(thread, launchMessage?.senderThreadId ?? null) ===
+                  threadId
+                );
+              })
+              .toSorted(
+                (left, right) =>
+                  DateTime.toEpochMillis(left.thread.createdAt) -
+                    DateTime.toEpochMillis(right.thread.createdAt) ||
+                  left.thread.id.localeCompare(right.thread.id),
+              )
+              .map(({ thread }) => ({ id: thread.id, title: thread.title })),
+          ),
+        ),
       getThreadsWithPullRequests: (threadId) =>
         Ref.get(replayState).pipe(
           Effect.map((state) =>
