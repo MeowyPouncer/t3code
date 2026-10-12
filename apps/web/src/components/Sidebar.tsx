@@ -1200,7 +1200,7 @@ function SidebarLaunchGroupToggle(props: {
             }}
             onDoubleClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
-            className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-0.5 rounded-sm pr-0.5 text-xs text-muted-foreground tabular-nums outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-0.5 rounded-sm pr-0.5 text-xs text-muted-foreground tabular-nums outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
           />
         }
       >
