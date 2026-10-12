@@ -454,6 +454,7 @@ function ThreadNavigationSidebarPane(
       snoozeLabelNow: `${nowMinute}:00.000Z`,
       snoozeEnvironmentIds,
       queuedThreadKeys,
+      workingFamilyThreadKeys: threadListV2Layout.workingFamilyThreadKeys,
       moveAvailability: threadMoveAvailability,
       shelfPreferencesLoading: !shelfPreferencesLoaded,
     });
@@ -696,6 +697,7 @@ function ThreadNavigationSidebarPane(
               thread={thread}
               variant={item.item.variant}
               hasQueuedMessages={item.hasQueuedMessages}
+              familyWorking={item.familyWorking}
               snoozed={item.item.snoozed}
               pinned={item.item.pinned}
               snoozePresetMinute={item.snoozePresetMinute ?? ""}

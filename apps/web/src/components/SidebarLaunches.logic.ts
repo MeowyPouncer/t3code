@@ -371,7 +371,8 @@ export type SidebarMoveReason =
   | "plan"
   | "finished"
   | "launcher-busy"
-  | "launcher-finished";
+  | "launcher-finished"
+  | "family";
 
 export interface SidebarMoveState {
   readonly kind: SidebarMoveKind;
@@ -414,9 +415,18 @@ export function resolveSidebarMoveState(input: {
   readonly goalActive: boolean;
   /** The thread that launched this one; null for top-level threads. */
   readonly launcher: SidebarMoveLauncher | null;
+  /** Titles of the threads working for this one when that, not its own turn, keeps it working. */
+  readonly workingFamily?: readonly string[];
 }): SidebarMoveState | null {
   switch (input.status) {
     case "working":
+      if (input.workingFamily !== undefined && input.workingFamily.length > 0) {
+        return {
+          kind: "working",
+          reason: "family",
+          tooltip: sidebarWorkingFamilyTooltip(input.workingFamily),
+        };
+      }
       return input.goalActive
         ? { kind: "working", reason: "goal", tooltip: "Working toward its /goal" }
         : { kind: "working", reason: "running", tooltip: "Running a turn" };
@@ -459,6 +469,29 @@ export function resolveSidebarMoveState(input: {
         ? `Finished its turn. ${launcherTitle} stopped too`
         : `Finished its turn. ${launcherTitle} has finished too`,
   };
+}
+
+/**
+ * FORK: a thread whose own turn ended reads as working while threads working
+ * for it (its subagents and the threads it launched) still do. Waiting on its
+ * own background work turns into working too; a thread that needs the user,
+ * failed or hit a limit keeps its own state.
+ */
+export function resolveSidebarFamilyStatus(
+  status: SidebarThreadStatus,
+  familyWorking: boolean,
+): SidebarThreadStatus {
+  return familyWorking && (status === "ready" || status === "waiting") ? "working" : status;
+}
+
+/** FORK: who a thread waits on while its own turn is over, for the pill's hover card. */
+export function sidebarWorkingFamilyTooltip(titles: readonly string[]): string {
+  const named = titles
+    .slice(0, 3)
+    .map((title) => `«${title}»`)
+    .join(", ");
+  const more = titles.length > 3 ? ` and ${titles.length - 3} more` : "";
+  return `Its subagents and writers are working: ${named}${more}`;
 }
 
 // ── The parent row: child count and the most urgent child state ─────

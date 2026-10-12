@@ -32,7 +32,10 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
-import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
+import {
+  createInboxReturnTracker,
+  workingFamilyByThread,
+} from "@t3tools/client-runtime/state/thread-inbox";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import {
   resolveSettledThreadTimestamp,
@@ -243,6 +246,7 @@ import {
   isSidebarMoveUnread,
   liftSidebarMoveState,
   nestSidebarLaunchedThreads,
+  resolveSidebarFamilyStatus,
   resolveSidebarLauncherKey,
   resolveSidebarMoveRecede,
   resolveSidebarMoveState,
@@ -1237,6 +1241,7 @@ function sidebarMovePill(move: SidebarMoveState): {
   switch (move.reason) {
     case "running":
     case "goal":
+    case "family":
       // No shimmer: a label that animates forever is noise in a sidebar
       // full of them (and repaints every vsync on high-refresh displays).
       return { label, icon: "working", className: "text-info" };
@@ -1339,6 +1344,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   launchGroup: SidebarLaunchGroupSummary | null;
   launchGroupExpanded: boolean;
   onToggleLaunchGroup: (threadKey: string) => void;
+  // FORK: the threads at work for this one (its subagents and the threads it
+  // launched); while any is, a thread whose own turn ended reads as working.
+  workingFamily: readonly EnvironmentThreadShell[];
 }) {
   const {
     isRenaming,
@@ -1427,7 +1435,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Same semantics as the legacy sidebar (never-visited counts as read):
   // switching sidebars must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  const ownStatus = resolveSidebarThreadStatus(thread);
+  const status = resolveSidebarFamilyStatus(ownStatus, props.workingFamily.length > 0);
   const isInFlight =
     status === "working" || status === "waiting" || status === "approval" || status === "input";
   // A woken thread reappears at its original position (the sort is
@@ -1465,6 +1474,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           hasPlanPrompt: hasSidebarPlanPrompt(thread),
           goalActive: thread.goal?.status === "active",
           launcher,
+          ...(status === ownStatus
+            ? {}
+            : { workingFamily: props.workingFamily.map((member) => member.title) }),
         }),
         props.launchGroup,
       );
@@ -2628,10 +2640,27 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   );
 });
 
+// FORK: one empty family for every row with none, so memoized rows stay equal.
+const NO_WORKING_FAMILY: readonly EnvironmentThreadShell[] = [];
+
 export default function Sidebar() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  // FORK: the threads at work for each thread (its subagents and the threads it
+  // launched, hidden subagents included), keyed like the rows.
+  const workingFamilyByKey = useMemo(
+    () =>
+      workingFamilyByThread(
+        threads,
+        (thread) => {
+          const status = resolveSidebarThreadStatus(thread);
+          return status === "working" || status === "waiting";
+        },
+        (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      ),
+    [threads],
+  );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -3067,8 +3096,16 @@ export default function Sidebar() {
     const working: EnvironmentThreadShell[] = [];
     // Working beta: only inbox threads fold away. Pins stay where the user
     // put them, and snoozed or settled threads keep their shelves.
+    // FORK: a thread whose own turn ended folds away too while threads working
+    // for it still do, unless the user has a plan to review.
+    const familyKeepsWorking = (thread: EnvironmentThreadShell) =>
+      workingFamilyByKey.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) &&
+      resolveSidebarFamilyStatus(resolveSidebarThreadStatus(thread), true) === "working" &&
+      !hasSidebarPlanPrompt(thread);
     const inbox = (thread: EnvironmentThreadShell) =>
-      workingShelfEnabled && isSidebarThreadWorking(thread) ? working : active;
+      workingShelfEnabled && (isSidebarThreadWorking(thread) || familyKeepsWorking(thread))
+        ? working
+        : active;
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     const draggable = new Set<string>();
@@ -3182,6 +3219,7 @@ export default function Sidebar() {
     serverConfigs,
     snoozeWakeTick,
     threads,
+    workingFamilyByKey,
     workingShelfEnabled,
   ]);
 
@@ -3423,10 +3461,13 @@ export default function Sidebar() {
       if (thread.launchedByThreadId === undefined) continue;
       const launcherKey = resolveSidebarLauncherKey(thread, threadByKey);
       const launcher = launcherKey === null ? undefined : threadByKey.get(launcherKey);
-      if (launcher === undefined) continue;
+      if (launcherKey === null || launcher === undefined) continue;
       launcherByKey.set(threadKey, {
         title: launcher.title,
-        status: resolveSidebarThreadStatus(launcher),
+        status: resolveSidebarFamilyStatus(
+          resolveSidebarThreadStatus(launcher),
+          workingFamilyByKey.has(launcherKey),
+        ),
       });
     }
     for (const parentKey of launchForest.childKeysByParentKey.keys()) {
@@ -3440,7 +3481,10 @@ export default function Sidebar() {
         return [
           {
             title: child.title,
-            status: resolveSidebarThreadStatus(child),
+            status: resolveSidebarFamilyStatus(
+              resolveSidebarThreadStatus(child),
+              workingFamilyByKey.has(childKey),
+            ),
             isUnread: isSidebarMoveUnread({
               isUnread: hasUnseenCompletion({ ...child, lastVisitedAt }),
               isLaunched: true,
@@ -3457,7 +3501,7 @@ export default function Sidebar() {
       if (summary !== null) launchGroupByKey.set(parentKey, summary);
     }
     return { launcherByKey, launchGroupByKey };
-  }, [launchForest, threadLastVisitedAtById, threads]);
+  }, [launchForest, threadLastVisitedAtById, threads, workingFamilyByKey]);
 
   const orderedThreads = useMemo(() => {
     const roots = [
@@ -5799,6 +5843,7 @@ export default function Sidebar() {
                             launcherTitle={launcherByKey.get(threadKey)?.title ?? null}
                             launcherStatus={launcherByKey.get(threadKey)?.status ?? null}
                             launchGroup={launchGroupByKey.get(threadKey) ?? null}
+                            workingFamily={workingFamilyByKey.get(threadKey) ?? NO_WORKING_FAMILY}
                             launchGroupExpanded={isSidebarLaunchGroupExpanded({
                               parentKey: threadKey,
                               toggledKeys: launchGroupToggledKeys,

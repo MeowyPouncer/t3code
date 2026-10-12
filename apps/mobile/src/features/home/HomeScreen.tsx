@@ -690,6 +690,7 @@ export function HomeScreen(props: HomeScreenProps) {
         snoozeLabelNow: `${nowMinute}:00.000Z`,
         snoozeEnvironmentIds,
         queuedThreadKeys,
+        workingFamilyThreadKeys: threadListV2Layout.workingFamilyThreadKeys,
         moveAvailability: threadMoveAvailability,
         shelfPreferencesLoading: !shelfPreferencesLoaded,
       }),
@@ -778,6 +779,7 @@ export function HomeScreen(props: HomeScreenProps) {
           thread={thread}
           variant={item.item.variant}
           hasQueuedMessages={item.hasQueuedMessages}
+          familyWorking={item.familyWorking}
           snoozed={item.item.snoozed}
           pinned={item.item.pinned}
           snoozePresetMinute={item.snoozePresetMinute ?? ""}

@@ -2363,6 +2363,35 @@ describe("Working section beta", () => {
     expect(off.workingCount).toBe(0);
   });
 
+  // FORK: a thread whose own turn ended, while threads working for it still do.
+  it("folds a thread away while its subagents or launched threads work", () => {
+    const orchestrator = makeThread({ id: ThreadId.make("orchestrator"), title: "orchestrator" });
+    const review = makeThread({
+      id: ThreadId.make("review"),
+      title: "review",
+      runtime: running,
+      lineage: {
+        parentThreadId: ThreadId.make("orchestrator"),
+        relationshipToParent: "subagent",
+        rootThreadId: ThreadId.make("orchestrator"),
+      },
+    });
+    const writer = makeThread({
+      id: ThreadId.make("writer"),
+      title: "writer",
+      launchedByThreadId: ThreadId.make("orchestrator"),
+    });
+    const layout = build({ threads: [orchestrator, review, writer] });
+    expect(ids(layout)).toEqual(["writer"]);
+    expect(layout.workingCount).toBe(1);
+    expect([...layout.workingFamilyThreadKeys]).toEqual([
+      `${orchestrator.environmentId}:orchestrator`,
+    ]);
+    const idle = build({ threads: [orchestrator, { ...review, runtime: null }, writer] });
+    expect(idle.workingFamilyThreadKeys.size).toBe(0);
+    expect(ids(idle)).toContain("orchestrator");
+  });
+
   it("shows working rows as cards when expanded, or only the selected one when collapsed", () => {
     expect(build({ workingShelfExpanded: true }).items.at(-1)).toMatchObject({
       thread: { id: "working" },

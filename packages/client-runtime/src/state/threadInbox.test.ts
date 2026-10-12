@@ -1,7 +1,11 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createInboxReturnTracker, sortWorkingThreadsBySend } from "./threadInbox.ts";
+import {
+  createInboxReturnTracker,
+  sortWorkingThreadsBySend,
+  workingFamilyByThread,
+} from "./threadInbox.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -82,5 +86,71 @@ describe("sortWorkingThreadsBySend", () => {
     expect(
       sortWorkingThreadsBySend([launched, sentFirst, sentLast]).map((thread) => thread.id),
     ).toEqual(["sent-last", "sent-first", "launched"]);
+  });
+});
+
+// FORK: a parent reads as working while the threads working for it do.
+describe("workingFamilyByThread", () => {
+  const member = (
+    id: string,
+    working: boolean,
+    relation:
+      | { readonly kind: "top" }
+      | { readonly kind: "launched"; readonly by: string }
+      | { readonly kind: "subagent" | "fork"; readonly of: string },
+  ) => ({
+    id: ThreadId.make(id),
+    environmentId,
+    working,
+    lineage:
+      relation.kind === "subagent" || relation.kind === "fork"
+        ? {
+            parentThreadId: ThreadId.make(relation.of),
+            relationshipToParent: relation.kind,
+            rootThreadId: ThreadId.make(relation.of),
+          }
+        : { parentThreadId: null, relationshipToParent: null, rootThreadId: ThreadId.make(id) },
+    ...(relation.kind === "launched" ? { launchedByThreadId: ThreadId.make(relation.by) } : {}),
+  });
+  const keyOf = (thread: { readonly environmentId: string; readonly id: string }) =>
+    `${thread.environmentId}:${thread.id}`;
+  const family = (threads: ReadonlyArray<ReturnType<typeof member>>) => {
+    const byThread = workingFamilyByThread(threads, (thread) => thread.working, keyOf);
+    return Object.fromEntries(
+      [...byThread].map(([key, members]) => [key.split(":")[1], members.map((m) => m.id)]),
+    );
+  };
+
+  it("lists working subagents and launched threads under every ancestor", () => {
+    expect(
+      family([
+        member("orchestrator", false, { kind: "top" }),
+        member("writer", false, { kind: "launched", by: "orchestrator" }),
+        member("helper", true, { kind: "launched", by: "writer" }),
+        member("review", true, { kind: "subagent", of: "orchestrator" }),
+      ]),
+    ).toEqual({
+      writer: ["helper"],
+      orchestrator: ["helper", "review"],
+    });
+  });
+
+  it("leaves out finished children and forks", () => {
+    expect(
+      family([
+        member("orchestrator", false, { kind: "top" }),
+        member("writer", false, { kind: "launched", by: "orchestrator" }),
+        member("fork", true, { kind: "fork", of: "orchestrator" }),
+      ]),
+    ).toEqual({});
+  });
+
+  it("stops at a launch cycle", () => {
+    expect(
+      family([
+        member("a", true, { kind: "launched", by: "b" }),
+        member("b", false, { kind: "launched", by: "a" }),
+      ]),
+    ).toEqual({ b: ["a"] });
   });
 });
