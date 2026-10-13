@@ -3561,6 +3561,138 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  // FORK: the shelf keeps a finished thread to come back to.
+  it.effect("shelves a thread with its note and brings it back on a message", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-shelf-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-shelf-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-shelf-project"),
+        title: "Report schema research",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-shelf",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("runtime-layer-shelf-settle"),
+        threadId,
+      });
+
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-shelve"),
+        threadId,
+        note: "Schema of the report tables",
+      });
+      const shelved = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.isNotNull(shelved.shelvedAt ?? null);
+      assert.equal(shelved.shelfNote, "Schema of the report tables");
+      // The shelf is a place of its own: the thread is no longer settled.
+      assert.isNull(shelved.settledOverride);
+      assert.isNull(shelved.settledAt);
+
+      // Shelving it again without a note keeps the note; null clears it.
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-reshelve"),
+        threadId,
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.shelfNote,
+        "Schema of the report tables",
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-clear-note"),
+        threadId,
+        note: null,
+      });
+      assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.shelfNote);
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-renote"),
+        threadId,
+        note: "Come back for the indexes",
+      });
+
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-shelf-message"),
+        threadId,
+        messageId: MessageId.make("runtime-layer-shelf-message"),
+        text: "One more question about the indexes.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const back = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.isNull(back.shelvedAt ?? null);
+      assert.isNotNull(back.unsettledAt ?? null);
+      assert.equal(back.shelfNote, "Come back for the indexes");
+    }),
+  );
+
+  it.effect("shelving a thread settles the finished threads that worked for it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("runtime-layer-shelf-family-project");
+      const parent = ThreadId.make("runtime-layer-shelf-family-parent");
+      const writer = ThreadId.make("runtime-layer-shelf-family-writer");
+      const keptWriter = ThreadId.make("runtime-layer-shelf-family-kept-writer");
+      for (const [threadId, title, launchedByThreadId] of [
+        [parent, "Take card", undefined],
+        [writer, "Card writer", parent],
+        [keptWriter, "Second writer", parent],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: launchedByThreadId === undefined ? "user" : "agent",
+          creationSource: launchedByThreadId === undefined ? "web" : "mcp",
+          commandId: CommandId.make(`runtime-layer-shelf-family-create-${threadId}`),
+          threadId,
+          projectId,
+          title,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          ...(launchedByThreadId === undefined ? {} : { launchedByThreadId }),
+        });
+      }
+      // A thread the user shelved stays on the shelf when its launcher settles or shelves.
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-family-keep"),
+        threadId: keptWriter,
+      });
+
+      yield* orchestrator.dispatch({
+        type: "thread.shelve",
+        commandId: CommandId.make("runtime-layer-shelf-family-shelve"),
+        threadId: parent,
+      });
+
+      assert.isNotNull((yield* orchestrator.getThreadProjection(parent)).thread.shelvedAt ?? null);
+      const settledWriter = (yield* orchestrator.getThreadProjection(writer)).thread;
+      assert.equal(settledWriter.settledOverride, "settled");
+      assert.isNull(settledWriter.shelvedAt ?? null);
+      const kept = (yield* orchestrator.getThreadProjection(keptWriter)).thread;
+      assert.isNotNull(kept.shelvedAt ?? null);
+      assert.isNull(kept.settledOverride);
+    }),
+  );
+
   it.effect("settles a thread its own agent settled once the turn completes", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

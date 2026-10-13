@@ -10,6 +10,7 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
+import { requestShelfNote } from "./ShelfNoteDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
@@ -79,6 +80,7 @@ import {
   EyeIcon,
   FolderIcon,
   GitBranchIcon,
+  LibraryIcon,
   ListChecksIcon,
   ListFilterIcon,
   MessageCircleQuestionIcon,
@@ -336,6 +338,8 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
+// FORK: the Shelf, collapsed until the user opens it.
+const SHELVED_SHELF_EXPANDED_KEY = "t3code:sidebar:shelf-expanded";
 // FORK (T3MIG-FORK-013): launch groups the user toggled away from the default.
 const LAUNCH_GROUP_TOGGLES_KEY = "t3code:sidebar:launch-group-toggles";
 const LAUNCH_GROUP_TOGGLES_SCHEMA = Schema.Array(Schema.String);
@@ -381,6 +385,13 @@ function threadTimeLabel(thread: SidebarThreadSummary): string {
 function settledTimeLabel(thread: SidebarThreadSummary): string {
   const timestamp = resolveSettledThreadTimestamp(thread);
   return timestamp === null ? "" : compactSidebarTimeLabel(formatRelativeTimeLabel(timestamp));
+}
+
+// FORK: shelved rows read how long they have been on the shelf, their sort key.
+function shelvedTimeLabel(thread: SidebarThreadSummary): string {
+  return thread.shelvedAt === null
+    ? ""
+    : compactSidebarTimeLabel(formatRelativeTimeLabel(thread.shelvedAt));
 }
 
 // Floats at the row's right edge, vertically centered, while the jump
@@ -521,6 +532,15 @@ function SidebarThreadTooltip({
           ) : null
         }
       >
+        {/* FORK: why the user put the thread on the shelf. */}
+        {thread.shelfNote ? (
+          <div className="flex min-w-0 items-start gap-2">
+            <LibraryIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-muted-foreground" />
+            <div className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word leading-5 text-foreground/75">
+              {thread.shelfNote}
+            </div>
+          </div>
+        ) : null}
         {move ? (
           <div className="flex min-w-0 items-start gap-2">
             <CircleDashedIcon
@@ -858,7 +878,7 @@ function SidebarDragBoundary(props: {
 
 // Shelf headers stay visible and keep their measured height while dragging.
 function SidebarSectionHeader(props: {
-  marker: "working-header" | "snoozed-header" | "settled-header";
+  marker: "working-header" | "snoozed-header" | "shelved-header" | "settled-header";
   label: string;
   className?: string;
   // While dragging, the settled header reads at full strength and takes the
@@ -872,7 +892,9 @@ function SidebarSectionHeader(props: {
       ? "working"
       : props.marker === "snoozed-header"
         ? "snoozed"
-        : "settled";
+        : props.marker === "shelved-header"
+          ? "shelved"
+          : "settled";
   const snoozed = shelf === "snoozed";
   return (
     <SortableSidebarMarker
@@ -1266,13 +1288,16 @@ function sidebarMovePill(move: SidebarMoveState): {
 const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   thread: SidebarThreadSummary;
   variant: "card" | "slim";
-  // Settled rows un-settle, snoozed rows wake, and cards settle.
-  variantAction: SidebarSweepAction;
+  // Settled rows un-settle, snoozed rows wake, shelved rows leave the shelf,
+  // and cards settle.
+  variantAction: SidebarSweepAction | "unshelve";
   // False on environments whose server predates thread.settle/unsettle:
   // the lifecycle affordances hide entirely rather than fail on click.
   settlementSupported: boolean;
   // Same contract for thread.snooze/unsnooze.
   snoozeSupported: boolean;
+  // FORK: same contract for thread.shelve/unshelve.
+  shelfSupported: boolean;
   // Renders the pin glyph. Pinned cards keep the full settle/snooze quick
   // actions: settling clears the pin server-side, and snoozing hides the
   // card until wake with the pin intact underneath. The glyph is also the
@@ -1327,6 +1352,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
+  onUnshelve: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
@@ -1366,6 +1392,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     onThreadClick,
     onUnsettle,
     onUnsnooze,
+    onUnshelve,
     onUnpin,
     openPullRequestsInRightPanel,
     renamingTitle,
@@ -1689,7 +1716,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   );
   const handleActionPointerDown = useCallback(
     (event: ReactPointerEvent) => {
-      if (!event.isPrimary || event.button !== 0) return;
+      // FORK: the shelf's button takes one thread off at a time.
+      if (!event.isPrimary || event.button !== 0 || variantAction === "unshelve") return;
       // Action buttons sweep their section rather than picking up the row.
       event.stopPropagation();
       onActionSweepStart(threadRef, variantAction, event.nativeEvent);
@@ -1711,6 +1739,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       onUnsnooze(threadRef);
     },
     [onUnsnooze, threadRef],
+  );
+  const handleUnshelveClick = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onUnshelve(threadRef);
+    },
+    [onUnshelve, threadRef],
   );
   const handleUnpinClick = useCallback(
     (event: ReactMouseEvent) => {
@@ -1774,7 +1810,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // content; surface is reserved for interaction (hover, multi-select, route).
   const rowSurfaceClassName = cn(
     "group/sidebar-row relative w-full cursor-pointer overflow-hidden rounded-md text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-    variantAction === "unsettle" && "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
+    (variantAction === "unsettle" || variantAction === "unshelve") &&
+      "[&:not(:hover):not(:focus-within)_*]:text-secondary-label/70",
     props.isActive
       ? "bg-sidebar-row-active text-sidebar-foreground"
       : isSelected || props.sweepAction !== null
@@ -2106,11 +2143,34 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                     <span className="text-xs">
                       {variantAction === "unsettle"
                         ? settledTimeLabel(thread)
-                        : threadTimeLabel(thread)}
+                        : variantAction === "unshelve"
+                          ? shelvedTimeLabel(thread)
+                          : threadTimeLabel(thread)}
                     </span>
                   )}
                 </span>
-                {variantAction === "unsnooze" ? (
+                {variantAction === "unshelve" ? (
+                  !props.shelfSupported ? null : (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            aria-label="Take off shelf"
+                            onClick={handleUnshelveClick}
+                            className={cn(
+                              "pointer-events-none absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100",
+                              isWoke && "group-any-hover/sidebar-row:static",
+                            )}
+                          />
+                        }
+                      >
+                        <Undo2Icon className="mb-px size-3.5" />
+                      </TooltipTrigger>
+                      <TooltipPopup side="top">Take off shelf</TooltipPopup>
+                    </Tooltip>
+                  )
+                ) : variantAction === "unsnooze" ? (
                   !props.snoozeSupported ? null : (
                     <button
                       type="button"
@@ -2675,6 +2735,8 @@ export default function Sidebar() {
     unsettleThread,
     snoozeThread,
     unsnoozeThread,
+    shelveThread,
+    unshelveThread,
     pinThread,
     unpinThread,
     confirmAndUnpinThread,
@@ -3075,6 +3137,7 @@ export default function Sidebar() {
     activeThreads,
     workingThreads,
     snoozedThreads,
+    shelvedThreads,
     settledThreads,
     snoozeNow,
     launchForest,
@@ -3107,6 +3170,7 @@ export default function Sidebar() {
         ? working
         : active;
     const snoozed: EnvironmentThreadShell[] = [];
+    const shelved: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
     const draggable = new Set<string>();
     const activeReorderable = new Set<string>();
@@ -3118,6 +3182,7 @@ export default function Sidebar() {
       // strand rows in a tail with no working affordances.
       const supportsSettlement = capabilities?.threadSettlement === true;
       const supportsSnooze = capabilities?.threadSnooze === true;
+      const supportsShelf = capabilities?.threadShelf === true;
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       if (capabilities?.threadActiveReorder === true) activeReorderable.add(threadKey);
       // Older servers retain their existing drag actions. Active placement
@@ -3145,23 +3210,26 @@ export default function Sidebar() {
       } else {
         const section = resolveSidebarThreadSection({
           snoozed: supportsSnooze && effectiveSnoozed(thread, { now: preciseNow }),
+          shelved: supportsShelf && thread.shelvedAt != null,
           settled: supportsSettlement && thread.settledOverride === "settled",
           pinned: thread.pinnedAt != null,
         });
         (section === "snoozed"
           ? snoozed
-          : section === "settled"
-            ? settled
-            : section === "pinned"
-              ? pinned
-              : inbox(thread)
+          : section === "shelved"
+            ? shelved
+            : section === "settled"
+              ? settled
+              : section === "pinned"
+                ? pinned
+                : inbox(thread)
         ).push(thread);
       }
     }
     // FORK (T3MIG-FORK-013): launched threads leave the sections, which keep
     // the rows drag and drop arranges, and render under their launcher.
     const launches = nestSidebarLaunchedThreads({
-      sections: { pinned, active, working, snoozed, settled },
+      sections: { pinned, active, working, snoozed, shelved, settled },
       threadByKey: new Map(
         threads.map(
           (thread) =>
@@ -3206,6 +3274,11 @@ export default function Sidebar() {
           firstValidTimestampMs(left.snoozedUntil ?? null) -
           firstValidTimestampMs(right.snoozedUntil ?? null),
       ),
+      // FORK: the latest shelved first.
+      shelvedThreads: launches.sections.shelved.toSorted(
+        (left, right) =>
+          firstValidTimestampMs(right.shelvedAt) - firstValidTimestampMs(left.shelvedAt),
+      ),
       settledThreads: sortSettledThreads(launches.sections.settled),
       snoozeNow: preciseNow,
       launchForest: launches.forest,
@@ -3233,6 +3306,7 @@ export default function Sidebar() {
       ...activeThreads,
       ...workingThreads,
       ...snoozedThreads,
+      ...shelvedThreads,
       ...settledThreads,
       ...nestedThreadByKey.values(),
     ],
@@ -3241,6 +3315,7 @@ export default function Sidebar() {
       nestedThreadByKey,
       pinnedThreads,
       settledThreads,
+      shelvedThreads,
       snoozedThreads,
       workingThreads,
     ],
@@ -3380,6 +3455,26 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeShelfThreadKey, snoozedShelfExpanded, snoozedThreads]);
 
+  // FORK: the Shelf collapses the same way, with the same route exception.
+  const [shelvedShelfExpanded, setShelvedShelfExpanded] = useLocalStorage(
+    SHELVED_SHELF_EXPANDED_KEY,
+    false,
+    Schema.Boolean,
+  );
+  const toggleShelvedShelf = useCallback(
+    () => setShelvedShelfExpanded((value) => !value),
+    [setShelvedShelfExpanded],
+  );
+  const visibleShelvedThreads = useMemo(() => {
+    if (shelvedShelfExpanded) return shelvedThreads;
+    if (routeShelfThreadKey === null) return EMPTY_THREADS;
+    const routeThread = shelvedThreads.find(
+      (thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeShelfThreadKey,
+    );
+    return routeThread === undefined ? EMPTY_THREADS : [routeThread];
+  }, [routeShelfThreadKey, shelvedShelfExpanded, shelvedThreads]);
+
   // The Working shelf (beta) collapses the same way, with the same route
   // exception: sending a message folds the open thread into the shelf, and
   // its row must stay visible there.
@@ -3509,6 +3604,7 @@ export default function Sidebar() {
       ...activeThreads,
       ...visibleWorkingThreads,
       ...visibleSnoozedThreads,
+      ...visibleShelvedThreads,
       ...renderedSettledThreads,
     ];
     // FORK (T3MIG-FORK-013): nested rows follow their group's root.
@@ -3524,6 +3620,7 @@ export default function Sidebar() {
     activeThreads,
     visibleWorkingThreads,
     visibleSnoozedThreads,
+    visibleShelvedThreads,
     renderedSettledThreads,
     launchRowsByRootKey,
   ]);
@@ -3897,6 +3994,24 @@ export default function Sidebar() {
     },
     [unsnoozeThread],
   );
+  const attemptUnshelve = useCallback(
+    (threadRef: ScopedThreadRef) => {
+      void (async () => {
+        const result = await unshelveThread(threadRef);
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to take thread off shelf",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+      })();
+    },
+    [unshelveThread],
+  );
   const threadListRef = useRef<HTMLUListElement | null>(null);
   const dragLabelOffsetRef = useRef(0);
   const restrictBelowPins = useCallback<Modifier>(
@@ -4005,6 +4120,7 @@ export default function Sidebar() {
     add(activeThreads, "active");
     add(workingThreads, "working");
     add(snoozedThreads, "snoozed");
+    add(shelvedThreads, "shelved");
     add(settledThreads, "settled");
     // FORK (T3MIG-FORK-013): nested rows sweep with the rows of their own section.
     for (const [key, section] of nestedSectionByKey) map.set(key, section);
@@ -4014,6 +4130,7 @@ export default function Sidebar() {
     nestedSectionByKey,
     pinnedThreads,
     settledThreads,
+    shelvedThreads,
     snoozedThreads,
     workingThreads,
   ]);
@@ -4117,11 +4234,13 @@ export default function Sidebar() {
     }
     const canonicalSection = effectiveSnoozed(thread, { now: new Date().toISOString() })
       ? "snoozed"
-      : thread.settledOverride === "settled"
-        ? "settled"
-        : thread.pinnedAt != null
-          ? "pinned"
-          : "active";
+      : thread.shelvedAt != null
+        ? "shelved"
+        : thread.settledOverride === "settled"
+          ? "settled"
+          : thread.pinnedAt != null
+            ? "pinned"
+            : "active";
     if (
       canonicalSection !== optimisticDrop.sourceSection &&
       canonicalSection !== optimisticDrop.section
@@ -4258,6 +4377,7 @@ export default function Sidebar() {
         activeThreads.length +
         workingThreads.length +
         snoozedThreads.length +
+        shelvedThreads.length +
         settledThreads.length ===
       0
     ) {
@@ -4278,6 +4398,10 @@ export default function Sidebar() {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
     }
+    if (shelvedThreads.length > 0) {
+      items.push({ kind: "marker", marker: "shelved-header" });
+      items.push(...rowsOf(visibleShelvedThreads, "shelved"));
+    }
     items.push({ kind: "marker", marker: "settled-header" });
     const settledRows = rowsOf(renderedSettledThreads, "settled");
     items.push({ kind: "marker", marker: "settled-placeholder" });
@@ -4288,7 +4412,9 @@ export default function Sidebar() {
     pinnedThreads,
     renderedSettledThreads,
     settledThreads.length,
+    shelvedThreads.length,
     snoozedThreads.length,
+    visibleShelvedThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     workingThreads.length,
@@ -5060,6 +5186,8 @@ export default function Sidebar() {
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadSnooze === true;
         const supportsPinning =
           serverConfigs.get(thread.environmentId)?.environment.capabilities.threadPinning === true;
+        const supportsShelf =
+          serverConfigs.get(thread.environmentId)?.environment.capabilities.threadShelf === true;
         const supportsAutoSettleOptOut =
           serverConfigs.get(thread.environmentId)?.environment.capabilities
             .threadAutoSettleOptOut === true;
@@ -5099,6 +5227,7 @@ export default function Sidebar() {
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+              isShelved: supportsShelf && thread.shelvedAt != null,
               isRegeneratingTitle,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
               supports: {
@@ -5106,6 +5235,7 @@ export default function Sidebar() {
                 autoSettleOptOut: supportsAutoSettleOptOut,
                 snooze: supportsSnooze,
                 pinning: supportsPinning,
+                shelf: supportsShelf,
                 titleRegeneration: supportsTitleRegeneration,
               },
               snoozePresets,
@@ -5173,6 +5303,31 @@ export default function Sidebar() {
             return;
           case "unsnooze":
             attemptUnsnooze(threadRef);
+            return;
+          case "shelve":
+          case "edit-shelf-note": {
+            const shelving = clicked.value === "shelve";
+            const choice = await requestShelfNote({
+              mode: shelving ? "shelve" : "edit",
+              threadTitle: thread.title,
+              note: thread.shelfNote,
+            });
+            if (!choice) return;
+            const result = await shelveThread(threadRef, choice.note);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: shelving ? "Failed to shelve thread" : "Failed to save shelf note",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "unshelve":
+            attemptUnshelve(threadRef);
             return;
           case "pin":
             attemptPin(threadRef);
@@ -5310,6 +5465,7 @@ export default function Sidebar() {
       attemptSnooze,
       attemptUnpin,
       attemptUnsettle,
+      attemptUnshelve,
       attemptUnsnooze,
       confirmThreadArchive,
       confirmThreadDelete,
@@ -5325,6 +5481,7 @@ export default function Sidebar() {
       serverConfigs,
       setProjectScopeKey,
       setThreadAutoSettle,
+      shelveThread,
       startThreadRename,
       updateThreadMetadata,
       timestampFormat,
@@ -5746,13 +5903,16 @@ export default function Sidebar() {
                             key={`${threadKey}:${rowVariant}`}
                             thread={thread}
                             variant={rowVariant}
-                            // Snoozed rows wake, settled rows un-settle, and cards settle.
+                            // Snoozed rows wake, shelved rows leave the shelf, settled
+                            // rows un-settle, and cards settle.
                             variantAction={
                               section === "snoozed"
                                 ? "unsnooze"
-                                : section === "settled"
-                                  ? "unsettle"
-                                  : "settle"
+                                : section === "shelved"
+                                  ? "unshelve"
+                                  : section === "settled"
+                                    ? "unsettle"
+                                    : "settle"
                             }
                             settlementSupported={
                               serverConfigs.get(thread.environmentId)?.environment.capabilities
@@ -5761,6 +5921,10 @@ export default function Sidebar() {
                             snoozeSupported={
                               serverConfigs.get(thread.environmentId)?.environment.capabilities
                                 .threadSnooze === true
+                            }
+                            shelfSupported={
+                              serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                .threadShelf === true
                             }
                             pinningSupported={
                               serverConfigs.get(thread.environmentId)?.environment.capabilities
@@ -5832,6 +5996,7 @@ export default function Sidebar() {
                             onUnsettle={attemptUnsettle}
                             onSnooze={attemptSnooze}
                             onUnsnooze={attemptUnsnooze}
+                            onUnshelve={attemptUnshelve}
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
@@ -5869,6 +6034,7 @@ export default function Sidebar() {
                             disabled={
                               renamingThreadKey === threadKey ||
                               section === "working" ||
+                              section === "shelved" ||
                               !draggableThreadKeys.has(threadKey) ||
                               optimisticDrop !== null
                             }
@@ -5979,13 +6145,36 @@ export default function Sidebar() {
                               />,
                             );
                             break;
+                          case "shelved-header":
+                            items.push(
+                              <SidebarSectionHeader
+                                key="shelved-shelf-header"
+                                marker="shelved-header"
+                                className={cn(
+                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
+                                )}
+                                label={
+                                  shelvedShelfExpanded
+                                    ? "Shelf"
+                                    : `Shelf (${shelvedThreads.length})`
+                                }
+                                toggle={{
+                                  expanded: shelvedShelfExpanded,
+                                  onToggle: toggleShelvedShelf,
+                                }}
+                              />,
+                            );
+                            break;
                           case "settled-header":
                             items.push(
                               <SidebarSectionHeader
                                 key="settled-shelf-header"
                                 marker="settled-header"
                                 className={cn(
-                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
+                                  workingThreads.length +
+                                    snoozedThreads.length +
+                                    shelvedThreads.length ===
+                                    0 && "mt-auto",
                                 )}
                                 label={
                                   settledShelfExpanded
@@ -6046,6 +6235,7 @@ export default function Sidebar() {
             activeThreads.length +
             workingThreads.length +
             snoozedThreads.length +
+            shelvedThreads.length +
             settledThreads.length ===
             0 ? (
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">

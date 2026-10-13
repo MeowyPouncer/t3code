@@ -1272,6 +1272,126 @@ describe("buildThreadListV2ListItems", () => {
   });
 });
 
+describe("the Shelf", () => {
+  const shelvedThreads = [
+    makeThread({ id: ThreadId.make("active"), title: "Active" }),
+    makeThread({
+      id: ThreadId.make("older"),
+      title: "Older",
+      shelvedAt: "2026-05-20T00:00:00.000Z",
+      shelfNote: "Benchmarks of the fan-out",
+    }),
+    makeThread({
+      id: ThreadId.make("newer"),
+      title: "Newer",
+      shelvedAt: "2026-06-01T00:00:00.000Z",
+    }),
+    makeThread({
+      id: ThreadId.make("settled"),
+      title: "Settled",
+      settledOverride: "settled",
+      settledAt: NOW,
+    }),
+  ];
+
+  it("lists shelved threads between the inbox and settled, latest shelved first", () => {
+    const layout = buildThreadListV2Items({
+      threads: shelvedThreads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      shelvedShelfExpanded: true,
+    });
+
+    expect(layout.items.map((item) => [item.thread.id, item.shelved === true])).toEqual([
+      ["active", false],
+      ["newer", true],
+      ["older", true],
+      ["settled", false],
+    ]);
+    expect(layout.shelvedCount).toBe(2);
+    expect(layout.shelvedShelfHeaderIndex).toBe(1);
+    const items = buildThreadListV2ListItems({
+      items: layout.items,
+      pendingTasks: [],
+      shelvedCount: layout.shelvedCount,
+      shelvedShelfExpanded: true,
+      shelvedShelfHeaderIndex: layout.shelvedShelfHeaderIndex,
+      settledCount: layout.settledCount,
+      settledShelfHeaderIndex: layout.settledShelfHeaderIndex,
+    });
+    expect(items.map((item) => item.type)).toEqual([
+      "v2-thread",
+      "v2-shelved-shelf",
+      "v2-thread",
+      "v2-thread",
+      "v2-settled-shelf",
+      "v2-thread",
+    ]);
+  });
+
+  it("collapses by default but keeps the open thread, and finds a thread by its note", () => {
+    const collapsed = buildThreadListV2Items({
+      threads: shelvedThreads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      selectedThreadKey: `${environmentId}:older`,
+    });
+    expect(collapsed.items.map((item) => item.thread.id)).toEqual(["active", "older", "settled"]);
+    expect(collapsed.shelvedCount).toBe(2);
+
+    const searched = buildThreadListV2Items({
+      threads: shelvedThreads,
+      environmentId: null,
+      searchQuery: "fan-out",
+      now: NOW,
+      shelvedShelfExpanded: true,
+    });
+    expect(searched.items.map((item) => item.thread.id)).toEqual(["older"]);
+  });
+
+  it("keeps a thread with a queued message, or on a server without the shelf, out of it", () => {
+    const layout = buildThreadListV2Items({
+      threads: shelvedThreads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      shelvedShelfExpanded: true,
+      queuedThreadKeys: new Set([`${environmentId}:newer`]),
+    });
+    expect(layout.items.find((item) => item.thread.id === "newer")?.shelved).not.toBe(true);
+    expect(layout.shelvedCount).toBe(1);
+
+    const unsupported = buildThreadListV2Items({
+      threads: shelvedThreads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      shelfEnvironmentIds: new Set(),
+    });
+    expect(unsupported.shelvedCount).toBe(0);
+  });
+
+  it("leaves the arrangeable sections and offers Take off on a swipe", () => {
+    const active = getThreadListV2OrderedSection({
+      threads: shelvedThreads,
+      section: "active",
+      now: NOW,
+    });
+    expect(active.map((thread) => thread.id)).toEqual(["active"]);
+    expect(
+      resolveThreadListV2SwipeActions({
+        variant: "slim",
+        settlementSupported: true,
+        snoozeSupported: true,
+        snoozable: true,
+        shelved: true,
+      }),
+    ).toEqual({ primary: "unshelve", secondary: null });
+  });
+});
+
 describe("pending mobile thread moves", () => {
   function fixture(section: "active" | "pinned" = "active") {
     const rows = ["a", "b", "c"].map((id, index) =>

@@ -1068,6 +1068,14 @@ describe("searchSidebarThreads", () => {
       threads[2],
     ]);
   });
+
+  it("finds a shelved thread by the note it was shelved with", () => {
+    const shelved = {
+      ...searchThread("thread-4", "Spike", "Gamma"),
+      shelfNote: "Benchmarks of the WebSocket fan-out",
+    };
+    expect(searchSidebarThreads([...threads, shelved], "fan-out")).toEqual([shelved]);
+  });
 });
 
 describe("filterSidebarProjectScopeItems", () => {

@@ -308,6 +308,7 @@ import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
   AlarmClockIcon,
   CheckCircle2Icon,
+  LibraryIcon,
   MessageCircleIcon,
   PaperclipIcon,
   ChevronDownIcon,
@@ -7349,6 +7350,42 @@ export default function ChatView(props: ChatViewProps) {
       setUnsnoozingThreadKey((current) => (current === threadKey ? null : current));
     }
   }, [activeThreadRef, activeThreadShell, unsnoozeThreadMutation, updateThreadMetadata]);
+  // FORK: the shelf, with the same thread-keyed pending state as Un-settle.
+  const activeThreadShelved =
+    serverConfig?.environment.capabilities.threadShelf === true &&
+    activeThreadShell?.shelvedAt != null;
+  const unshelveThreadMutation = useOrchestrationCommand(threadEnvironment.unshelve, {
+    reportFailure: false,
+  });
+  const [unshelvingThreadKey, setUnshelvingThreadKey] = useState<string | null>(null);
+  const isUnshelving = unshelvingThreadKey !== null && unshelvingThreadKey === activeThreadKey;
+  const handleUnshelveActiveThread = useCallback(async () => {
+    if (
+      !activeThreadRef ||
+      !readEnvironmentScope(activeThreadRef.environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
+    const threadKey = scopedThreadKey(activeThreadRef);
+    setUnshelvingThreadKey(threadKey);
+    try {
+      const result = await unshelveThreadMutation({
+        environmentId: activeThreadRef.environmentId,
+        input: { threadId: activeThreadRef.threadId },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to take thread off shelf",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    } finally {
+      setUnshelvingThreadKey((current) => (current === threadKey ? null : current));
+    }
+  }, [activeThreadRef, unshelveThreadMutation]);
   const [isRestoringThreadBranch, setIsRestoringThreadBranch] = useState(false);
   const [branchRestoreConfirmOpen, setBranchRestoreConfirmOpen] = useState(false);
   // Once revealed for a given mismatch, the banner stays mounted until the
@@ -7817,6 +7854,21 @@ export default function ChatView(props: ChatViewProps) {
         actionDisabled={!canOperateThread || isUnsnoozing}
         onAction={() => void handleUnsnoozeActiveThread()}
       />
+    ) : activeThreadShelved ? (
+      <ThreadStatusLine
+        icon={<LibraryIcon />}
+        label={[
+          activeThreadShell?.shelvedAt
+            ? `Shelved ${formatRelativeTimeLabel(activeThreadShell.shelvedAt)}`
+            : "Shelved",
+          activeThreadShell?.shelfNote,
+        ]
+          .filter(Boolean)
+          .join(": ")}
+        actionLabel={isUnshelving ? "Taking off..." : "Take off shelf"}
+        actionDisabled={!canOperateThread || isUnshelving}
+        onAction={() => void handleUnshelveActiveThread()}
+      />
     ) : activeThreadSettled ? (
       <ThreadStatusLine
         icon={<CheckCircle2Icon />}
@@ -7840,14 +7892,19 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     acknowledgeActiveThreadWoke,
     activeThreadSettled,
+    activeThreadShelved,
     activeThreadShell?.settledAt,
+    activeThreadShell?.shelfNote,
+    activeThreadShell?.shelvedAt,
     activeThreadShell?.snoozedUntil,
     activeThreadSnoozed,
     activeThreadWokeVisible,
     canOperateThread,
     handleUnsettleActiveThread,
+    handleUnshelveActiveThread,
     handleUnsnoozeActiveThread,
     isUnsettling,
+    isUnshelving,
     isUnsnoozing,
     nowMinute,
   ]);

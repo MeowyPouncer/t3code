@@ -115,6 +115,13 @@ export interface UnsnoozeThreadInput extends ThreadCommandInput {
   readonly reason: "user";
 }
 
+/** FORK: put a thread on the shelf; `note` omitted keeps its note, null clears it. */
+export interface ShelveThreadInput extends ThreadCommandInput {
+  readonly note?: string | null;
+}
+
+export type UnshelveThreadInput = ThreadCommandInput;
+
 export interface VisitThreadInput extends ThreadCommandInput {
   /** Watermark of the thread state the viewer has seen (ISO timestamp). */
   readonly visitedAt: string;
@@ -537,6 +544,27 @@ export const unsnoozeThread = Effect.fn("EnvironmentCommands.unsnoozeThread")(fu
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     reason: input.reason,
+  });
+});
+
+export const shelveThread = Effect.fn("EnvironmentCommands.shelveThread")(function* (
+  input: ShelveThreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.shelve",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    ...(input.note === undefined ? {} : { note: input.note }),
+  });
+});
+
+export const unshelveThread = Effect.fn("EnvironmentCommands.unshelveThread")(function* (
+  input: UnshelveThreadInput,
+) {
+  return yield* dispatch({
+    type: "thread.unshelve",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
   });
 });
 

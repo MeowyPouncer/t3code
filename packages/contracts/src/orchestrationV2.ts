@@ -362,6 +362,9 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
 
+/** FORK: why a thread sits on the shelf, as the user wrote it. */
+export const OrchestrationV2ShelfNote = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -414,6 +417,10 @@ export const OrchestrationV2AppThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   /** Manual wakes restart inactivity without changing the sidebar's sort position. */
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  /** FORK: when the user put the thread on the shelf to come back to; null off the shelf. */
+  shelvedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  /** FORK: why it is on the shelf. Kept when it leaves, so shelving it again starts from it. */
+  shelfNote: Schema.optional(Schema.NullOr(OrchestrationV2ShelfNote)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -1765,6 +1772,8 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.unsettled",
       "thread.snoozed",
       "thread.unsnoozed",
+      "thread.shelved",
+      "thread.unshelved",
       "thread.pinned",
       "thread.auto-settle-set",
       "thread.unpinned",
@@ -2020,6 +2029,9 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  /** FORK: omitted by servers without the shelf. */
+  shelvedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  shelfNote: Schema.optional(Schema.NullOr(OrchestrationV2ShelfNote)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   /** Omitted by servers that predate thread pinning. */
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2118,6 +2130,7 @@ export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  shelvedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtcFromString).pipe(
@@ -2543,6 +2556,7 @@ export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFiel
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  shelvedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   lastVisitedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -2596,6 +2610,8 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.unsettled",
       "thread.snoozed",
       "thread.unsnoozed",
+      "thread.shelved",
+      "thread.unshelved",
       "thread.pinned",
       "thread.auto-settle-set",
       "thread.unpinned",
@@ -2804,6 +2820,19 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     reason: Schema.Literal("user"),
+  }),
+  // FORK: the shelf keeps a finished thread to come back to; shelving it again edits the note.
+  Schema.Struct({
+    type: Schema.Literal("thread.shelve"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    /** Omitted keeps the note the thread has; null clears it. */
+    note: Schema.optional(Schema.NullOr(OrchestrationV2ShelfNote)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.unshelve"),
+    commandId: CommandId,
+    threadId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.auto-settle.set"),

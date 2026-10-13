@@ -85,7 +85,13 @@ export type ThreadListV2Status =
   | "failed"
   | "limited"
   | "ready";
-export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
+export type ThreadListV2SwipeAction =
+  | "archive"
+  | "settle"
+  | "unsettle"
+  | "snooze"
+  | "unsnooze"
+  | "unshelve";
 
 export function resolveThreadListV2SnoozeMenuSelection(input: {
   readonly event: string;
@@ -118,12 +124,17 @@ export function resolveThreadListV2SwipeActions(input: {
   readonly snoozable: boolean;
   /** Row is on the snoozed shelf. */
   readonly snoozed?: boolean;
+  /** FORK: row is on the Shelf. */
+  readonly shelved?: boolean;
 }): {
   readonly primary: Exclude<ThreadListV2SwipeAction, "snooze">;
   readonly secondary: "snooze" | null;
 } {
   if (input.snoozed === true) {
     return { primary: "unsnooze", secondary: null };
+  }
+  if (input.shelved === true) {
+    return { primary: "unshelve", secondary: null };
   }
   const primary = input.settlementSupported
     ? input.variant === "slim"
@@ -236,6 +247,8 @@ export function getThreadListV2OrderedSection(input: {
   readonly now: string;
   readonly settlementEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
+  /** FORK: environments whose server supports the shelf. */
+  readonly shelfEnvironmentIds?: ReadonlySet<EnvironmentId>;
   readonly queuedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
   // An empty set is treated as absent so `?.` skips building the key.
@@ -253,6 +266,13 @@ export function getThreadListV2OrderedSection(input: {
     if (
       (input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true) &&
       effectiveSnoozed(thread, { now: input.now })
+    ) {
+      return false;
+    }
+    if (
+      (input.shelfEnvironmentIds?.has(thread.environmentId) ?? true) &&
+      thread.shelvedAt != null &&
+      queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) !== true
     ) {
       return false;
     }
@@ -276,6 +296,8 @@ export interface ThreadListV2Item {
   readonly snoozed: boolean;
   /** Pinned-block row: renders the pin glyph and offers Unpin. */
   readonly pinned: boolean;
+  /** FORK: Shelf row: shows when it was shelved and offers Take off shelf. */
+  readonly shelved?: boolean;
   readonly isLast: boolean;
 }
 
@@ -292,6 +314,10 @@ export interface ThreadListV2Layout {
   /** Index in `items` where the Snoozed shelf header belongs. The header is
       still rendered when the shelf is collapsed and no snoozed rows exist. */
   readonly snoozedShelfHeaderIndex: number | null;
+  /** FORK: threads on the Shelf matching the current filters. */
+  readonly shelvedCount: number;
+  /** FORK: index in `items` where the Shelf header belongs. */
+  readonly shelvedShelfHeaderIndex: number | null;
   /** Total settled threads in scope, including rows hidden by collapse/paging. */
   readonly settledCount: number;
   /** Index in `items` where the Settled shelf header belongs. */
@@ -369,6 +395,16 @@ export interface ThreadListV2SnoozedShelfListItem {
   readonly disabled: boolean;
 }
 
+/** FORK: the Shelf's header. */
+export interface ThreadListV2ShelvedShelfListItem {
+  readonly type: "v2-shelved-shelf";
+  readonly key: "v2-shelved-shelf";
+  readonly count: number;
+  readonly expanded: boolean;
+  /** See the snoozed shelf header's field. */
+  readonly disabled: boolean;
+}
+
 export interface ThreadListV2SettledShelfListItem {
   readonly type: "v2-settled-shelf";
   readonly key: "v2-settled-shelf";
@@ -383,6 +419,7 @@ export type ThreadListV2ListItem =
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
+  | ThreadListV2ShelvedShelfListItem
   | ThreadListV2SettledShelfListItem;
 
 /** Narrows a wider list-item union (e.g. the sidebar's legacy + v2 mix) to
@@ -395,6 +432,7 @@ export function isThreadListV2ListItem(value: {
     value.type === "v2-pending" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
+    value.type === "v2-shelved-shelf" ||
     value.type === "v2-settled-shelf"
   );
 }
@@ -419,6 +457,7 @@ export function threadListV2ListItemsAreEqual(
         previous.item.variant === item.item.variant &&
         previous.item.snoozed === item.item.snoozed &&
         previous.item.pinned === item.item.pinned &&
+        previous.item.shelved === item.item.shelved &&
         previous.snoozeWakeLabelText === item.snoozeWakeLabelText &&
         previous.timeLabel === item.timeLabel &&
         previous.snoozePresetMinute === item.snoozePresetMinute &&
@@ -450,6 +489,13 @@ export function threadListV2ListItemsAreEqual(
         previous.expanded === item.expanded &&
         previous.disabled === item.disabled
       );
+    case "v2-shelved-shelf":
+      return (
+        previous.type === "v2-shelved-shelf" &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded &&
+        previous.disabled === item.disabled
+      );
     case "v2-settled-shelf":
       return (
         previous.type === "v2-settled-shelf" &&
@@ -461,15 +507,17 @@ export function threadListV2ListItemsAreEqual(
 }
 
 /** The timestamp a row renders when it shows no status label: the settle
-    stamp on settled slim rows, otherwise the latest activity. Blank for
-    status-labelled cards and snoozed rows with a wake countdown — those
-    never draw a time, so their minute tick must not invalidate the cell. */
+    stamp on settled slim rows, the shelving stamp on Shelf rows, otherwise
+    the latest activity. Blank for status-labelled cards and snoozed rows
+    with a wake countdown — those never draw a time, so their minute tick
+    must not invalidate the cell. */
 function resolveThreadListV2ItemTimeLabel(
   item: ThreadListV2Item,
   showSnoozeWakeLabel: boolean,
 ): string {
   const { thread, variant, snoozed } = item;
   if (showSnoozeWakeLabel) return "";
+  if (item.shelved === true && thread.shelvedAt != null) return relativeTime(thread.shelvedAt);
   if (
     variant === "card" &&
     (resolveThreadListV2Status(thread) !== "ready" || threadHasUnseenCompletion(thread))
@@ -484,9 +532,9 @@ function resolveThreadListV2ItemTimeLabel(
 
 /**
  * Builds the shared mobile order: active → pending → working shelf (beta) →
- * snoozed shelf → settled. Pending tasks are waiting rather than asking, and
- * busy or parked work remains reachable without competing with either the
- * inbox or settled history.
+ * snoozed shelf → Shelf → settled. Pending tasks are waiting rather than
+ * asking, and busy or parked work remains reachable without competing with
+ * either the inbox or settled history.
  */
 export function buildThreadListV2ListItems(input: {
   readonly items: ReadonlyArray<ThreadListV2Item>;
@@ -497,6 +545,9 @@ export function buildThreadListV2ListItems(input: {
   readonly snoozedCount?: number;
   readonly snoozedShelfExpanded?: boolean;
   readonly snoozedShelfHeaderIndex?: number | null;
+  readonly shelvedCount?: number;
+  readonly shelvedShelfExpanded?: boolean;
+  readonly shelvedShelfHeaderIndex?: number | null;
   readonly settledCount?: number;
   readonly settledShelfExpanded?: boolean;
   readonly settledShelfHeaderIndex?: number | null;
@@ -535,6 +586,7 @@ export function buildThreadListV2ListItems(input: {
     // so the gate follows actual snooze availability, not the variant.
     const snoozePresetMinute =
       !item.snoozed &&
+      item.shelved !== true &&
       input.snoozeLabelNow !== undefined &&
       (input.snoozeEnvironmentIds?.has(item.thread.environmentId) ?? true) &&
       canSnooze(item.thread, { now: input.snoozeLabelNow })
@@ -572,9 +624,12 @@ export function buildThreadListV2ListItems(input: {
   const workingShelfHeaderIndex = input.workingShelfHeaderIndex ?? null;
   const snoozedCount = input.snoozedCount ?? 0;
   const snoozedShelfHeaderIndex = input.snoozedShelfHeaderIndex ?? null;
+  const shelvedCount = input.shelvedCount ?? 0;
+  const shelvedShelfHeaderIndex = input.shelvedShelfHeaderIndex ?? null;
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
-  const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
+  const shelvedEnd = settledShelfHeaderIndex ?? threadItems.length;
+  const snoozedEnd = shelvedShelfHeaderIndex ?? shelvedEnd;
   const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const result: ThreadListV2ListItem[] = [...threadItems.slice(0, activeEnd), ...pendingItems];
@@ -598,6 +653,16 @@ export function buildThreadListV2ListItems(input: {
       disabled: shelfDisabled,
     });
     result.push(...threadItems.slice(snoozedShelfHeaderIndex, snoozedEnd));
+  }
+  if (shelvedShelfHeaderIndex !== null && shelvedCount > 0) {
+    result.push({
+      type: "v2-shelved-shelf",
+      key: "v2-shelved-shelf",
+      count: shelvedCount,
+      expanded: input.shelvedShelfExpanded === true,
+      disabled: shelfDisabled,
+    });
+    result.push(...threadItems.slice(shelvedShelfHeaderIndex, shelvedEnd));
   }
   if (settledShelfHeaderIndex !== null && settledCount > 0) {
     result.push({
@@ -669,6 +734,8 @@ export function buildThreadListV2Items(input: {
   /** Environments whose server supports thread.snooze/unsnooze. Same
       contract as settlementEnvironmentIds. */
   readonly snoozeEnvironmentIds?: ReadonlySet<EnvironmentId>;
+  /** FORK: environments whose server supports the shelf. Same contract. */
+  readonly shelfEnvironmentIds?: ReadonlySet<EnvironmentId>;
   /** Max settled rows to render; the rest are counted, not built. */
   readonly settledLimit?: number;
   /** Second-precise clock used for time-based classification. */
@@ -684,6 +751,8 @@ export function buildThreadListV2Items(input: {
   readonly inboxReturnAt?: (thread: EnvironmentThreadShell) => number | undefined;
   /** Expands the snoozed shelf into rows. Collapsed is the default. */
   readonly snoozedShelfExpanded?: boolean;
+  /** FORK: expands the Shelf into rows. Collapsed is the default. */
+  readonly shelvedShelfExpanded?: boolean;
   /** Expands the settled shelf into rows. Expanded is the default. */
   readonly settledShelfExpanded?: boolean;
   /** The selected thread remains visible on an otherwise collapsed shelf so
@@ -735,6 +804,7 @@ export function buildThreadListV2Items(input: {
   const working: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
+  const shelved: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
   // An empty set is treated as absent so `?.` skips building the key.
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
@@ -748,6 +818,8 @@ export function buildThreadListV2Items(input: {
     if (
       query.length > 0 &&
       !thread.title.toLocaleLowerCase().includes(query) &&
+      // FORK: the shelf note finds the thread too.
+      thread.shelfNote?.toLocaleLowerCase().includes(query) !== true &&
       !threadPullRequestSearchTerms(thread).some((term) =>
         term.toLocaleLowerCase().includes(query),
       ) &&
@@ -776,7 +848,14 @@ export function buildThreadListV2Items(input: {
     }
     const hasQueuedMessages =
       queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) === true;
-    if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
+    // FORK: a queued message is about to take the thread off the shelf.
+    if (
+      (input.shelfEnvironmentIds?.has(thread.environmentId) ?? true) &&
+      thread.shelvedAt != null &&
+      !hasQueuedMessages
+    ) {
+      shelved.push(thread);
+    } else if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
@@ -814,6 +893,17 @@ export function buildThreadListV2Items(input: {
     input.snoozedShelfExpanded === true
       ? orderedSnoozed
       : orderedSnoozed.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
+  // FORK: the latest shelved first.
+  const orderedShelved = [...shelved].sort(
+    (left, right) =>
+      parseTimestampMs(right.shelvedAt ?? "") - parseTimestampMs(left.shelvedAt ?? ""),
+  );
+  const visibleShelved =
+    input.shelvedShelfExpanded === true
+      ? orderedShelved
+      : orderedShelved.filter(
           (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
         );
   const orderedSettled = sortSettledThreadsReusingLast(settled);
@@ -878,6 +968,17 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
+  const shelvedShelfHeaderIndex = orderedShelved.length > 0 ? items.length : null;
+  for (const thread of visibleShelved) {
+    items.push({
+      thread,
+      variant: "slim",
+      snoozed: false,
+      pinned: false,
+      shelved: true,
+      isLast: false,
+    });
+  }
   const settledShelfHeaderIndex = orderedSettled.length > 0 ? items.length : null;
   for (const thread of visibleSettled) {
     items.push({
@@ -899,6 +1000,8 @@ export function buildThreadListV2Items(input: {
     workingShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,
     snoozedShelfHeaderIndex,
+    shelvedCount: orderedShelved.length,
+    shelvedShelfHeaderIndex,
     settledCount: orderedSettled.length,
     settledShelfHeaderIndex,
     workingFamilyThreadKeys,

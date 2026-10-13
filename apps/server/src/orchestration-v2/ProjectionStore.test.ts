@@ -3091,6 +3091,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       for (const [field, value] of [
         ["archivedAt", DateTime.formatIso(now)],
         ["settledOverride", "settled"],
+        ["shelvedAt", DateTime.formatIso(now)],
       ]) {
         yield* sql`UPDATE orchestration_v2_projection_threads
           SET payload_json = json_set(payload_json, ${`$.${field}`}, ${value})
