@@ -679,7 +679,8 @@ export function NightDialog(props: { readonly onClose: () => void }) {
             }
             onClose={props.onClose}
           />
-        ) : night.isPending && supported ? (
+        ) : supported && night.data === null && night.error === null ? (
+          // A live stream stays pending while it runs; only its first item ends the wait.
           <DialogPanel>
             <Spinner />
           </DialogPanel>
