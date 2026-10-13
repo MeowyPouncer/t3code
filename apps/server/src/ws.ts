@@ -2010,6 +2010,9 @@ const layerWsRpc = (
                               : { context: input.initialMessage.context }),
                           },
                         }),
+                    ...(input.instructions === undefined
+                      ? {}
+                      : { instructions: input.instructions }),
                     createdBy: "user",
                     creationSource: input.creationSource ?? "web",
                   }).pipe(Effect.provide(intakeContext)),

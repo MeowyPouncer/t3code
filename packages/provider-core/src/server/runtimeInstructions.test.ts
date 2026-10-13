@@ -29,6 +29,18 @@ describe("buildRuntimeInstructions", () => {
     ).toContain("through the Codex harness, as my-model.");
   });
 
+  it("ends with the thread's own instructions, when it has any", () => {
+    expect(
+      buildRuntimeInstructions({
+        harness: "Claude Code",
+        instructions: "  Orchestrate the cards.\n",
+      }),
+    ).toMatch(/\n\n<thread_instructions>\nOrchestrate the cards\.\n<\/thread_instructions>$/);
+    expect(buildRuntimeInstructions({ harness: "Claude Code", instructions: "  " })).not.toContain(
+      "<thread_instructions>",
+    );
+  });
+
   it.each([undefined, "", "auto", "default"])("omits unresolved model %s", (model) => {
     const instructions = buildRuntimeInstructions({ harness: "Cursor", model });
     expect(instructions).toContain("through the Cursor harness.");

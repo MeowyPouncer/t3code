@@ -365,6 +365,11 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 /** FORK: why a thread sits on the shelf, as the user wrote it. */
 export const OrchestrationV2ShelfNote = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
 
+/** FORK: extra system instructions a thread's agent gets on top of its provider's own. */
+export const OrchestrationV2ThreadInstructions = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(32_000),
+);
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -421,6 +426,11 @@ export const OrchestrationV2AppThread = Schema.Struct({
   shelvedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   /** FORK: why it is on the shelf. Kept when it leaves, so shelving it again starts from it. */
   shelfNote: Schema.optional(Schema.NullOr(OrchestrationV2ShelfNote)),
+  /**
+   * FORK: set when the thread is created, for example an orchestrator started
+   * from Tasks. Every adapter appends it to the system instructions it sends.
+   */
+  instructions: Schema.optional(Schema.NullOr(OrchestrationV2ThreadInstructions)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2758,6 +2768,8 @@ export const OrchestrationV2Command = Schema.Union([
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     /** FORK: the calling thread of t3_thread_launch / create_threads. */
     launchedByThreadId: Schema.optional(ThreadId),
+    /** FORK: the thread's extra system instructions. */
+    instructions: Schema.optional(OrchestrationV2ThreadInstructions),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -3359,6 +3371,8 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
       attachments: Schema.Array(ChatAttachment),
     }),
   ),
+  /** FORK: extra system instructions for the new thread's agent. */
+  instructions: Schema.optional(OrchestrationV2ThreadInstructions),
 });
 export type OrchestrationV2ThreadLaunchInput = typeof OrchestrationV2ThreadLaunchInput.Type;
 

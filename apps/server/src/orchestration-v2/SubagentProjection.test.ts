@@ -117,6 +117,26 @@ it("keeps a subagent child awake when its parent thread is snoozed", () => {
   });
 });
 
+it("keeps an orchestrator's system instructions off its subagents", () => {
+  const childThread = makeSubagentChildThread({
+    parentThread: {
+      ...makeParentThread(),
+      instructions: "Orchestrate the selected cards; do not implement them here.",
+    },
+    childThreadId,
+    parentNodeId: NodeId.make("node:subagent-orchestrator"),
+    activeProviderThreadId: null,
+    providerInstanceId: childProviderInstanceId,
+    modelSelection: childModelSelection,
+    title: "Reviewer",
+    now: childCreatedAt,
+    createdBy: "agent",
+    creationSource: "provider",
+  });
+
+  assert.isNull(childThread.instructions);
+});
+
 it("attributes native subagent prompts to their parent thread", () => {
   for (const role of ["user", "assistant"] as const) {
     const artifacts = makeSubagentConversationArtifacts({

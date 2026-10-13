@@ -3562,6 +3562,32 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
   );
 
   // FORK: the shelf keeps a finished thread to come back to.
+  it.effect("keeps the instructions a thread was created with", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-layer-instructions-thread");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-layer-instructions-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-layer-instructions-project"),
+        title: "Orchestrate HOME-1, HOME-2",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-instructions",
+        instructions: "Orchestrate the selected cards; do not implement them here.",
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.instructions,
+        "Orchestrate the selected cards; do not implement them here.",
+      );
+    }),
+  );
+
   it.effect("shelves a thread with its note and brings it back on a message", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

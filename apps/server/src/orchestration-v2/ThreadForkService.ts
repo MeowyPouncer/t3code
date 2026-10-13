@@ -109,6 +109,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          // FORK: a fork is new work, so it starts off the shelf.
+          shelvedAt: null,
+          shelfNote: null,
           lastVisitedAt: null,
           deletedAt: null,
         };

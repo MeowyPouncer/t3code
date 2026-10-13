@@ -9,7 +9,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ScrollTextIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -22,6 +22,7 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
@@ -48,6 +49,8 @@ interface ChatHeaderProps {
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
+  /** FORK: the thread's own system instructions, such as an orchestrator's from Tasks. */
+  threadInstructions?: string | null;
   onOpenThread: (threadId: ThreadId) => void;
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
@@ -82,6 +85,7 @@ export const ChatHeader = memo(function ChatHeader({
   isServerThread,
   activeProject,
   parentThreadLink,
+  threadInstructions = null,
   onOpenThread,
   rightPanelOpen,
   onNewThreadInProject,
@@ -434,6 +438,29 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          {threadInstructions ? (
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label="Thread instructions"
+                    className="inline-flex shrink-0 cursor-pointer items-center rounded-sm p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  />
+                }
+              >
+                <ScrollTextIcon className="size-3.5" />
+              </PopoverTrigger>
+              <PopoverPopup align="start">
+                <div className="flex w-[min(32rem,80vw)] flex-col gap-2">
+                  <PopoverTitle>Thread instructions</PopoverTitle>
+                  <pre className="max-h-80 overflow-auto text-xs whitespace-pre-wrap text-muted-foreground">
+                    {threadInstructions}
+                  </pre>
+                </div>
+              </PopoverPopup>
+            </Popover>
+          ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
     </div>

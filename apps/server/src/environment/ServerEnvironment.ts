@@ -238,6 +238,7 @@ export const make = Effect.gen(function* () {
       threadSnooze: true,
       // FORK: thread.shelve / thread.unshelve.
       threadShelf: true,
+      threadInstructions: true,
       environmentThemes: true,
       usageLimitSources: true,
       usagePriceOverrides: true,

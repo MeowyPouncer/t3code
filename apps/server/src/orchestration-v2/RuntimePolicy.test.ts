@@ -125,6 +125,21 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
     }),
   );
 
+  it.effect("hands the thread's own instructions to the adapter", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const thread = makeThread({ now, worktreePath: null });
+      const plain = yield* policy.resolve({ thread, modelSelection });
+      assert.isUndefined(plain.instructions);
+      const resolved = yield* policy.resolve({
+        thread: { ...thread, instructions: "Orchestrate the selected cards." },
+        modelSelection,
+      });
+      assert.equal(resolved.instructions, "Orchestrate the selected cards.");
+    }),
+  );
+
   it.effect("prefers a provisioned worktree over the project root", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;

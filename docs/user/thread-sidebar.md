@@ -256,3 +256,18 @@ write in it or an agent wakes it, and keeps its note for the next time. **Take o
 same by hand. Shelving a thread settles its finished subagents and the threads it launched; on web
 and desktop those launched threads sit under it on the shelf. While one of them still works or
 waits for you, the thread stays where it is and names it.
+
+## Start agents from Tasks
+
+**Tasks**, in the sidebar or beside a chat, shows a project's TODO cards when the project keeps a
+`TODO.md` with the board script `scripts/dev/todo-board/todo-board.py`. **Use in chat** puts a
+card's prompt into the composer.
+
+To hand cards to agents, press **Start agent** on a card, or tick several cards and press
+**Start agents…**. Choose the model, then how they run:
+
+- **A thread per card** starts each card in its own thread in the project's checkout, with the
+  card's prompt.
+- **One orchestrator** starts one thread that gets all the cards in its first message and starts a
+  writer for each of them. Its system instructions come from `.t3/orchestrator.md` in the project;
+  without that file it uses built-in ones. The scroll icon next to the thread's title shows them.

@@ -161,6 +161,8 @@ interface StartThreadBootstrap {
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
+    /** FORK: the new thread's extra system instructions, such as an orchestrator's. */
+    readonly instructions?: string;
   };
   readonly prepareWorktree?: {
     /** V2 worktree launches always fail rather than falling back to the project checkout. */
@@ -716,6 +718,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
         ...(context ? { context } : {}),
         attachments,
       },
+      ...(bootstrap?.instructions ? { instructions: bootstrap.instructions } : {}),
     });
   }
 

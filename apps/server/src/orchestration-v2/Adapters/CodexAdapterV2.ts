@@ -94,6 +94,7 @@ import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachme
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { threadInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
@@ -761,10 +762,19 @@ export function buildCodexTurnStartParams(input: {
             },
           )
         : undefined;
+    // FORK: the thread's own instructions, whether or not T3's tools are attached.
+    const threadContext = input.runtimePolicy.instructions
+      ? {
+          t3_code_thread: {
+            kind: "application" as const,
+            value: threadInstructions(input.runtimePolicy.instructions),
+          },
+        }
+      : undefined;
     const additionalContext =
-      t3Context === undefined && Object.keys(appContext).length === 0
+      t3Context === undefined && threadContext === undefined && Object.keys(appContext).length === 0
         ? undefined
-        : { ...t3Context, ...appContext };
+        : { ...t3Context, ...threadContext, ...appContext };
     const collaborationMode: CodexSchema.ClientRequest__CollaborationMode | undefined =
       input.runtimePolicy.interactionMode !== "plan" && developerInstructions === undefined
         ? undefined
