@@ -498,6 +498,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly variant: "card" | "slim";
   /** A message for this thread is waiting in the outbox. */
   readonly hasQueuedMessages?: boolean;
+  /** FORK: threads working for this one (subagents, launched threads) still work. */
+  readonly familyWorking?: boolean;
   /** Snoozed-shelf row: shows its wake time and offers Wake. */
   readonly snoozed?: boolean;
   /** Pinned-block row: shows the pin glyph and offers Unpin. */
@@ -626,7 +628,13 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const rowAppearance = getThreadListV2RowAppearance(theme, sidebarPane, selected);
 
-  const status = resolveThreadListV2Status(thread);
+  const ownStatus = resolveThreadListV2Status(thread);
+  // FORK: a thread whose own turn ended reads as working while threads working
+  // for it (its subagents and the threads it launched) still do.
+  const status =
+    props.familyWorking === true && (ownStatus === "ready" || ownStatus === "waiting")
+      ? "working"
+      : ownStatus;
   // "Done" marks a completion the user has not opened yet — same emerald
   // label as the web sidebar, sourced from the server-side visited watermark
   // so checking a thread on any device clears it everywhere.

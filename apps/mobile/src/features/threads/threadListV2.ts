@@ -16,6 +16,7 @@ import {
   isThreadWorking,
   sortInboxThreadsByReturn,
   sortWorkingThreadsBySend,
+  workingFamilyByThread,
 } from "@t3tools/client-runtime/state/thread-inbox";
 import {
   sortActiveThreadsByOrderKey,
@@ -295,6 +296,9 @@ export interface ThreadListV2Layout {
   readonly settledCount: number;
   /** Index in `items` where the Settled shelf header belongs. */
   readonly settledShelfHeaderIndex: number | null;
+  /** FORK: threads (`environmentId:threadId`) whose own turn ended that read as
+      working while threads working for them (subagents, launched threads) do. */
+  readonly workingFamilyThreadKeys: ReadonlySet<string>;
   /** Soonest wake time among snoozed threads, or null. Callers arm
       a timeout at this boundary so the list re-partitions the moment a
       snooze expires instead of on the next minute tick. */
@@ -324,6 +328,8 @@ export interface ThreadListV2ThreadListItem {
       so an outbox write (which never touches the thread shell) reaches the
       row through recycled-list equality instead of leaving a stale icon. */
   readonly hasQueuedMessages: boolean;
+  /** FORK: the thread reads as working while threads working for it do. */
+  readonly familyWorking: boolean;
   /** Move up/down availability in the row's card section. Carried on the item
       for the same reason: a reorder in flight (or its commit) changes menu
       availability without changing any shell. */
@@ -418,6 +424,7 @@ export function threadListV2ListItemsAreEqual(
         previous.snoozePresetMinute === item.snoozePresetMinute &&
         previous.showTrailingDivider === item.showTrailingDivider &&
         previous.hasQueuedMessages === item.hasQueuedMessages &&
+        previous.familyWorking === item.familyWorking &&
         previous.canMoveUp === item.canMoveUp &&
         previous.canMoveDown === item.canMoveDown
       );
@@ -501,6 +508,9 @@ export function buildThreadListV2ListItems(input: {
   /** Thread keys (`environmentId:threadId`) with a message waiting in the
       outbox; stamped onto the matching rows as `hasQueuedMessages`. */
   readonly queuedThreadKeys?: ReadonlySet<string>;
+  /** FORK: the layout's `workingFamilyThreadKeys`, stamped onto the matching
+      rows as `familyWorking`. */
+  readonly workingFamilyThreadKeys?: ReadonlySet<string>;
   /** Menu availability for Move up/down, keyed by `environmentId:threadId`
       (only consulted for card rows — slim menus omit the moves). Produced by
       `computeThreadMoveAvailability` in one pass per section; a recycled cell
@@ -544,6 +554,9 @@ export function buildThreadListV2ListItems(input: {
       showTrailingDivider: false,
       hasQueuedMessages:
         queuedThreadKeys?.has(`${item.thread.environmentId}:${item.thread.id}`) === true,
+      familyWorking:
+        input.workingFamilyThreadKeys?.has(`${item.thread.environmentId}:${item.thread.id}`) ===
+        true,
       canMoveUp: move?.canMoveUp === true,
       canMoveDown: move?.canMoveDown === true,
     };
@@ -699,6 +712,24 @@ export function buildThreadListV2Items(input: {
     : null;
 
   const workingShelfEnabled = input.workingShelfEnabled === true;
+  // FORK: threads whose own turn ended read as working while threads working
+  // for them (their subagents and the threads they launched) still do.
+  const workingFamily = workingFamilyByThread(
+    input.threads,
+    (thread) => {
+      const status = resolveThreadListV2Status(thread);
+      return status === "working" || status === "waiting";
+    },
+    (thread) => `${thread.environmentId}:${thread.id}`,
+  );
+  const workingFamilyThreadKeys = new Set<string>();
+  for (const thread of input.threads) {
+    const key = `${thread.environmentId}:${thread.id}`;
+    const status = resolveThreadListV2Status(thread);
+    if (workingFamily.has(key) && (status === "ready" || status === "waiting")) {
+      workingFamilyThreadKeys.add(key);
+    }
+  }
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
@@ -749,7 +780,12 @@ export function buildThreadListV2Items(input: {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
-    } else if (workingShelfEnabled && isThreadWorking(thread)) {
+    } else if (
+      workingShelfEnabled &&
+      (isThreadWorking(thread) ||
+        (workingFamilyThreadKeys.has(`${thread.environmentId}:${thread.id}`) &&
+          !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan)))
+    ) {
       working.push(thread);
     } else {
       active.push(thread);
@@ -865,6 +901,7 @@ export function buildThreadListV2Items(input: {
     snoozedShelfHeaderIndex,
     settledCount: orderedSettled.length,
     settledShelfHeaderIndex,
+    workingFamilyThreadKeys,
     nextSnoozeWakeAt,
   };
 }

@@ -9,6 +9,7 @@ import {
   isSidebarMoveUnread,
   liftSidebarMoveState,
   nestSidebarLaunchedThreads,
+  resolveSidebarFamilyStatus,
   resolveSidebarLauncherKey,
   resolveSidebarMoveRecede,
   resolveSidebarMoveState,
@@ -294,6 +295,37 @@ describe("resolveSidebarMoveState", () => {
       kind: "working",
       reason: "background",
     });
+  });
+
+  // FORK: a thread whose own turn ended, while threads working for it still do.
+  it("reads a thread waiting on its subagents and writers as Working, naming them", () => {
+    expect(
+      resolveSidebarMoveState({
+        ...base,
+        status: "working",
+        workingFamily: ["Card writer", "Card review"],
+      }),
+    ).toEqual({
+      kind: "working",
+      reason: "family",
+      tooltip: "Its subagents and writers are working: «Card writer», «Card review»",
+    });
+    expect(
+      resolveSidebarMoveState({
+        ...base,
+        status: "working",
+        workingFamily: ["A", "B", "C", "D", "E"],
+      })?.tooltip,
+    ).toBe("Its subagents and writers are working: «A», «B», «C» and 2 more");
+  });
+
+  it("lets working threads under a stopped thread make it working, but not past the user", () => {
+    expect(resolveSidebarFamilyStatus("ready", true)).toBe("working");
+    expect(resolveSidebarFamilyStatus("waiting", true)).toBe("working");
+    expect(resolveSidebarFamilyStatus("ready", false)).toBe("ready");
+    for (const status of ["approval", "input", "failed", "limited", "working"] as const) {
+      expect(resolveSidebarFamilyStatus(status, true)).toBe(status);
+    }
   });
 
   it("names the user for approvals, questions, plans and finished top-level threads", () => {

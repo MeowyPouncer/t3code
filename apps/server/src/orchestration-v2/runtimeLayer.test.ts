@@ -3399,6 +3399,168 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  // FORK: settling a thread takes the threads working for it along.
+  it.effect("settles the threads a thread launched and its subagents along with it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectId = ProjectId.make("runtime-layer-family-settle-project");
+      const create = (threadId: ThreadId, title: string, launchedByThreadId?: ThreadId) =>
+        orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: launchedByThreadId === undefined ? "user" : "agent",
+          creationSource: launchedByThreadId === undefined ? "web" : "mcp",
+          commandId: CommandId.make(`runtime-layer-family-settle-create-${threadId}`),
+          threadId,
+          projectId,
+          title,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          ...(launchedByThreadId === undefined ? {} : { launchedByThreadId }),
+        });
+      const now = yield* DateTime.now;
+      // Delegated tasks and forks get their lineage from the server, not thread.create.
+      const createWithLineage = (
+        threadId: ThreadId,
+        title: string,
+        lineage: {
+          readonly parentThreadId: ThreadId;
+          readonly relationshipToParent: "subagent" | "fork";
+          readonly rootThreadId: ThreadId;
+        },
+      ) =>
+        eventSink.write({
+          commandId: CommandId.make(`runtime-layer-family-settle-seed-${threadId}`),
+          events: [
+            {
+              id: EventId.make(`runtime-layer-family-settle-created-${threadId}`),
+              type: "thread.created",
+              threadId,
+              occurredAt: now,
+              payload: {
+                createdBy: "agent",
+                creationSource: "mcp",
+                id: threadId,
+                projectId,
+                title,
+                providerInstanceId: modelSelection.instanceId,
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: null,
+                lineage,
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+                deletedAt: null,
+              },
+            },
+          ],
+        });
+      const parent = ThreadId.make("runtime-layer-family-settle-parent");
+      const writer = ThreadId.make("runtime-layer-family-settle-writer");
+      const grandchild = ThreadId.make("runtime-layer-family-settle-grandchild");
+      const review = ThreadId.make("runtime-layer-family-settle-review");
+      const fork = ThreadId.make("runtime-layer-family-settle-fork");
+      yield* create(parent, "Take card");
+      yield* create(writer, "Card writer", parent);
+      yield* create(grandchild, "Writer helper", writer);
+      yield* createWithLineage(review, "Card review", {
+        parentThreadId: parent,
+        relationshipToParent: "subagent",
+        rootThreadId: parent,
+      });
+      yield* createWithLineage(fork, "Forked idea", {
+        parentThreadId: parent,
+        relationshipToParent: "fork",
+        rootThreadId: parent,
+      });
+
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("runtime-layer-family-settle"),
+        threadId: parent,
+      });
+
+      const settledAt = (yield* orchestrator.getThreadProjection(parent)).thread.settledAt;
+      assert.isNotNull(settledAt);
+      for (const threadId of [writer, grandchild, review]) {
+        const { thread } = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(thread.settledOverride, "settled", threadId);
+        assert.deepEqual(thread.settledAt, settledAt, threadId);
+      }
+      // A fork is the user's own thread, not one working for the parent.
+      assert.isNull((yield* orchestrator.getThreadProjection(fork)).thread.settledAt);
+    }),
+  );
+
+  it.effect("refuses to settle a thread while a thread it launched still runs", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("runtime-layer-busy-family-project");
+      const parent = ThreadId.make("runtime-layer-busy-family-parent");
+      const writer = ThreadId.make("runtime-layer-busy-family-writer");
+      for (const [threadId, title, launchedByThreadId] of [
+        [parent, "Take card", undefined],
+        [writer, "Card writer", parent],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: launchedByThreadId === undefined ? "user" : "agent",
+          creationSource: launchedByThreadId === undefined ? "web" : "mcp",
+          commandId: CommandId.make(`runtime-layer-busy-family-create-${threadId}`),
+          threadId,
+          projectId,
+          title,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: "/tmp/runtime-layer-busy-family",
+          ...(launchedByThreadId === undefined ? {} : { launchedByThreadId }),
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "mcp",
+        commandId: CommandId.make("runtime-layer-busy-family-message"),
+        threadId: writer,
+        messageId: MessageId.make("runtime-layer-busy-family-message"),
+        text: "Write the card.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+
+      const error = yield* orchestrator
+        .dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make("runtime-layer-busy-family-settle"),
+          threadId: parent,
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "OrchestratorDispatchError");
+      assert.equal(
+        error.cause,
+        `Thread ${parent} has a subagent or writer still working or waiting for you: «Card writer». Let them finish or stop them before settling.`,
+      );
+      for (const threadId of [parent, writer]) {
+        assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.settledAt);
+      }
+    }),
+  );
+
   it.effect("settles a thread its own agent settled once the turn completes", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -1,3 +1,5 @@
+import type { ThreadId } from "@t3tools/contracts";
+
 import { threadRuntimeIsActive, type EnvironmentThreadShell } from "./models.ts";
 import { toSortableTimestamp } from "./threadSort.ts";
 
@@ -31,6 +33,49 @@ export function isThreadWorking(thread: WorkingThreadInput): boolean {
     run.status !== "waiting" &&
     thread.runtime?.activeRunId !== run.runId;
   return !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan && runSettled);
+}
+
+type FamilyThreadInput = Pick<
+  EnvironmentThreadShell,
+  "environmentId" | "id" | "lineage" | "launchedByThreadId"
+>;
+
+/** FORK: the thread this one works for: a subagent's parent, or the thread that
+    launched it. A fork is the user's own thread and works for no one. */
+export function threadFamilyParentId(thread: FamilyThreadInput): ThreadId | null {
+  if (thread.lineage.relationshipToParent === "subagent") return thread.lineage.parentThreadId;
+  if (thread.lineage.relationshipToParent === null) return thread.launchedByThreadId ?? null;
+  return null;
+}
+
+/** FORK: for each thread, the threads at work for it at any depth (its subagents
+    and the threads it launched), keyed by `keyOf`. A thread whose own turn
+    ended still reads as working while they do. */
+export function workingFamilyByThread<T extends FamilyThreadInput>(
+  threads: readonly T[],
+  isWorking: (thread: T) => boolean,
+  keyOf: (thread: Pick<T, "environmentId" | "id">) => string,
+): ReadonlyMap<string, readonly T[]> {
+  const byKey = new Map(threads.map((thread) => [keyOf(thread), thread] as const));
+  const family = new Map<string, T[]>();
+  for (const thread of threads) {
+    if (!isWorking(thread)) continue;
+    const seen = new Set([keyOf(thread)]);
+    let parentId = threadFamilyParentId(thread);
+    while (parentId !== null) {
+      const key = keyOf({ environmentId: thread.environmentId, id: parentId });
+      // A launch cycle cannot happen through the tools; corrupt data must not hang here.
+      if (seen.has(key)) break;
+      seen.add(key);
+      const members = family.get(key);
+      if (members === undefined) family.set(key, [thread]);
+      else members.push(thread);
+      const parent = byKey.get(key);
+      if (parent === undefined) break;
+      parentId = threadFamilyParentId(parent);
+    }
+  }
+  return family;
 }
 
 type InboxThreadInput = Pick<

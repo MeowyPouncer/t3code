@@ -116,7 +116,9 @@ open.
 
 Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
 Thread behavior → Working section** on iOS and Android, to move threads that are working or
-monitoring into a collapsed **Working** section below the active list. A thread returns to the top
+monitoring into a collapsed **Working** section below the active list. A thread whose own turn ended
+counts as working while its subagents or the threads it launched still work, in the list and in its
+status. A thread returns to the top
 of the active list when it finishes, fails, or needs an approval or answer. The Working section
 lists the thread you last sent work to first. Pinned threads stay in the pinned section. Each
 device keeps its own choice.
@@ -133,6 +135,10 @@ Manually settling an idle thread dismisses unanswered async questions without
 sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
+
+Settling a thread also settles its subagents and the threads it launched. While one of them
+still works or waits for you, the thread does not settle and names it. **Un-settle thread**
+restores only the thread itself.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a

@@ -107,6 +107,7 @@ import {
   type ProjectionRecordFilter,
   type ProjectionRecords,
   type ProjectionCheckpointContext,
+  type ProjectionSettleChild,
   type ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
@@ -137,6 +138,51 @@ import {
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+
+/**
+ * What keeps a thread from settling, read off its runs, user messages and
+ * runtime requests: the reason shown to the user, or null. Queued
+ * notification and delegated-completion runs only wake the agent; they are
+ * not user messages and are hidden from the queue UI, so they do not block
+ * settling, and the settle cancels them along with message-capable questions.
+ */
+export function threadSettleBlocker(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "runtimeRequests" | "messages">,
+) {
+  const automaticMessageIds = new Set(
+    projection.messages
+      .filter(
+        (message) =>
+          message.notification !== undefined || message.delegatedCompletion !== undefined,
+      )
+      .map((message) => message.id),
+  );
+  const automaticQueuedRuns = projection.runs.filter(
+    (run) => run.status === "queued" && automaticMessageIds.has(run.userMessageId),
+  );
+  const runningRunExists = projection.runs.some((run) =>
+    ["preparing", "starting", "running", "waiting"].includes(run.status),
+  );
+  // Includes a queue held after a Stop, which otherwise shows no activity.
+  const queuedMessageExists = projection.runs.some(
+    (run) => run.status === "queued" && !automaticQueuedRuns.includes(run),
+  );
+  const pendingRequests = projection.runtimeRequests.filter(
+    (request) => request.status === "pending",
+  );
+  const blockingRequestExists = pendingRequests.some(
+    (request) => request.kind !== "user_input" || request.responseCapability.type !== "message",
+  );
+  // The reason is shown to the user, so it names what to clear first.
+  const blocker = blockingRequestExists
+    ? "is waiting on an approval or question. Answer it before settling."
+    : runningRunExists
+      ? "is still running. Stop it before settling."
+      : queuedMessageExists
+        ? "has a queued message. Send it or remove it from the queue before settling."
+        : null;
+  return { automaticQueuedRuns, pendingRequests, blocker };
+}
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -2635,41 +2681,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ["runs", "runtimeRequests", "messages"],
         { turnItemTypes: [], messageRoles: ["user"] },
       );
-      // Queued notification and delegated-completion runs only wake the agent.
-      // They are not user messages and are hidden from the queue UI, so they
-      // must not block settling; they are cancelled below instead.
-      const automaticMessageIds = new Set(
-        projection.messages
-          .filter(
-            (message) =>
-              message.notification !== undefined || message.delegatedCompletion !== undefined,
-          )
-          .map((message) => message.id),
-      );
-      const automaticQueuedRuns = projection.runs.filter(
-        (run) => run.status === "queued" && automaticMessageIds.has(run.userMessageId),
-      );
-      const runningRunExists = projection.runs.some((run) =>
-        ["preparing", "starting", "running", "waiting"].includes(run.status),
-      );
-      // Includes a queue held after a Stop, which otherwise shows no activity.
-      const queuedMessageExists = projection.runs.some(
-        (run) => run.status === "queued" && !automaticQueuedRuns.includes(run),
-      );
-      const pendingRequests = projection.runtimeRequests.filter(
-        (request) => request.status === "pending",
-      );
-      const blockingRequestExists = pendingRequests.some(
-        (request) => request.kind !== "user_input" || request.responseCapability.type !== "message",
-      );
-      // The reason is shown to the user, so it names what to clear first.
-      const blocker = blockingRequestExists
-        ? "is waiting on an approval or question. Answer it before settling."
-        : runningRunExists
-          ? "is still running. Stop it before settling."
-          : queuedMessageExists
-            ? "has a queued message. Send it or remove it from the queue before settling."
-            : null;
+      const { automaticQueuedRuns, pendingRequests, blocker } = threadSettleBlocker(projection);
       if (blocker !== null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -3464,6 +3476,90 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           request: { type: "terminal.cleanup" },
         } satisfies PendingOrchestrationEffectV2,
       ]);
+    }
+  });
+
+  /**
+   * FORK: settling a thread settles the threads working for it too: its
+   * subagent threads and the threads it launched, at any depth, in the same
+   * transaction. One of them still working or waiting for the user refuses
+   * the whole settle and is named; unsettling the parent brings none back.
+   */
+  const dispatchThreadSettle = Effect.fn("orchestrationV2.dispatch.threadSettle")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.settle" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const family: Array<ProjectionSettleChild> = [];
+    const seen = new Set<ThreadId>([command.threadId]);
+    let parents: ReadonlyArray<ThreadId> = [command.threadId];
+    while (parents.length > 0) {
+      const next: Array<ThreadId> = [];
+      for (const parentId of parents) {
+        const children = yield* projectionStore
+          .getSettleChildren(parentId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: parentId, cause }),
+            ),
+          );
+        for (const child of children) {
+          if (seen.has(child.id)) continue;
+          seen.add(child.id);
+          family.push(child);
+          next.push(child.id);
+        }
+      }
+      parents = next;
+    }
+    if (family.length > 0) {
+      // The thread's own blocker reads first, as it would without children.
+      const own = threadSettleBlocker(
+        yield* loadProjectionForCommand(command, ["runs", "runtimeRequests", "messages"], {
+          turnItemTypes: [],
+          messageRoles: ["user"],
+        }),
+      );
+      if (own.blocker !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} ${own.blocker}`,
+        });
+      }
+      const busy: Array<string> = [];
+      for (const child of family) {
+        const { blocker } = threadSettleBlocker(
+          yield* loadProjectionForCommand(
+            { ...command, threadId: child.id },
+            ["runs", "runtimeRequests", "messages"],
+            { turnItemTypes: [], messageRoles: ["user"] },
+          ),
+        );
+        if (blocker !== null) busy.push(`«${child.title}»`);
+      }
+      if (busy.length > 0) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} has ${
+            busy.length === 1 ? "a subagent or writer" : `${busy.length} subagents or writers`
+          } still working or waiting for you: ${busy.join(", ")}. Let them finish or stop them before settling.`,
+        });
+      }
+    }
+    yield* dispatchThreadMutation(command, events, effects);
+    for (const child of family) {
+      yield* dispatchThreadMutation(
+        {
+          type: "thread.settle",
+          commandId: command.commandId,
+          threadId: child.id,
+          ...(command.settledAt === undefined ? {} : { settledAt: command.settledAt }),
+        },
+        events,
+        effects,
+      );
     }
   });
 
@@ -10670,7 +10766,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: `Thread ${command.threadId} changed before automatic settlement.`,
           });
         }
-        yield* dispatchThreadMutation(
+        yield* dispatchThreadSettle(
           {
             type: "thread.settle",
             commandId: command.commandId,
@@ -10709,9 +10805,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }),
         );
       }
+      case "thread.settle":
+        yield* dispatchThreadSettle(command, events, effects);
+        break;
       case "thread.archive":
       case "thread.unarchive":
-      case "thread.settle":
       case "thread.unsettle":
       case "thread.snooze":
       case "thread.unsnooze":
