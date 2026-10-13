@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as NightRules from "../night/NightRules.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -109,6 +110,40 @@ const layerWithProjectGet = (get: ProjectStore.ProjectStoreV2["Service"]["get"])
   );
 
 const layerTest = layerWithProjectGet(() => Effect.succeed(Option.some(projectRow)));
+
+// FORK: the night mode's rules, set and cleared the way NightService does.
+it.layer(layerTest.pipe(Layer.provideMerge(NightRules.layer)))("RuntimePolicyV2 at night", (it) => {
+  it.effect(
+    "adds the night rules to a session's instructions, not the overseer's or a subagent's",
+    () =>
+      Effect.gen(function* () {
+        const policy = yield* RuntimePolicy.RuntimePolicyV2;
+        const rules = yield* NightRules.NightRules;
+        const now = yield* DateTime.now;
+        const thread = { ...makeThread({ now, worktreePath: null }), instructions: "Orchestrate." };
+        const overseer = { ...thread, id: ThreadId.make("thread:overseer") };
+        const subagent = {
+          ...thread,
+          lineage: { ...thread.lineage, relationshipToParent: "subagent" as const },
+        };
+        const instructionsOf = (input: OrchestrationV2AppThread) =>
+          policy
+            .resolve({ thread: input, modelSelection })
+            .pipe(Effect.map((resolved) => resolved.instructions));
+
+        yield* rules.set({ rules: "Nobody answers tonight.", overseerThreadId: overseer.id });
+        assert.equal(
+          yield* instructionsOf(thread),
+          "Orchestrate.\n\n<night_rules>\nNobody answers tonight.\n</night_rules>",
+        );
+        assert.equal(yield* instructionsOf(overseer), "Orchestrate.");
+        assert.equal(yield* instructionsOf(subagent), "Orchestrate.");
+
+        yield* rules.set(null);
+        assert.equal(yield* instructionsOf(thread), "Orchestrate.");
+      }),
+  );
+});
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
   it.effect("uses the project root for local-checkout threads", () =>

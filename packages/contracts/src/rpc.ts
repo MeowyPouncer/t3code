@@ -370,6 +370,8 @@ import {
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 import { TodoBoardReadInput, TodoBoardReadResult, TodoBoardReadError } from "./todoBoard.ts";
+import { NightError, NightPlan, NightState, UnattendedStreamItem } from "./night.ts";
+import { AgentQueue, AgentQueueError, AgentQueueStartInput } from "./agentQueue.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -525,6 +527,18 @@ export const WS_METHODS = {
   secretsAnswerRequest: "secrets.answerRequest",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  // FORK: the night mode
+  nightStart: "night.start",
+  nightLeave: "night.leave",
+  nightStop: "night.stop",
+  // The night and the agent queues share one stream: one more stream RPC in this group makes
+  // TypeScript widen the server's requirements to any.
+  unattendedSubscribe: "unattended.subscribe",
+
+  // FORK: card agents a few at a time
+  agentQueueStart: "agentQueue.start",
+  agentQueueCancel: "agentQueue.cancel",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1796,6 +1810,49 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+// FORK: the night mode.
+const WsNightStartRpc = Rpc.make(WS_METHODS.nightStart, {
+  payload: NightPlan,
+  success: NightState,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** The user is leaving: the briefing ends and the night starts. */
+const WsNightLeaveRpc = Rpc.make(WS_METHODS.nightLeave, {
+  payload: Schema.Struct({}),
+  success: NightState,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** Ends a running night, or dismisses a finished one. */
+const WsNightStopRpc = Rpc.make(WS_METHODS.nightStop, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** The night and the agent queues, on subscribe and after every change. */
+const WsUnattendedSubscribeRpc = Rpc.make(WS_METHODS.unattendedSubscribe, {
+  payload: Schema.Struct({}),
+  success: UnattendedStreamItem,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+// FORK: card agents a few at a time.
+const WsAgentQueueStartRpc = Rpc.make(WS_METHODS.agentQueueStart, {
+  payload: AgentQueueStartInput,
+  success: AgentQueue,
+  error: Schema.Union([AgentQueueError, EnvironmentAuthorizationError]),
+});
+
+/** Drops a queue's waiting launches; the threads it started keep working. */
+const WsAgentQueueCancelRpc = Rpc.make(WS_METHODS.agentQueueCancel, {
+  payload: Schema.Struct({ id: TrimmedNonEmptyString }),
+  success: Schema.Void,
+  error: Schema.Union([AgentQueueError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2005,6 +2062,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsReadTodoBoardRpc,
+  WsNightStartRpc,
+  WsNightLeaveRpc,
+  WsNightStopRpc,
+  WsUnattendedSubscribeRpc,
+  WsAgentQueueStartRpc,
+  WsAgentQueueCancelRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

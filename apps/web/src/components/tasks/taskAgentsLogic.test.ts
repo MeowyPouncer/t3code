@@ -75,6 +75,21 @@ describe("planTaskAgentLaunches", () => {
     );
   });
 
+  it("tells an orchestrator how many writers may work at once, when that is fewer than the cards", () => {
+    const textFor = (maxRunning: number) =>
+      planTaskAgentLaunches({
+        mode: "orchestrator",
+        projectTitle: "catwolf-project",
+        cards: [geo, band, card({ id: "HOME-MAP-003" })],
+        instructions: "x",
+        maxRunning,
+      })[0]?.text ?? "";
+    expect(textFor(2)).toContain(
+      "Run at most 2 writers at a time: start the next card only when one of them has finished.",
+    );
+    expect(textFor(3)).not.toContain("Run at most");
+  });
+
   it("starts nothing without cards, and never for a card known only on origin", () => {
     expect(
       planTaskAgentLaunches({

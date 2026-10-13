@@ -187,6 +187,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   todoBoard: Schema.optionalKey(Schema.Boolean),
+  /** FORK: the server runs the night mode (night.start and friends). */
+  nightMode: Schema.optionalKey(Schema.Boolean),
+  /** FORK: the server starts card agents a few at a time (agentQueue.start and friends). */
+  agentQueue: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.pull-request.watch and wakes agents on pull request changes. */
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),

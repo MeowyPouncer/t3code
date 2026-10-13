@@ -271,3 +271,36 @@ To hand cards to agents, press **Start agent** on a card, or tick several cards 
 - **One orchestrator** starts one thread that gets all the cards in its first message and starts a
   writer for each of them. Its system instructions come from `.t3/orchestrator.md` in the project;
   without that file it uses built-in ones. The scroll icon next to the thread's title shows them.
+
+With several cards, **At once** limits how many agents work at the same time, three by default. With
+a thread per card, T3 starts that many now and each of the rest when one of them finishes or stops to
+wait for your answer; Tasks shows how many still wait, and **Cancel the rest** drops them. An
+orchestrator is told the limit instead and keeps to it itself.
+
+## Leave agents working overnight
+
+The moon in the sidebar plans a night, so you can go to bed with agents still working. On web and
+desktop, choose the project and the overseer's model, then what should happen once all the work is
+done:
+
+- start agents for TODO cards you tick, the way **Tasks** starts them, a few at a time;
+- then run prompts you queue, one at a time, each in a new thread;
+- then power the computer off.
+
+**Start the night** opens an overseer thread. It reads every working or waiting thread and asks you
+its questions in one batch. Answer them there, then open the moon again and press **I'm leaving**.
+If you don't, the night starts on its own when the time you chose runs out.
+
+While you are away, every thread but subagents gets the night rules on top of its instructions: no
+questions that wait for you, decisions that are yours become questions for the morning, commit
+after each step. T3 wakes the overseer when a thread you started asks something, stops, hits a
+usage limit or fills its context, and the overseer answers what your project's rules settle.
+Threads those threads launched are theirs to watch. Once nothing has worked for a minute, T3 runs
+what you planned, then asks the overseer for a morning report.
+
+The computer powers off a minute after the report, and only while nothing works. **Stay on and
+dismiss** cancels it, and T3 never powers off for a night that was running when it restarted.
+**End the night** stops it all at any time.
+
+Files in `~/.config/t3code` replace the built-in texts: `night-rules.md` for the rules every thread
+gets, and `night-overseer.md` for the overseer's instructions.

@@ -2796,6 +2796,87 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  // FORK: the night rules change a thread's instructions while its Claude process lives.
+  describe("changed thread instructions", () => {
+    const turnWith = (
+      harness: {
+        readonly threadId: ThreadId;
+        readonly providerThread: OrchestrationV2ProviderThread;
+      },
+      now: DateTime.Utc,
+      ordinal: number,
+      instructions?: string,
+    ) =>
+      makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now,
+        attemptId: RunAttemptId.make(`attempt-instructions:${ordinal}`),
+        text: `Request ${ordinal}`,
+        attachments: [],
+        providerTurnOrdinal: ordinal,
+        runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          ...(instructions === undefined ? {} : { instructions }),
+        }),
+      });
+    const appendOf = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined) =>
+      typeof options?.systemPrompt === "object" && "append" in options.systemPrompt
+        ? (options.systemPrompt.append ?? "")
+        : "";
+
+    it.effect("reopen an idle process with them in its system prompt", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            close: (messages) => Queue.shutdown(messages),
+          });
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(turnWith(harness, now, 1));
+          const originalOptions = harness.getOpenedOptions();
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+          yield* harness.runtime.startTurn(turnWith(harness, now, 2, "Nobody answers tonight."));
+          assert.notStrictEqual(harness.getOpenedOptions(), originalOptions);
+          assert.include(appendOf(harness.getOpenedOptions()), "Nobody answers tonight.");
+          assert.notInclude(appendOf(originalOptions), "Nobody answers tonight.");
+          assert.lengthOf(harness.offeredMessages, 2);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+
+    it.effect("keep a process whose background work would die with it", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(turnWith(harness, now, 1));
+          const originalOptions = harness.getOpenedOptions();
+          yield* harness.offerAndWait(wakeTaskStarted);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+          yield* harness.runtime.startTurn(turnWith(harness, now, 2, "Nobody answers tonight."));
+          assert.strictEqual(harness.getOpenedOptions(), originalOptions);
+          assert.lengthOf(harness.offeredMessages, 2);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+    );
+  });
+
   it.effect.each(["completed", "interrupted"] as const)(
     "projects Claude thinking blocks when %s",
     (status) =>

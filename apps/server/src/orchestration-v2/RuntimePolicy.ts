@@ -17,6 +17,7 @@ import {
 } from "../provider/ProviderInstanceHardCap.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as NightRules from "../night/NightRules.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 
@@ -101,6 +102,8 @@ export const layerFromProjectStore: Layer.Layer<
     // Optional so tests that build this layer by hand need no settings stub;
     // production always provides it.
     const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+    // FORK: optional the same way; the night mode sets it while the user is away.
+    const nightRules = yield* Effect.serviceOption(NightRules.NightRules);
     /**
      * The instance's hard cap holds for every run, however the thread got its
      * mode (the composer, `t3_thread_send`, a schedule, a thread created
@@ -122,6 +125,21 @@ export const layerFromProjectStore: Layer.Layer<
               declineFileChanges: cap?.declineFileChanges === true,
             })),
           );
+    const resolveInstructions = Effect.fn("RuntimePolicyV2.resolveInstructions")(function* (
+      thread: OrchestrationV2AppThread,
+    ) {
+      const night = Option.isSome(nightRules) ? yield* nightRules.value.current : null;
+      const nightText =
+        night !== null &&
+        thread.id !== night.overseerThreadId &&
+        thread.lineage.relationshipToParent !== "subagent"
+          ? `<night_rules>\n${night.rules}\n</night_rules>`
+          : null;
+      const instructions = [thread.instructions ?? null, nightText]
+        .filter((part) => part !== null && part.length > 0)
+        .join("\n\n");
+      return instructions.length > 0 ? { instructions } : {};
+    });
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
@@ -177,8 +195,9 @@ export const layerFromProjectStore: Layer.Layer<
           cwd,
           ...(projectRoot === undefined ? {} : { projectRoot }),
           ...(capped.declineFileChanges ? { declineFileChanges: true } : {}),
-          // FORK: the thread's own system instructions reach every adapter here.
-          ...(input.thread.instructions ? { instructions: input.thread.instructions } : {}),
+          // FORK: the thread's own system instructions reach every adapter here, and while
+          // the user is away the night rules join every top-level session's but the overseer's.
+          ...(yield* resolveInstructions(input.thread)),
         });
       }),
     });

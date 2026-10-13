@@ -5,6 +5,10 @@ import { taskPrompt } from "./taskBoardLogic";
 
 export type TaskAgentsMode = "separate" | "orchestrator";
 
+/** How many card agents may work at once; the rest wait for a free slot. */
+export const TASK_AGENT_LIMITS = [1, 2, 3, 4, 5, 6, 8, 10] as const;
+export const DEFAULT_TASK_AGENT_LIMIT = 3;
+
 /** Where a project keeps the system instructions for orchestrators started from Tasks. */
 export const ORCHESTRATOR_INSTRUCTIONS_PATH = ".t3/orchestrator.md";
 
@@ -31,10 +35,14 @@ export function orchestratorThreadTitle(cards: ReadonlyArray<TodoBoardCard>): st
   return `${cards.map((card) => card.id).join(" + ")} · orchestrator`;
 }
 
-/** The orchestrator's first message: every card with its brief, file and start prompt. */
+/**
+ * The orchestrator's first message: every card with its brief, file and start prompt, and how many
+ * writers may work at once when that is fewer than the cards.
+ */
 export function orchestratorMessage(
   projectTitle: string,
   cards: ReadonlyArray<TodoBoardCard>,
+  maxRunning?: number,
 ): string {
   const entries = cards.map((card, index) => {
     const start =
@@ -49,6 +57,11 @@ export function orchestratorMessage(
   return [
     `Orchestrate ${cards.length === 1 ? "this card" : `these ${cards.length} cards`} from the ${projectTitle} TODO board:`,
     ...entries,
+    ...(maxRunning !== undefined && maxRunning < cards.length
+      ? [
+          `Run at most ${maxRunning} ${maxRunning === 1 ? "writer" : "writers"} at a time: start the next card only when one of them has finished.`,
+        ]
+      : []),
   ].join("\n\n");
 }
 
@@ -58,6 +71,8 @@ export function planTaskAgentLaunches(input: {
   readonly projectTitle: string;
   readonly cards: ReadonlyArray<TodoBoardCard>;
   readonly instructions: string;
+  /** How many may work at once; the orchestrator gets it in its message. */
+  readonly maxRunning?: number;
 }): ReadonlyArray<{
   readonly title: string;
   readonly text: string;
@@ -68,7 +83,7 @@ export function planTaskAgentLaunches(input: {
     ? [
         {
           title: orchestratorThreadTitle(input.cards),
-          text: orchestratorMessage(input.projectTitle, input.cards),
+          text: orchestratorMessage(input.projectTitle, input.cards, input.maxRunning),
           instructions: input.instructions,
         },
       ]

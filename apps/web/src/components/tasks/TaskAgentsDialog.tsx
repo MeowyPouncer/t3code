@@ -6,6 +6,10 @@ import {
   AuthOrchestrationOperateScope,
   OrchestrationV2ThreadInstructions,
 } from "@t3tools/contracts";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Schema from "effect/Schema";
@@ -26,6 +30,7 @@ import { useEnvironmentScope } from "~/state/session";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "~/state/server";
 import { threadEnvironment } from "~/state/threads";
 import { useOrchestrationCommand } from "~/state/use-orchestration-command";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { scheduledTaskDefaultModel } from "../settings/scheduledTasksSettings.logic";
@@ -40,17 +45,22 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Label } from "../ui/label";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import {
   DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
+  DEFAULT_TASK_AGENT_LIMIT,
   ORCHESTRATOR_INSTRUCTIONS_PATH,
   planTaskAgentLaunches,
+  TASK_AGENT_LIMITS,
   type TaskAgentsMode,
 } from "./taskAgentsLogic";
 
 const isThreadInstructions = Schema.is(OrchestrationV2ThreadInstructions);
+
+const failureText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export function TaskAgentsDialog(props: {
   readonly project: EnvironmentProject;
@@ -58,7 +68,8 @@ export function TaskAgentsDialog(props: {
   readonly root: string;
   readonly cards: ReadonlyArray<TodoBoardCard>;
   readonly onClose: () => void;
-  readonly onStarted: (threads: ReadonlyArray<ThreadId>) => void;
+  /** `waiting` cards start later, each when a slot frees up. */
+  readonly onStarted: (threads: ReadonlyArray<ThreadId>, waiting: number) => void;
 }) {
   const { project, cards } = props;
   const environmentId = project.environmentId;
@@ -67,6 +78,10 @@ export function TaskAgentsDialog(props: {
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const capabilities = useServerConfigs().get(environmentId)?.environment.capabilities;
   const orchestratorSupported = capabilities?.threadInstructions === true;
+  const queueSupported = capabilities?.agentQueue === true;
+  const startAgentQueue = useAtomCommand(serverEnvironment.startAgentQueue, {
+    label: "start card agents a few at a time",
+  });
   const canStart = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
@@ -109,6 +124,11 @@ export function TaskAgentsDialog(props: {
   const instructions = fileText || DEFAULT_ORCHESTRATOR_INSTRUCTIONS;
   const instructionsValid = isThreadInstructions(instructions);
   const [starting, setStarting] = useState(false);
+  // The default keeps the machine responsive; "all" starts every card at once.
+  const [limit, setLimit] = useState<number | "all">(DEFAULT_TASK_AGENT_LIMIT);
+  const maxRunning = limit === "all" || limit >= cards.length ? undefined : limit;
+  // A thread per card waits for free slots on the server; an orchestrator is told the limit.
+  const queued = !orchestrator && maxRunning !== undefined && queueSupported;
 
   const start = async () => {
     if (!selection || starting) return;
@@ -120,7 +140,44 @@ export function TaskAgentsDialog(props: {
       projectTitle: project.title,
       cards,
       instructions,
+      ...(maxRunning === undefined ? {} : { maxRunning }),
     });
+    if (queued && maxRunning !== undefined) {
+      const result = await startAgentQueue({
+        environmentId,
+        input: {
+          label: `${project.title}: ${cards.length} cards`,
+          maxRunning,
+          launches: launches.map((launch) => ({
+            projectId: project.id,
+            title: launch.title,
+            text: launch.text,
+            modelSelection: selection,
+            runtimeMode,
+            interactionMode,
+          })),
+        },
+      });
+      setStarting(false);
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not start agents",
+              description: failureText(squashAtomCommandFailure(result)),
+            }),
+          );
+        }
+        return;
+      }
+      props.onStarted(
+        result.value.started.map((thread) => thread.threadId),
+        result.value.waiting.length,
+      );
+      props.onClose();
+      return;
+    }
     const started: ThreadId[] = [];
     let failure: string | null = null;
     // In order, so the threads appear in the sidebar the way the cards were picked.
@@ -168,7 +225,7 @@ export function TaskAgentsDialog(props: {
         }),
       );
     }
-    if (started.length > 0) props.onStarted(started);
+    if (started.length > 0) props.onStarted(started, 0);
     if (failure === null) props.onClose();
   };
 
@@ -220,6 +277,43 @@ export function TaskAgentsDialog(props: {
                     : "Each card starts in its own thread in the project's checkout, with the card's prompt."}
               </p>
             </div>
+            {cards.length > 1 && (orchestrator || queueSupported) ? (
+              <div className="flex flex-col gap-1.5">
+                <Label>At once</Label>
+                <Select
+                  value={String(limit)}
+                  items={[
+                    ...TASK_AGENT_LIMITS.filter((value) => value < cards.length).map((value) => ({
+                      value: String(value),
+                      label: `At most ${value}`,
+                    })),
+                    { value: "all", label: "All of them" },
+                  ]}
+                  onValueChange={(value) =>
+                    setLimit(value === "all" || value === null ? "all" : Number(value))
+                  }
+                >
+                  <SelectTrigger size="sm" aria-label="Agents at once">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectPopup>
+                    {TASK_AGENT_LIMITS.filter((value) => value < cards.length).map((value) => (
+                      <SelectItem key={value} value={String(value)}>
+                        At most {value}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="all">All of them</SelectItem>
+                  </SelectPopup>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {maxRunning === undefined
+                    ? "Every card starts now."
+                    : orchestrator
+                      ? `The orchestrator runs at most ${maxRunning} writers at a time.`
+                      : `${maxRunning} start now; each of the rest starts when one of them finishes or waits for your answer.`}
+                </p>
+              </div>
+            ) : null}
             {orchestrator ? (
               <div className="flex flex-col gap-1.5">
                 <Label>Instructions</Label>

@@ -1,6 +1,13 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, ListTodoIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  ChartNoAxesColumnIcon,
+  ListTodoIcon,
+  MoonIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { resolveThreadRouteRef } from "../../threadRoutes";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -34,6 +41,12 @@ import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
+import { NightDialog } from "~/components/night/NightDialog";
+import { nightStatusLabel } from "~/components/night/nightPlanLogic";
+import { useServerConfigs } from "~/state/entities";
+import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
+import { useEnvironmentQuery } from "~/state/query";
+import { serverEnvironment } from "~/state/server";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -151,17 +164,19 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  active = false,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  active?: boolean;
 }) {
   return (
     <SidebarMenuItem className="shrink-0">
       <Tooltip>
         <TooltipTrigger
           render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon" isActive={active}>
               {icon}
             </SidebarMenuButton>
           }
@@ -169,6 +184,33 @@ function SidebarUtilityItem({
         <TooltipPopup side="top">{label}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
+  );
+}
+
+/** FORK: the night mode; lit while a night runs on this machine's server or waits to be dismissed. */
+function SidebarNightItem() {
+  const [open, setOpen] = useState(false);
+  const environmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const configs = useServerConfigs();
+  const supported =
+    environmentId !== null &&
+    configs.get(environmentId)?.environment.capabilities.nightMode === true;
+  const night = useEnvironmentQuery(
+    environmentId !== null && supported
+      ? serverEnvironment.unattendedLive({ environmentId, input: {} })
+      : null,
+  );
+  const state = night.data?.night ?? null;
+  return (
+    <>
+      <SidebarUtilityItem
+        icon={<MoonIcon />}
+        label={state === null ? "Night" : `Night: ${nightStatusLabel(state)}`}
+        active={state !== null}
+        onClick={() => setOpen(true)}
+      />
+      {open ? <NightDialog onClose={() => setOpen(false)} /> : null}
+    </>
   );
 }
 
@@ -250,6 +292,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             onClick={handleUsageClick}
           />
           <SidebarUtilityItem icon={<ListTodoIcon />} label="Tasks" onClick={handleTasksClick} />
+          <SidebarNightItem />
         </>
       )}
       <SidebarUpdatePill />

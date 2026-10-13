@@ -1099,6 +1099,11 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
+    /** FORK: the night and the agent queues, live. */
+    unattendedLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:unattended:live",
+      tag: WS_METHODS.unattendedSubscribe,
+    }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan.
     // Slow sources answer from cache first: that summary stays on screen, with
@@ -1324,6 +1329,28 @@ export function createServerEnvironmentAtoms<R, E>(
     runScheduledTaskNow: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:run-now",
       tag: WS_METHODS.scheduledTasksRunNow,
+    }),
+    // FORK: the night mode. Starting launches the overseer, so it is off the config lane.
+    startNight: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:night:start",
+      tag: WS_METHODS.nightStart,
+    }),
+    leaveNight: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:night:leave",
+      tag: WS_METHODS.nightLeave,
+    }),
+    stopNight: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:night:stop",
+      tag: WS_METHODS.nightStop,
+    }),
+    // FORK: card agents a few at a time.
+    startAgentQueue: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:agent-queue:start",
+      tag: WS_METHODS.agentQueueStart,
+    }),
+    cancelAgentQueue: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:agent-queue:cancel",
+      tag: WS_METHODS.agentQueueCancel,
     }),
     rotateScheduledTaskWebhookToken: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:rotate-webhook-token",
