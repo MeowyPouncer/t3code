@@ -64,7 +64,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-import type { TimestampFormat } from "@t3tools/contracts/settings";
+import type { SidebarThreadLocationLabel, TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
@@ -239,6 +239,7 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   type SidebarThreadStatus,
+  resolveSidebarThreadLocation,
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import {
@@ -520,6 +521,14 @@ function SidebarThreadTooltip({
     .filter((instanceId) => instanceId !== modelInstanceId)
     .map((instanceId) => providerEntryByInstanceId.get(instanceId)?.displayName ?? instanceId);
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
+  // FORK: the same branch-or-folder line as the row.
+  const locationLabel = useClientSettings((settings) => settings.sidebarThreadLocationLabel);
+  const location = resolveSidebarThreadLocation({
+    mode: locationLabel,
+    branch: thread.branch,
+    worktreePath: thread.worktreePath,
+    workspaceRoot: project?.workspaceRoot ?? null,
+  });
   return (
     <ThreadHoverCardPopup side="right" align="start" sideOffset={4}>
       <ThreadHoverCard
@@ -580,10 +589,14 @@ function SidebarThreadTooltip({
             <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
           </div>
         ) : null}
-        {thread.branch ? (
+        {location ? (
           <div className="flex min-w-0 items-center gap-2">
-            <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
-            <MiddleTruncate value={thread.branch} className="flex" />
+            {locationLabel === "worktree" ? (
+              <FolderIcon className="size-3 shrink-0 stroke-muted-foreground" />
+            ) : (
+              <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
+            )}
+            <MiddleTruncate value={location} className="flex" />
           </div>
         ) : null}
         {branchMismatch ? (
@@ -1334,6 +1347,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
+  // FORK: whether the line below the title names the branch or the folder.
+  locationLabel: SidebarThreadLocationLabel;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -1591,6 +1606,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // different machines apart.
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
   const showsScratchMachine = !thread.branch && props.scratchMachineLabel !== null;
+  const location = showsScratchMachine
+    ? null
+    : resolveSidebarThreadLocation({
+        mode: props.locationLabel,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        workspaceRoot: props.project?.workspaceRoot ?? null,
+      });
 
   const detailsTooltip = (
     <SidebarThreadTooltip
@@ -2442,14 +2465,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               ) : null}
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-              {/* Always the branch. The plan step used to take this slot while
-                  working, but it truncated to a half-sentence and dropped the
-                  branch, so the row lost its most stable identifier. */}
-              {thread.branch ? (
+              {/* Always the branch (FORK: or the folder, by setting). The plan
+                  step used to take this slot while working, but it truncated to
+                  a half-sentence and dropped the branch, so the row lost its
+                  most stable identifier. */}
+              {location ? (
                 <>
                   <ThreadWorktreeIndicator thread={thread} />
                   <span className="flex min-w-0 flex-1 text-muted-foreground/40">
-                    <MiddleTruncate value={thread.branch} showTitle={false} />
+                    <MiddleTruncate value={location} showTitle={false} />
                   </span>
                 </>
               ) : showsScratchMachine ? (
@@ -2728,6 +2752,7 @@ export default function Sidebar() {
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  const threadLocationLabel = useClientSettings((s) => s.sidebarThreadLocationLabel);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
@@ -5982,6 +6007,7 @@ export default function Sidebar() {
                               EMPTY_PROVIDER_ENTRIES
                             }
                             timestampFormat={timestampFormat}
+                            locationLabel={threadLocationLabel}
                             onThreadClick={handleThreadClick}
                             onThreadActivate={navigateToThread}
                             onStartRename={startThreadRename}
