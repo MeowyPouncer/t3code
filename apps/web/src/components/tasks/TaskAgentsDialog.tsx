@@ -281,7 +281,8 @@ export function TaskAgentsDialog(props: {
               <div className="flex flex-col gap-1.5">
                 <Label>At once</Label>
                 <Select
-                  value={String(limit)}
+                  // A limit at or above the card count starts them all, so it reads that way.
+                  value={maxRunning === undefined ? "all" : String(maxRunning)}
                   items={[
                     ...TASK_AGENT_LIMITS.filter((value) => value < cards.length).map((value) => ({
                       value: String(value),

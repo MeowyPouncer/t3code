@@ -391,7 +391,8 @@ function NightSetup(props: {
                 ) : null}
                 {pickedCards.length > 1 ? (
                   <Select
-                    value={String(limit)}
+                    // A limit at or above the card count starts them all, so it reads that way.
+                    value={limit === "all" || limit >= pickedCards.length ? "all" : String(limit)}
                     items={[
                       ...TASK_AGENT_LIMITS.filter((value) => value < pickedCards.length).map(
                         (value) => ({ value: String(value), label: `At most ${value} at once` }),
