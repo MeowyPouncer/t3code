@@ -154,6 +154,8 @@ export const nightEndStartedMessage = (input: {
   readonly started: ReadonlyArray<Pick<NightThread, "id" | "title">>;
   readonly failed: ReadonlyArray<{ readonly title: string; readonly reason: string }>;
   readonly position?: { readonly index: number; readonly total: number };
+  /** Agents that start later, each once a slot frees up. */
+  readonly waiting?: number;
 }): string =>
   [
     input.what === "agents"
@@ -161,6 +163,11 @@ export const nightEndStartedMessage = (input: {
       : `Nothing works any more, so T3 started queued prompt ${(input.position?.index ?? 0) + 1} of ${input.position?.total ?? 1}:`,
     ...input.started.map((thread) => `- ${link(thread)}`),
     ...input.failed.map((launch) => `- could not start "${launch.title}": ${launch.reason}`),
+    ...(input.waiting === undefined || input.waiting === 0
+      ? []
+      : [
+          `${input.waiting} more ${input.waiting === 1 ? "starts" : "start"} as the running ones finish.`,
+        ]),
     "Watch them like the other sessions.",
   ].join("\n");
 

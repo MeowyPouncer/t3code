@@ -1,4 +1,9 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { ThreadId, TodoBoardCard, TodoBoardSnapshot } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -28,6 +33,8 @@ import { useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { useServerConfigs } from "~/state/entities";
 import { projectTodoBoard } from "~/state/projects";
 import { useEnvironmentQuery } from "~/state/query";
+import { serverEnvironment } from "~/state/server";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { toastManager } from "~/components/ui/toast";
 import { TaskAgentsDialog } from "./TaskAgentsDialog";
@@ -192,6 +199,21 @@ export function TasksPanel({
   const configs = useServerConfigs();
   const config = configs.get(project.environmentId);
   const supported = config?.environment.capabilities.todoBoard === true;
+  // FORK: cards still waiting for a free slot, from this project's queues.
+  const unattended = useEnvironmentQuery(
+    config?.environment.capabilities.agentQueue === true
+      ? serverEnvironment.unattendedLive({ environmentId: project.environmentId, input: {} })
+      : null,
+  );
+  const queues = (unattended.data?.agentQueues ?? []).filter((queue) =>
+    queue.waiting.some((launch) => launch.projectId === project.id),
+  );
+  const canCancelQueue = useAtomValue(
+    serverEnvironment.cancelAgentQueue.permissionAtom(project.environmentId),
+  );
+  const cancelQueue = useAtomCommand(serverEnvironment.cancelAgentQueue, {
+    label: "cancel waiting card agents",
+  });
   // Keep the scroll container and snapshot while a source file covers the board.
   // Only visible panels poll for updates.
   const query = useEnvironmentQuery(
@@ -268,10 +290,10 @@ export function TasksPanel({
   const selectedCards = [...snapshot.cards, ...snapshot.backlog_cards].filter(
     (card) => selected.has(card.id) && canStartTaskAgent(card),
   );
-  const startedAgents = (threads: ReadonlyArray<ThreadId>) => {
+  const startedAgents = (threads: ReadonlyArray<ThreadId>, waiting: number) => {
     setSelected(new Set());
     const [first] = threads;
-    if (threads.length === 1 && first !== undefined) {
+    if (threads.length === 1 && first !== undefined && waiting === 0) {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(scopeThreadRef(project.environmentId, first)),
@@ -280,8 +302,11 @@ export function TasksPanel({
     }
     toastManager.add({
       type: "success",
-      title: `Started ${threads.length} agents`,
-      description: "Their threads are in the sidebar.",
+      title: `Started ${threads.length} ${threads.length === 1 ? "agent" : "agents"}`,
+      description:
+        waiting === 0
+          ? "Their threads are in the sidebar."
+          : `${waiting} more start as these finish. Their threads are in the sidebar.`,
     });
   };
   const renderCard = (card: TodoBoardCard) => (
@@ -443,6 +468,38 @@ export function TasksPanel({
             Refresh failed. Showing the previous snapshot.
           </div>
         ) : null}
+        {queues.map((queue) => (
+          <div
+            key={queue.id}
+            className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+          >
+            <span className="tabular-nums">
+              {queue.label}: {queue.waiting.length} waiting, {queue.maxRunning} at a time
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={!canCancelQueue}
+              onClick={() =>
+                void cancelQueue({
+                  environmentId: project.environmentId,
+                  input: { id: queue.id },
+                }).then((result) => {
+                  if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                    const error = squashAtomCommandFailure(result);
+                    toastManager.add({
+                      type: "error",
+                      title: "Could not cancel the waiting agents",
+                      description: error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                })
+              }
+            >
+              Cancel the rest
+            </Button>
+          </div>
+        ))}
         {selectedCards.length > 0 ? (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="tabular-nums">{selectedCards.length} selected</span>

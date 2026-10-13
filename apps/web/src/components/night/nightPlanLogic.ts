@@ -1,7 +1,7 @@
 // FORK: the night mode's plan as the client composes it, and its state as the client shows it.
 import type {
   ModelSelection,
-  NightLaunch,
+  AgentLaunch,
   NightState,
   ProjectId,
   RuntimeMode,
@@ -37,24 +37,39 @@ export function planNightEnd(input: {
   readonly mode: TaskAgentsMode;
   readonly instructions: string;
   readonly prompts: ReadonlyArray<string>;
-}): { readonly agents: ReadonlyArray<NightLaunch>; readonly queue: ReadonlyArray<NightLaunch> } {
+  /** How many card agents work at once; an orchestrator is told instead. */
+  readonly maxRunning?: number;
+}): {
+  readonly agents: ReadonlyArray<AgentLaunch>;
+  readonly maxAgents?: number;
+  readonly queue: ReadonlyArray<AgentLaunch>;
+} {
   const base = {
     projectId: input.projectId,
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
     interactionMode: "default" as const,
   };
+  const maxRunning =
+    input.maxRunning !== undefined && input.maxRunning < input.cards.length
+      ? input.maxRunning
+      : undefined;
   const agents = planTaskAgentLaunches({
     mode: input.mode,
     projectTitle: input.projectTitle,
     cards: input.cards,
     instructions: input.instructions,
+    ...(maxRunning === undefined ? {} : { maxRunning }),
   }).map((launch) => ({ ...base, ...launch }));
   const queue = input.prompts
     .map((text) => text.trim())
     .filter((text) => text.length > 0)
     .map((text) => ({ ...base, title: nightPromptTitle(text), text }));
-  return { agents, queue };
+  return {
+    agents,
+    ...(maxRunning !== undefined && input.mode === "separate" ? { maxAgents: maxRunning } : {}),
+    queue,
+  };
 }
 
 const clock = (iso: string) =>

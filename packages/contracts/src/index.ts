@@ -48,6 +48,7 @@ export * from "./editor.ts";
 export * from "./project.ts";
 export * from "./todoBoard.ts";
 // FORK: the night mode.
+export * from "./agentQueue.ts";
 export * from "./night.ts";
 export * from "./filesystem.ts";
 export * from "./agentSessions.ts";

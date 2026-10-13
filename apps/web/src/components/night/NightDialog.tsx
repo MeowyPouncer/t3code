@@ -45,7 +45,9 @@ import { scheduledTaskDefaultModel } from "../settings/scheduledTasksSettings.lo
 import {
   canStartTaskAgent,
   DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
+  DEFAULT_TASK_AGENT_LIMIT,
   ORCHESTRATOR_INSTRUCTIONS_PATH,
+  TASK_AGENT_LIMITS,
   type TaskAgentsMode,
 } from "../tasks/taskAgentsLogic";
 import { Button } from "../ui/button";
@@ -223,6 +225,7 @@ function NightSetup(props: {
   const [briefingMinutes, setBriefingMinutes] = useState<number>(DEFAULT_NIGHT_BRIEFING_MINUTES);
   const [selectedCards, setSelectedCards] = useState<ReadonlySet<string>>(() => new Set());
   const [mode, setMode] = useState<TaskAgentsMode>("separate");
+  const [limit, setLimit] = useState<number | "all">(DEFAULT_TASK_AGENT_LIMIT);
   // Each prompt keeps its id while the list changes around it.
   const [prompts, setPrompts] = useState<
     ReadonlyArray<{ readonly id: number; readonly text: string }>
@@ -265,6 +268,7 @@ function NightSetup(props: {
         mode: orchestrator ? "orchestrator" : "separate",
         instructions,
         prompts: prompts.map((prompt) => prompt.text),
+        ...(limit === "all" ? {} : { maxRunning: limit }),
       })
     : null;
   const blocked =
@@ -284,7 +288,12 @@ function NightSetup(props: {
         runtimeMode: projectDefaults.defaultRuntimeMode,
       },
       briefingMinutes,
-      end: { agents: end.agents, queue: end.queue, powerOff },
+      end: {
+        agents: end.agents,
+        ...(end.maxAgents === undefined ? {} : { maxAgents: end.maxAgents }),
+        queue: end.queue,
+        powerOff,
+      },
     };
     setStarting(true);
     const result = await startNight({ environmentId, input: plan });
@@ -380,6 +389,34 @@ function NightSetup(props: {
                     <Toggle value="orchestrator">One orchestrator</Toggle>
                   </ToggleGroup>
                 ) : null}
+                {pickedCards.length > 1 ? (
+                  <Select
+                    value={String(limit)}
+                    items={[
+                      ...TASK_AGENT_LIMITS.filter((value) => value < pickedCards.length).map(
+                        (value) => ({ value: String(value), label: `At most ${value} at once` }),
+                      ),
+                      { value: "all", label: "All of them at once" },
+                    ]}
+                    onValueChange={(value) =>
+                      setLimit(value === "all" || value === null ? "all" : Number(value))
+                    }
+                  >
+                    <SelectTrigger size="sm" aria-label="Card agents at once">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {TASK_AGENT_LIMITS.filter((value) => value < pickedCards.length).map(
+                        (value) => (
+                          <SelectItem key={value} value={String(value)}>
+                            At most {value} at once
+                          </SelectItem>
+                        ),
+                      )}
+                      <SelectItem value="all">All of them at once</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                ) : null}
               </>
             ) : null}
             <span className="text-xs text-muted-foreground">
@@ -464,6 +501,8 @@ function NightSetup(props: {
 function NightStatus(props: {
   readonly environmentId: EnvironmentId;
   readonly state: NightState;
+  /** Agents still waiting for a free slot. */
+  readonly waitingAgents: number;
   readonly projectTitle: string | null;
   readonly onClose: () => void;
 }) {
@@ -498,7 +537,7 @@ function NightStatus(props: {
 
   const plannedEnd = [
     end.agents.length > 0
-      ? `${end.agents.length} ${end.agents.length === 1 ? "agent" : "agents"}${state.agentsStarted ? " started" : ""}`
+      ? `${end.agents.length} ${end.agents.length === 1 ? "agent" : "agents"}${end.maxAgents === undefined ? "" : `, ${end.maxAgents} at a time`}${state.agentsStarted ? (props.waitingAgents > 0 ? `, ${props.waitingAgents} still waiting` : " started") : ""}`
       : null,
     end.queue.length > 0 ? `${state.queueStarted} of ${end.queue.length} prompts started` : null,
     end.powerOff ? "power off" : null,
@@ -586,10 +625,14 @@ export function NightDialog(props: { readonly onClose: () => void }) {
     configs.get(environmentId)?.environment.capabilities.nightMode === true;
   const night = useEnvironmentQuery(
     environmentId !== null && supported
-      ? serverEnvironment.nightLive({ environmentId, input: {} })
+      ? serverEnvironment.unattendedLive({ environmentId, input: {} })
       : null,
   );
-  const state = night.data?.state ?? null;
+  const state = night.data?.night ?? null;
+  const waitingAgents = (night.data?.agentQueues ?? []).reduce(
+    (total, queue) => total + queue.waiting.length,
+    0,
+  );
 
   const projectPicker = (
     <Select
@@ -626,6 +669,7 @@ export function NightDialog(props: { readonly onClose: () => void }) {
           <NightStatus
             environmentId={environmentId}
             state={state}
+            waitingAgents={waitingAgents}
             projectTitle={
               projects.find(
                 (item) =>

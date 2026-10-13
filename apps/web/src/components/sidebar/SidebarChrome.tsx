@@ -197,10 +197,10 @@ function SidebarNightItem() {
     configs.get(environmentId)?.environment.capabilities.nightMode === true;
   const night = useEnvironmentQuery(
     environmentId !== null && supported
-      ? serverEnvironment.nightLive({ environmentId, input: {} })
+      ? serverEnvironment.unattendedLive({ environmentId, input: {} })
       : null,
   );
-  const state = night.data?.state ?? null;
+  const state = night.data?.night ?? null;
   return (
     <>
       <SidebarUtilityItem

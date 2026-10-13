@@ -193,6 +193,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as TodoBoard from "./project/TodoBoard.ts";
 import * as Night from "./night/NightService.ts";
+import * as AgentQueue from "./agentQueue/AgentQueueService.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import {
   claudeSessionIdsForThread,
@@ -1296,6 +1297,7 @@ const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const todoBoard = yield* TodoBoard.TodoBoard;
       const night = yield* Night.NightService;
+      const agentQueue = yield* AgentQueue.AgentQueueService;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2704,7 +2706,9 @@ const layerWsRpc = (
         [WS_METHODS.nightStart]: (plan) => night.start(plan),
         [WS_METHODS.nightLeave]: (_input) => night.leave(),
         [WS_METHODS.nightStop]: (_input) => night.stop(),
-        [WS_METHODS.nightSubscribe]: (_input) => night.subscribe(),
+        [WS_METHODS.unattendedSubscribe]: (_input) => night.subscribe(),
+        [WS_METHODS.agentQueueStart]: (input) => agentQueue.start(input),
+        [WS_METHODS.agentQueueCancel]: (input) => agentQueue.cancel(input.id),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(

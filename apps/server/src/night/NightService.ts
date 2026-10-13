@@ -6,9 +6,9 @@ import {
   MessageId,
   NightError,
   NightState,
-  type NightLaunch,
+  type AgentLaunch,
   type NightPlan,
-  type NightStreamItem,
+  type UnattendedStreamItem,
   type OrchestrationV2DomainEvent,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -27,6 +27,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import * as AgentQueue from "../agentQueue/AgentQueueService.ts";
 import { ServerConfig } from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -85,7 +86,8 @@ export class NightService extends Context.Service<
     readonly leave: () => Effect.Effect<NightState, NightError>;
     /** Ends a running night, or dismisses a finished one. */
     readonly stop: () => Effect.Effect<void, NightError>;
-    readonly subscribe: () => Stream.Stream<NightStreamItem>;
+    /** The night and the agent queues, on subscribe and after every change. */
+    readonly subscribe: () => Stream.Stream<UnattendedStreamItem>;
   }
 >()("t3/night/NightService") {}
 
@@ -117,6 +119,7 @@ export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner;
   const scheduler = yield* Scheduler.Scheduler;
   const platform = yield* HostProcess.Platform;
+  const agentQueue = yield* AgentQueue.AgentQueueService;
 
   const statePath = path.join(config.stateDir, "night-mode.json");
   const stateRef = yield* Ref.make<NightState | null>(null);
@@ -186,7 +189,7 @@ export const make = Effect.gen(function* () {
         Effect.catchCause((cause) => Effect.logWarning("night.wake-failed", { key, cause })),
       );
 
-  const launchEnd = (state: NightState, key: string, launch: NightLaunch) =>
+  const launchEnd = (state: NightState, key: string, launch: AgentLaunch) =>
     threadLaunch
       .launch({
         commandId: CommandId.make(`night:${state.id}:${key}`),
@@ -232,17 +235,24 @@ export const make = Effect.gen(function* () {
 
   const startAgents = (state: NightState) =>
     Effect.gen(function* () {
-      const results = yield* Effect.forEach(
-        state.plan.end.agents,
-        (launch, index) => Effect.result(launchEnd(state, `agent:${index}`, launch)),
-        { concurrency: 4 },
-      );
-      const started = results.flatMap((result) =>
-        result._tag === "Success" ? [result.success] : [],
-      );
-      const failed = results.flatMap((result) =>
-        result._tag === "Failure" ? [result.failure] : [],
-      );
+      const { agents, maxAgents } = state.plan.end;
+      // The queue starts the first ones now and each next one as a slot frees up.
+      const queued = yield* agentQueue
+        .start({
+          label: "End-of-night agents",
+          maxRunning: Math.min(maxAgents ?? agents.length, 50),
+          launches: agents,
+        })
+        .pipe(Effect.result);
+      const started =
+        queued._tag === "Success"
+          ? queued.success.started.map((thread) => ({ id: thread.threadId, title: thread.title }))
+          : [];
+      const failed =
+        queued._tag === "Success"
+          ? queued.success.failed
+          : [{ title: `${agents.length} agents`, reason: errorDetail(queued.failure) }];
+      const waiting = queued._tag === "Success" ? queued.success.waiting.length : 0;
       const next: NightState = {
         ...state,
         phase: "ending",
@@ -253,7 +263,7 @@ export const make = Effect.gen(function* () {
       yield* wakeOverseer(
         next,
         "agents",
-        nightEndStartedMessage({ what: "agents", started, failed }),
+        nightEndStartedMessage({ what: "agents", started, failed, waiting }),
       );
     });
 
@@ -313,7 +323,11 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
       const { threads: shells, autoResume } = yield* readThreads;
-      if (!nothingWorks(shells, nowMs, autoResume) || nowMs - runtime.lastRunEventAtMs < QUIET_MS) {
+      if (
+        !nothingWorks(shells, nowMs, autoResume) ||
+        nowMs - runtime.lastRunEventAtMs < QUIET_MS ||
+        (yield* agentQueue.hasWaiting)
+      ) {
         yield* setState({ ...state, poweringOffAt: isoAt(nowMs + POWER_OFF_GRACE_MS) });
         return;
       }
@@ -383,7 +397,12 @@ export const make = Effect.gen(function* () {
           return;
         }
       }
-      if (!nothingWorks(shells, nowMs, autoResume) || nowMs - runtime.lastRunEventAtMs < QUIET_MS) {
+      if (
+        !nothingWorks(shells, nowMs, autoResume) ||
+        nowMs - runtime.lastRunEventAtMs < QUIET_MS ||
+        // Agents still waiting for a slot are work the night has not done.
+        (yield* agentQueue.hasWaiting)
+      ) {
         return;
       }
       const step = nextNightStep(state);
@@ -588,11 +607,13 @@ export const make = Effect.gen(function* () {
         // Subscribe first so a change between the two is not lost.
         const subscription = yield* PubSub.subscribe(changes);
         const current = yield* Ref.get(stateRef);
-        return Stream.concat(
-          Stream.make({ state: current }),
-          Stream.fromSubscription(subscription).pipe(Stream.map((state) => ({ state }))),
-        );
+        return Stream.concat(Stream.make(current), Stream.fromSubscription(subscription));
       }),
+    ).pipe(
+      Stream.zipLatestWith(agentQueue.subscribe(), (night, agentQueues) => ({
+        night,
+        agentQueues,
+      })),
     );
 
   // A night saved by an earlier run of this server goes on, but a power off it had armed does

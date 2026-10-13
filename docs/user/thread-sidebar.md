@@ -272,13 +272,18 @@ To hand cards to agents, press **Start agent** on a card, or tick several cards 
   writer for each of them. Its system instructions come from `.t3/orchestrator.md` in the project;
   without that file it uses built-in ones. The scroll icon next to the thread's title shows them.
 
+With several cards, **At once** limits how many agents work at the same time, three by default. With
+a thread per card, T3 starts that many now and each of the rest when one of them finishes or stops to
+wait for your answer; Tasks shows how many still wait, and **Cancel the rest** drops them. An
+orchestrator is told the limit instead and keeps to it itself.
+
 ## Leave agents working overnight
 
 The moon in the sidebar plans a night, so you can go to bed with agents still working. On web and
 desktop, choose the project and the overseer's model, then what should happen once all the work is
 done:
 
-- start agents for TODO cards you tick, the way **Tasks** starts them;
+- start agents for TODO cards you tick, the way **Tasks** starts them, a few at a time;
 - then run prompts you queue, one at a time, each in a new thread;
 - then power the computer off.
 

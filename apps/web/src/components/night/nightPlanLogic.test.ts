@@ -66,6 +66,15 @@ describe("planNightEnd", () => {
     });
   });
 
+  it("limits card agents through the queue, and tells an orchestrator instead", () => {
+    const cards = [card("A-1", "One"), card("A-2", "Two"), card("A-3", "Three")];
+    expect(plan({ cards, maxRunning: 2 }).maxAgents).toBe(2);
+    expect(plan({ cards, maxRunning: 3 }).maxAgents).toBeUndefined();
+    const orchestrated = plan({ cards, maxRunning: 2, mode: "orchestrator" });
+    expect(orchestrated.maxAgents).toBeUndefined();
+    expect(orchestrated.agents[0]?.text).toContain("Run at most 2 writers at a time");
+  });
+
   it("queues each prompt that has text, named by its first line", () => {
     const { agents, queue } = plan({ prompts: ["  Update the docs\nthen the changelog", " ", ""] });
     expect(agents).toEqual([]);

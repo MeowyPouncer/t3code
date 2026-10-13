@@ -2,22 +2,10 @@
 // top-level session, and T3 runs what the user queued for the end of the night.
 import * as Schema from "effect/Schema";
 
+import { AgentLaunch, AgentQueue, AgentQueueMaxRunning } from "./agentQueue.ts";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { OrchestrationV2ThreadInstructions } from "./orchestrationV2.ts";
-import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
-
-/** A thread T3 starts at the end of the night, as the client composed it when the night began. */
-export const NightLaunch = Schema.Struct({
-  projectId: ProjectId,
-  title: TrimmedNonEmptyString,
-  text: TrimmedNonEmptyString,
-  instructions: Schema.optional(OrchestrationV2ThreadInstructions),
-  modelSelection: ModelSelection,
-  runtimeMode: RuntimeMode,
-  interactionMode: ProviderInteractionMode,
-});
-export type NightLaunch = typeof NightLaunch.Type;
+import { RuntimeMode } from "./providerPolicy.ts";
 
 export const NightPlan = Schema.Struct({
   overseer: Schema.Struct({
@@ -28,10 +16,12 @@ export const NightPlan = Schema.Struct({
   /** How long the briefing waits for "I'm leaving" before the night starts on its own. */
   briefingMinutes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 240 })),
   end: Schema.Struct({
-    /** Started together once nothing works any more, such as agents for TODO cards. */
-    agents: Schema.Array(NightLaunch),
+    /** Started once nothing works any more, such as agents for TODO cards. */
+    agents: Schema.Array(AgentLaunch),
+    /** How many of those agents work at once; all of them when absent. */
+    maxAgents: Schema.optional(AgentQueueMaxRunning),
     /** Then started one at a time, each once nothing works any more. */
-    queue: Schema.Array(NightLaunch),
+    queue: Schema.Array(AgentLaunch),
     /** Power the computer off after the morning report, when nothing works. */
     powerOff: Schema.Boolean,
   }),
@@ -77,8 +67,16 @@ export const NightState = Schema.Struct({
 });
 export type NightState = typeof NightState.Type;
 
-export const NightStreamItem = Schema.Struct({ state: Schema.NullOr(NightState) });
-export type NightStreamItem = typeof NightStreamItem.Type;
+/**
+ * The work that runs while nobody watches: the night and the agent queues. One stream serves both,
+ * one item on subscribe and one after every change.
+ */
+export const UnattendedStreamItem = Schema.Struct({
+  night: Schema.NullOr(NightState),
+  /** Queues that still have launches waiting. */
+  agentQueues: Schema.Array(AgentQueue),
+});
+export type UnattendedStreamItem = typeof UnattendedStreamItem.Type;
 
 export class NightError extends Schema.TaggedError<NightError>()("NightError", {
   operation: Schema.Literals(["start", "leave", "stop", "persist"]),

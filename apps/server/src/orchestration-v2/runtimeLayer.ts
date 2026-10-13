@@ -46,6 +46,7 @@ import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as NightRules from "../night/NightRules.ts";
 import * as NightService from "../night/NightService.ts";
+import * as AgentQueue from "../agentQueue/AgentQueueService.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -353,6 +354,11 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+// FORK: card agents a few at a time; one instance serves Tasks and the night.
+const layerAgentQueueProvided = AgentQueue.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerOrchestratorProvided, layerThreadLaunchProvided)),
+);
+
 // FORK: the night mode; NightRules.layer is the instance RuntimePolicy reads.
 const layerNightProvided = NightService.layer.pipe(
   Layer.provide(
@@ -361,6 +367,7 @@ const layerNightProvided = NightService.layer.pipe(
       layerOrchestratorProvided,
       layerThreadManagementProvided,
       layerThreadLaunchProvided,
+      layerAgentQueueProvided,
       ProcessRunner.layer,
     ),
   ),
@@ -378,6 +385,7 @@ export const layerProduction = Layer.mergeAll(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
   FileChangeAutoDecline.layer.pipe(Layer.provide(layerThreadManagementProvided)),
+  layerAgentQueueProvided,
   layerNightProvided,
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,

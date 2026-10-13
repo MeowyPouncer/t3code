@@ -22,6 +22,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as AgentQueue from "../agentQueue/AgentQueueService.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -54,26 +55,27 @@ const plan: NightPlan = {
 };
 
 /** A thread whose agent is mid-turn, as the shell snapshot shows it. */
-const working = {
-  id: ThreadId.make("thread-working"),
-  title: "Working",
-  lineage: {
-    parentThreadId: null,
-    relationshipToParent: null,
-    rootThreadId: ThreadId.make("thread-working"),
-  },
-  archivedAt: null,
-  settledOverride: null,
-  status: "running",
-  activityRunStatus: "running",
-  pendingRuntimeRequest: null,
-  pendingBackgroundTasks: [],
-  latestUserMessageAt: null,
-  latestRunId: RunId.make("run-working"),
-  latestRunRequestedAt: DateTime.makeUnsafe(0),
-  latestRunStartedAt: DateTime.makeUnsafe(0),
-  latestRunCompletedAt: null,
-} as unknown as OrchestrationV2ThreadShell;
+const workingThread = (id: string) =>
+  ({
+    id: ThreadId.make(id),
+    title: id,
+    lineage: {
+      parentThreadId: null,
+      relationshipToParent: null,
+      rootThreadId: ThreadId.make(id),
+    },
+    archivedAt: null,
+    settledOverride: null,
+    status: "running",
+    activityRunStatus: "running",
+    pendingRuntimeRequest: null,
+    pendingBackgroundTasks: [],
+    latestUserMessageAt: null,
+    latestRunId: RunId.make("run-working"),
+    latestRunRequestedAt: DateTime.makeUnsafe(0),
+    latestRunStartedAt: DateTime.makeUnsafe(0),
+    latestRunCompletedAt: null,
+  }) as unknown as OrchestrationV2ThreadShell;
 
 const makeHarness = (baseDir: string) =>
   Effect.gen(function* () {
@@ -88,64 +90,63 @@ const makeHarness = (baseDir: string) =>
           due.push(work.pipe(Effect.provideContext(context), Effect.ignore));
         }),
       );
-    const context = yield* Layer.build(
-      Layer.mergeAll(
-        NightRules.layer,
-        Layer.succeed(HostProcess.Platform, "linux"),
-        Layer.succeed(Scheduler.Scheduler, Scheduler.Scheduler.of({ register })),
-        Layer.mock(ThreadManagement.ThreadManagementService)({
-          sendToThread: (input) =>
-            Effect.sync(() => {
-              sent.push(input);
-              return {} as unknown as ThreadManagement.ThreadManagementSendResult;
-            }),
-          streamDomainEvents: Stream.never,
-          getThreadShell: () => Effect.succeed(null),
-        }),
-        Layer.mock(Orchestrator.OrchestratorV2)({
-          getShellSnapshot: () =>
-            Ref.get(shells).pipe(
-              Effect.map((threads) => ({
-                schemaVersion: 1,
-                snapshotSequence: 0,
-                threads,
-                archivedThreads: [],
-              })),
-            ),
-        }),
-        Layer.mock(ThreadLaunch.ThreadLaunchService)({
-          launch: (input) =>
-            Effect.sync(() => {
-              launched.push(input);
-              return {
-                threadId: ThreadId.make(`thread-${launched.length}`),
-                resumed: false,
-              } as unknown as ThreadLaunch.ThreadLaunchResult;
-            }),
-        }),
-        Layer.succeed(
-          ProcessRunner.ProcessRunner,
-          ProcessRunner.ProcessRunner.of({
-            run: (input) =>
-              Effect.sync(() => {
-                commands.push([input.command, ...input.args].join(" "));
-                return {
-                  stdout: "",
-                  stderr: "",
-                  code: ChildProcessSpawner.ExitCode(0),
-                  timedOut: false,
-                  stdoutTruncated: false,
-                  stderrTruncated: false,
-                  stdoutInvalidUtf8: false,
-                  stderrInvalidUtf8: false,
-                };
-              }),
+    const base = Layer.mergeAll(
+      NightRules.layer,
+      Layer.succeed(HostProcess.Platform, "linux"),
+      Layer.succeed(Scheduler.Scheduler, Scheduler.Scheduler.of({ register })),
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        sendToThread: (input) =>
+          Effect.sync(() => {
+            sent.push(input);
+            return {} as unknown as ThreadManagement.ThreadManagementSendResult;
           }),
-        ),
-        ServerSettings.layerTest(),
-        ServerConfig.layerTest(process.cwd(), baseDir),
-      ).pipe(Layer.provideMerge(NodeServices.layer)),
-    );
+        streamDomainEvents: Stream.never,
+        getThreadShell: () => Effect.succeed(null),
+      }),
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getShellSnapshot: () =>
+          Ref.get(shells).pipe(
+            Effect.map((threads) => ({
+              schemaVersion: 1,
+              snapshotSequence: 0,
+              threads,
+              archivedThreads: [],
+            })),
+          ),
+      }),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        launch: (input) =>
+          Effect.sync(() => {
+            launched.push(input);
+            return {
+              threadId: ThreadId.make(`thread-${launched.length}`),
+              resumed: false,
+            } as unknown as ThreadLaunch.ThreadLaunchResult;
+          }),
+      }),
+      Layer.succeed(
+        ProcessRunner.ProcessRunner,
+        ProcessRunner.ProcessRunner.of({
+          run: (input) =>
+            Effect.sync(() => {
+              commands.push([input.command, ...input.args].join(" "));
+              return {
+                stdout: "",
+                stderr: "",
+                code: ChildProcessSpawner.ExitCode(0),
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              };
+            }),
+        }),
+      ),
+      ServerSettings.layerTest(),
+      ServerConfig.layerTest(process.cwd(), baseDir),
+    ).pipe(Layer.provideMerge(NodeServices.layer));
+    const context = yield* Layer.build(AgentQueue.layer.pipe(Layer.provideMerge(base)));
     const service = yield* NightService.make.pipe(Effect.provideContext(context));
     return {
       service,
@@ -167,7 +168,7 @@ const stateOf = (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
   harness.service.subscribe().pipe(
     Stream.take(1),
     Stream.runHead,
-    Effect.map((item) => (item._tag === "Some" ? item.value.state : null)),
+    Effect.map((item) => (item._tag === "Some" ? item.value.night : null)),
   );
 
 describe("NightService", () => {
@@ -188,7 +189,7 @@ describe("NightService", () => {
         assert.equal(harness.sent.at(-1)?.mode, "queue");
 
         // Something works: the night waits.
-        yield* Ref.set(harness.shells, [working]);
+        yield* Ref.set(harness.shells, [workingThread("thread-working")]);
         yield* TestClock.adjust("61 seconds");
         yield* harness.runDue;
         assert.lengthOf(harness.launched, 1);
@@ -223,6 +224,46 @@ describe("NightService", () => {
         const off = yield* stateOf(harness);
         assert.isNull(off?.poweringOffAt);
         assert.isNotNull(off?.poweredOffAt);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("starts the end-of-night agents a few at a time", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(yield* tempDir);
+        yield* harness.service.start({
+          ...plan,
+          end: {
+            agents: [launch("CARD-1"), launch("CARD-2")],
+            maxAgents: 1,
+            queue: [],
+            powerOff: false,
+          },
+        });
+        yield* harness.service.leave();
+        yield* TestClock.adjust("61 seconds");
+        yield* harness.runDue;
+        assert.deepEqual(
+          harness.launched.map((input) => input.title),
+          ["Night overseer", "CARD-1"],
+        );
+
+        // CARD-1 (thread-2) still works: CARD-2 waits and the night does not move on.
+        yield* Ref.set(harness.shells, [workingThread("thread-2")]);
+        yield* TestClock.adjust("31 seconds");
+        yield* harness.runDue;
+        assert.lengthOf(harness.launched, 2);
+        assert.equal((yield* stateOf(harness))?.phase, "ending");
+
+        // CARD-1 is done: CARD-2 takes its slot.
+        yield* Ref.set(harness.shells, []);
+        yield* TestClock.adjust("31 seconds");
+        yield* harness.runDue;
+        assert.deepEqual(
+          harness.launched.map((input) => input.title),
+          ["Night overseer", "CARD-1", "CARD-2"],
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
