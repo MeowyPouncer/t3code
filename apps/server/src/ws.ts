@@ -192,6 +192,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as TodoBoard from "./project/TodoBoard.ts";
+import * as Night from "./night/NightService.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import {
   claudeSessionIdsForThread,
@@ -1294,6 +1295,7 @@ const layerWsRpc = (
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const todoBoard = yield* TodoBoard.TodoBoard;
+      const night = yield* Night.NightService;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2699,6 +2701,10 @@ const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsReadTodoBoard]: (input) => todoBoard.read(input),
+        [WS_METHODS.nightStart]: (plan) => night.start(plan),
+        [WS_METHODS.nightLeave]: (_input) => night.leave(),
+        [WS_METHODS.nightStop]: (_input) => night.stop(),
+        [WS_METHODS.nightSubscribe]: (_input) => night.subscribe(),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(

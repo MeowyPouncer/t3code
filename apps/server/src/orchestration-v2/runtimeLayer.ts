@@ -44,6 +44,9 @@ import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as NightRules from "../night/NightRules.ts";
+import * as NightService from "../night/NightService.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
@@ -60,7 +63,8 @@ export const layerEventInfrastructure = Layer.mergeAll(
 );
 
 const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(ProjectStore.layer),
+  // FORK: the night mode's rules; NightService sets the same shared instance.
+  Layer.provide(Layer.mergeAll(ProjectStore.layer, NightRules.layer)),
 );
 
 const layerEventStoreProvided = EventStore.layerFromOrchestrationEventStore.pipe(
@@ -349,6 +353,19 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+// FORK: the night mode; NightRules.layer is the instance RuntimePolicy reads.
+const layerNightProvided = NightService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      NightRules.layer,
+      layerOrchestratorProvided,
+      layerThreadManagementProvided,
+      layerThreadLaunchProvided,
+      ProcessRunner.layer,
+    ),
+  ),
+);
+
 export const layerProduction = Layer.mergeAll(
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,
@@ -361,6 +378,7 @@ export const layerProduction = Layer.mergeAll(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
   FileChangeAutoDecline.layer.pipe(Layer.provide(layerThreadManagementProvided)),
+  layerNightProvided,
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),

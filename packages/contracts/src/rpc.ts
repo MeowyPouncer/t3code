@@ -370,6 +370,7 @@ import {
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 import { TodoBoardReadInput, TodoBoardReadResult, TodoBoardReadError } from "./todoBoard.ts";
+import { NightError, NightPlan, NightState, NightStreamItem } from "./night.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -525,6 +526,12 @@ export const WS_METHODS = {
   secretsAnswerRequest: "secrets.answerRequest",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  // FORK: the night mode
+  nightStart: "night.start",
+  nightLeave: "night.leave",
+  nightStop: "night.stop",
+  nightSubscribe: "night.subscribe",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1796,6 +1803,35 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+// FORK: the night mode.
+const WsNightStartRpc = Rpc.make(WS_METHODS.nightStart, {
+  payload: NightPlan,
+  success: NightState,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** The user is leaving: the briefing ends and the night starts. */
+const WsNightLeaveRpc = Rpc.make(WS_METHODS.nightLeave, {
+  payload: Schema.Struct({}),
+  success: NightState,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** Ends a running night, or dismisses a finished one. */
+const WsNightStopRpc = Rpc.make(WS_METHODS.nightStop, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: Schema.Union([NightError, EnvironmentAuthorizationError]),
+});
+
+/** The night's state on subscribe, then after every change. */
+const WsNightSubscribeRpc = Rpc.make(WS_METHODS.nightSubscribe, {
+  payload: Schema.Struct({}),
+  success: NightStreamItem,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2005,6 +2041,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsReadTodoBoardRpc,
+  WsNightStartRpc,
+  WsNightLeaveRpc,
+  WsNightStopRpc,
+  WsNightSubscribeRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

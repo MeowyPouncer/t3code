@@ -3071,6 +3071,8 @@ interface ClaudeLiveQueryContext {
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
   readonly selectionKey: string;
+  // FORK: the thread instructions in this process's system prompt.
+  readonly instructions: string | undefined;
   readonly closed: Deferred.Deferred<void, never>;
   // Retained for process-exit cleanup even when its last turn failed.
   lastTurn: ActiveClaudeTurnContext | null;
@@ -8413,7 +8415,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             existing.queryPolicyKey === queryPolicyKey &&
-            existing.selectionKey === compiledSelection.queryIdentity
+            existing.selectionKey === compiledSelection.queryIdentity &&
+            // FORK: changed thread instructions (such as the night rules) reach the system
+            // prompt by reopening the process with resume. Background work in it keeps the
+            // old process: replacing it would kill that work.
+            (existing.instructions === turnInput.runtimePolicy.instructions ||
+              (yield* liveProcessRunsBackgroundWork(existing)))
           ) {
             // Claude can switch its own mode mid-session (EnterPlanMode), and
             // a denied ExitPlanMode leaves it there. Put the live process back
@@ -8570,6 +8577,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             query: querySession,
             queryPolicyKey,
             selectionKey: compiledSelection.queryIdentity,
+            instructions: turnInput.runtimePolicy.instructions,
             closed,
             lastTurn: null,
             promptEchoMode: "unknown",

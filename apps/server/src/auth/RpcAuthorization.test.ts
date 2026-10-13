@@ -69,6 +69,13 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets a viewer watch the night but only an operator start, leave or end it", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.nightSubscribe)).toBe(AuthOrchestrationReadScope);
+    for (const method of [WS_METHODS.nightStart, WS_METHODS.nightLeave, WS_METHODS.nightStop]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,
