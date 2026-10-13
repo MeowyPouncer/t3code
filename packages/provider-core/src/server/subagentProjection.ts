@@ -82,6 +82,11 @@ export function makeSubagentChildThread(input: {
     settledAt: null,
     snoozedUntil: null,
     snoozedAt: null,
+    // FORK: a subagent works on its own brief. The parent's system instructions (an
+    // orchestrator's) and its place on the shelf stay with the parent.
+    instructions: null,
+    shelvedAt: null,
+    shelfNote: null,
     lastVisitedAt: null,
     deletedAt: null,
   };
