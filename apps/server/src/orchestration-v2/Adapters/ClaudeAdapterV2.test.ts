@@ -223,6 +223,26 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.include(options.settings, { showThinkingSummaries: true });
   });
 
+  it("appends the thread's own instructions to Claude Code's system prompt", () => {
+    const append = (instructions?: string) => {
+      const systemPrompt = ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        nativeThreadId: "instructions-thread",
+        resume: false,
+        cwd: "/workspace",
+        ...(instructions === undefined ? {} : { instructions }),
+      }).systemPrompt;
+      return typeof systemPrompt === "object" && "append" in systemPrompt
+        ? (systemPrompt.append ?? "")
+        : "";
+    };
+    assert.include(
+      append("Orchestrate the selected cards."),
+      "<thread_instructions>\nOrchestrate the selected cards.\n</thread_instructions>",
+    );
+    assert.notInclude(append(), "<thread_instructions>");
+  });
+
   it("gives the claude process, and so its hooks, the thread and project", () => {
     const environment = {
       PATH: "/usr/bin",

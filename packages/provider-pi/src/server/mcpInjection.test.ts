@@ -9,6 +9,7 @@ import {
   T3_MCP_BEARER_ENV,
   T3_MCP_URL_ENV,
   T3_PI_RUNTIME_MODE_ENV,
+  T3_PI_THREAD_INSTRUCTIONS_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
 } from "./mcpExtensionSource.ts";
 import {
@@ -105,6 +106,24 @@ describe("pi T3 MCP injection", () => {
     });
 
     assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "approval-required");
+  });
+
+  it("hands the thread's own instructions to the extension, never an inherited copy", () => {
+    const launch = buildPiRpcLaunch({
+      launchArgs: [],
+      environment: { [T3_PI_THREAD_INSTRUCTIONS_ENV]: "from a parent process" },
+      mcpSession: undefined,
+      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+      instructions: "Orchestrate the selected cards.",
+    });
+    assert.equal(launch.env[T3_PI_THREAD_INSTRUCTIONS_ENV], "Orchestrate the selected cards.");
+    const plain = buildPiRpcLaunch({
+      launchArgs: [],
+      environment: { [T3_PI_THREAD_INSTRUCTIONS_ENV]: "from a parent process" },
+      mcpSession: undefined,
+      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+    });
+    assert.isUndefined(plain.env[T3_PI_THREAD_INSTRUCTIONS_ENV]);
   });
 
   it("forces tools and user extensions off for unattended text generation", () => {

@@ -59,6 +59,12 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
    * are declined by T3 and cannot be accepted (`FileChangeAutoDecline`).
    */
   declineFileChanges: Schema.optional(Schema.Boolean),
+  /**
+   * FORK: the thread's extra system instructions (`appThread.instructions`). Every adapter appends
+   * them where it sends `buildRuntimeInstructions`; a new adapter must too, or an orchestrator
+   * started from Tasks loses its role on that provider.
+   */
+  instructions: Schema.optional(Schema.String),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

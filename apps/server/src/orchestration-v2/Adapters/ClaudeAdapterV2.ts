@@ -991,6 +991,8 @@ export function makeClaudeQueryOptions(input: {
   readonly allowDangerouslySkipPermissions?: boolean;
   /** FORK (T3MIG-FORK-014): SDK callback hooks, such as the Stop hook that reports session crons. */
   readonly hooks?: ClaudeQueryOptions["hooks"];
+  /** FORK: the thread's extra system instructions (`runtimePolicy.instructions`). */
+  readonly instructions?: string;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
   const {
@@ -1079,7 +1081,7 @@ export function makeClaudeQueryOptions(input: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append:
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
+        buildRuntimeInstructions({ harness: "Claude Code", instructions: input.instructions }) +
         (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
@@ -8489,6 +8491,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               threadId: turnInput.threadId,
               projectRoot: turnInput.runtimePolicy.projectRoot,
             },
+            ...(turnInput.runtimePolicy.instructions === undefined
+              ? {}
+              : { instructions: turnInput.runtimePolicy.instructions }),
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}

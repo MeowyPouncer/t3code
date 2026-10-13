@@ -1,6 +1,9 @@
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { TodoBoardCard, TodoBoardSnapshot } from "@t3tools/contracts";
+import type { ThreadId, TodoBoardCard, TodoBoardSnapshot } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import {
+  BotIcon,
   ExpandIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -9,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "~/components/ui/button";
+import { Checkbox } from "~/components/ui/checkbox";
 import { Input } from "~/components/ui/input";
 import {
   Select,
@@ -24,6 +28,10 @@ import { useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { useServerConfigs } from "~/state/entities";
 import { projectTodoBoard } from "~/state/projects";
 import { useEnvironmentQuery } from "~/state/query";
+import { buildThreadRouteParams } from "~/threadRoutes";
+import { toastManager } from "~/components/ui/toast";
+import { TaskAgentsDialog } from "./TaskAgentsDialog";
+import { canStartTaskAgent } from "./taskAgentsLogic";
 import { filteredTasks, taskStatusLabel, type TaskFilters, type TaskView } from "./taskBoardLogic";
 
 interface TasksPanelProps {
@@ -60,11 +68,25 @@ function TaskFilter(props: {
   );
 }
 
-function TaskCard(props: { card: TodoBoardCard; onUse: () => void; onOpen: () => void }) {
+function TaskCard(props: {
+  card: TodoBoardCard;
+  selected: boolean;
+  onToggle: () => void;
+  onUse: () => void;
+  onOpen: () => void;
+  onStart: () => void;
+}) {
   const card = props.card;
+  const startable = canStartTaskAgent(card);
   return (
     <article className="flex flex-col gap-2 rounded-lg border bg-card p-3">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Checkbox
+          checked={props.selected}
+          disabled={!startable}
+          onCheckedChange={props.onToggle}
+          aria-label={`Select ${card.id}`}
+        />
         <span className="min-w-0 flex-1 break-all font-mono">{card.id}</span>
         <span className="shrink-0">{[card.pri, card.size].filter(Boolean).join(" · ") || "—"}</span>
       </div>
@@ -99,6 +121,10 @@ function TaskCard(props: { card: TodoBoardCard; onUse: () => void; onOpen: () =>
         <Button variant="outline" size="xs" onClick={props.onUse}>
           <MessageSquareIcon />
           Use in chat
+        </Button>
+        <Button variant="outline" size="xs" onClick={props.onStart} disabled={!startable}>
+          <BotIcon />
+          Start agent
         </Button>
         <Button variant="ghost" size="xs" onClick={props.onOpen} disabled={card.origin_only}>
           <FileTextIcon />
@@ -182,6 +208,10 @@ export function TasksPanel({
     area: "",
   });
   const [view, setView] = useState<TaskView>("board");
+  // FORK: cards picked for agents, by id; the dialog opens on the cards it starts.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [launch, setLaunch] = useState<ReadonlyArray<TodoBoardCard> | null>(null);
+  const navigate = useNavigate();
   const refresh = query.refresh;
   useEffect(() => {
     if (!visible || !supported) return;
@@ -229,12 +259,40 @@ export function TasksPanel({
     setFilters((previous) => ({ ...previous, [field]: value }));
   const localEnvironment =
     baseUrl !== null && ["localhost", "127.0.0.1", "[::1]"].includes(new URL(baseUrl).hostname);
+  const toggleCard = (card: TodoBoardCard) =>
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(card.id)) next.add(card.id);
+      return next;
+    });
+  const selectedCards = [...snapshot.cards, ...snapshot.backlog_cards].filter(
+    (card) => selected.has(card.id) && canStartTaskAgent(card),
+  );
+  const startedAgents = (threads: ReadonlyArray<ThreadId>) => {
+    setSelected(new Set());
+    const [first] = threads;
+    if (threads.length === 1 && first !== undefined) {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(project.environmentId, first)),
+      });
+      return;
+    }
+    toastManager.add({
+      type: "success",
+      title: `Started ${threads.length} agents`,
+      description: "Their threads are in the sidebar.",
+    });
+  };
   const renderCard = (card: TodoBoardCard) => (
     <TaskCard
       key={card.id}
       card={card}
+      selected={selected.has(card.id)}
+      onToggle={() => toggleCard(card)}
       onUse={() => onUseInChat(card)}
       onOpen={() => onOpenFile(snapshot, card)}
+      onStart={() => setLaunch([card])}
     />
   );
   return (
@@ -385,6 +443,18 @@ export function TasksPanel({
             Refresh failed. Showing the previous snapshot.
           </div>
         ) : null}
+        {selectedCards.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="tabular-nums">{selectedCards.length} selected</span>
+            <Button size="xs" onClick={() => setLaunch(selectedCards)}>
+              <BotIcon />
+              Start agents…
+            </Button>
+            <Button variant="ghost" size="xs" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+          </div>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {cards.length === 0 ? (
@@ -393,6 +463,9 @@ export function TasksPanel({
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b text-muted-foreground">
+                <th className="w-8 p-2">
+                  <span className="sr-only">Select</span>
+                </th>
                 <th className="p-2">Task</th>
                 <th className="p-2">Status</th>
                 <th className="p-2">Priority</th>
@@ -403,6 +476,14 @@ export function TasksPanel({
             <tbody>
               {cards.map((card) => (
                 <tr key={card.id} className="border-b">
+                  <td className="p-2 align-top">
+                    <Checkbox
+                      checked={selected.has(card.id)}
+                      disabled={!canStartTaskAgent(card)}
+                      onCheckedChange={() => toggleCard(card)}
+                      aria-label={`Select ${card.id}`}
+                    />
+                  </td>
                   <td className="min-w-44 p-2">
                     <div className="font-mono text-muted-foreground">{card.id}</div>
                     <button
@@ -429,9 +510,19 @@ export function TasksPanel({
                   <td className="p-2">{card.pri ?? "—"}</td>
                   <td className="p-2">{card.area}</td>
                   <td className="p-2">
-                    <Button variant="outline" size="xs" onClick={() => onUseInChat(card)}>
-                      Use in chat
-                    </Button>
+                    <div className="flex flex-wrap gap-1">
+                      <Button variant="outline" size="xs" onClick={() => onUseInChat(card)}>
+                        Use in chat
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => setLaunch([card])}
+                        disabled={!canStartTaskAgent(card)}
+                      >
+                        Start agent
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -441,6 +532,15 @@ export function TasksPanel({
           <TaskGroups cards={cards} view={view} renderCard={renderCard} />
         )}
       </div>
+      {launch !== null ? (
+        <TaskAgentsDialog
+          project={project}
+          root={snapshot.root}
+          cards={launch}
+          onClose={() => setLaunch(null)}
+          onStarted={startedAgents}
+        />
+      ) : null}
     </div>
   );
 }

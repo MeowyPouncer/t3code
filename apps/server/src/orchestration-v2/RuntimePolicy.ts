@@ -177,6 +177,8 @@ export const layerFromProjectStore: Layer.Layer<
           cwd,
           ...(projectRoot === undefined ? {} : { projectRoot }),
           ...(capped.declineFileChanges ? { declineFileChanges: true } : {}),
+          // FORK: the thread's own system instructions reach every adapter here.
+          ...(input.thread.instructions ? { instructions: input.thread.instructions } : {}),
         });
       }),
     });

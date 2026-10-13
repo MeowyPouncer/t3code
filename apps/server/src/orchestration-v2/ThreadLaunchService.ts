@@ -96,6 +96,8 @@ export interface ThreadLaunchInput {
   readonly creationSource: OrchestrationV2CreationSource;
   /** FORK: the thread whose agent asked for this launch (t3_thread_launch). */
   readonly launchedByThreadId?: ThreadId;
+  /** FORK: extra system instructions for the new thread's agent. */
+  readonly instructions?: string;
 }
 
 /** What workspace preparation reads from a launch; a retry rebuilds it from the run. */
@@ -864,6 +866,7 @@ const make = Effect.gen(function* () {
                 ...(input.launchedByThreadId === undefined
                   ? {}
                   : { launchedByThreadId: input.launchedByThreadId }),
+                ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });

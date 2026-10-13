@@ -39,9 +39,19 @@ export function localInstructions(path: string = localInstructionsPath()): strin
 }
 
 /**
+ * FORK: a thread's own instructions (`runtimePolicy.instructions`) as a `<thread_instructions>`
+ * block, or "" when it has none.
+ */
+export function threadInstructions(instructions: string | undefined): string {
+  const text = instructions?.trim() ?? "";
+  return text ? `<thread_instructions>\n${text}\n</thread_instructions>` : "";
+}
+
+/**
  * Shared runtime context; omit model and effort when the harness manages them dynamically.
  * `modelName` is the display name users see in the model picker; `model` is the slug.
- * FORK: the local instructions follow, unless the caller sends them separately (`local: false`).
+ * FORK: the local instructions follow, unless the caller sends them separately (`local: false`),
+ * then the thread's own instructions.
  */
 export function buildRuntimeInstructions(runtime: {
   readonly harness: string;
@@ -49,6 +59,7 @@ export function buildRuntimeInstructions(runtime: {
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   readonly local?: boolean | undefined;
+  readonly instructions?: string | undefined;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
@@ -59,7 +70,8 @@ export function buildRuntimeInstructions(runtime: {
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const local = runtime.local === false ? "" : localInstructions();
-  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${local ? `\n\n${local}` : ""}`;
+  const thread = threadInstructions(runtime.instructions);
+  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}${local ? `\n\n${local}` : ""}${thread ? `\n\n${thread}` : ""}`;
 }
 
 function toSingleLine(value: string): string {
