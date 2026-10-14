@@ -77,6 +77,8 @@ import {
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
+import { ComposerAssistBar } from "./ComposerAssistBar";
+import { useComposerAssist } from "./useComposerAssist";
 import { fileRoutePathSegments } from "../files/filePath";
 import {
   ComposerActionButton,
@@ -526,6 +528,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
   });
+
+  // FORK: composer assist: " _" at the end of the draft, and cues after a pause in typing.
+  const composerAssist = useComposerAssist({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+    projectId: props.selectedThread.projectId,
+    instanceId: props.selectedThread.modelSelection.instanceId,
+    serverConfig: props.serverConfig,
+    draft: props.draftMessage,
+    onChangeDraft: props.onChangeDraftMessage,
+    active: !voiceInput.freezesEditor,
+  });
   const voicePresentation = resolveVoiceComposerPresentation(
     voiceInput.state,
     voiceInput.elapsedSeconds,
@@ -842,6 +856,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             <Text className="text-xs text-foreground">Model unavailable. Open model settings.</Text>
           </Pressable>
         ) : null}
+        <ComposerAssistBar
+          status={composerAssist.status}
+          cues={composerAssist.cues}
+          onChoose={composerAssist.choose}
+          onDismiss={composerAssist.dismiss}
+          onRevert={composerAssist.revert}
+        />
 
         <ComposerSurface
           style={

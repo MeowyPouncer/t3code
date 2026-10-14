@@ -41,6 +41,46 @@ import {
 
 type SettingsPage = "new-threads" | "source-control" | "agent-behavior" | "maintenance";
 
+/** FORK: the composer assist parts; the Claude account is chosen on web and desktop. */
+const COMPOSER_ASSIST_SWITCHES = [
+  {
+    key: "blanks",
+    icon: "square.and.pencil",
+    label: "Blanks",
+    subtitle: "End a draft with “ _” and Claude rewrites or fills it in.",
+  },
+  {
+    key: "contradictions",
+    icon: "exclamationmark.triangle",
+    label: "Contradictions",
+    subtitle: "Flag what goes against the thread's decisions, AGENTS.md or the calendar.",
+  },
+  {
+    key: "spelling",
+    icon: "textformat.size",
+    label: "Typos",
+    subtitle: "Point out misspelled words and offer corrections.",
+  },
+  {
+    key: "sentences",
+    icon: "text.alignleft",
+    label: "Better sentences",
+    subtitle: "Offer a clearer or shorter version of a sentence.",
+  },
+  {
+    key: "askCues",
+    icon: "questionmark.bubble",
+    label: "Clarifying questions",
+    subtitle: "Ask about a vague sentence and offer ways to make it precise.",
+  },
+  {
+    key: "auditor",
+    icon: "checkmark.circle",
+    label: "Auditor",
+    subtitle: "After a pause, tidy the whole draft on its own.",
+  },
+] as const;
+
 const PAGE_TITLES: Record<SettingsPage, string> = {
   "new-threads": "New threads",
   "source-control": "Source control",
@@ -162,6 +202,18 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const reference = displayTargets[0] ?? null;
   const uniform = <K extends keyof ServerSettings>(key: K) =>
     uniformMobileSetting(displayTargets, key);
+  // FORK: composer assist's switches live in one settings object.
+  const uniformComposerAssist = (key: (typeof COMPOSER_ASSIST_SWITCHES)[number]["key"]) => {
+    const values = displayTargets.map((entry) => entry.settings.composerAssist[key]);
+    return values.length > 0 && values.every((value) => value === values[0])
+      ? (values[0] ?? null)
+      : null;
+  };
+  const supportsComposerAssist =
+    targets.length > 0 &&
+    targets.every(
+      (target) => target.environment.serverConfig.environment.capabilities.composerAssist === true,
+    );
   // `uniform` folds a real null into "mixed"; nullable keys need the distinction.
   const isMixed = (key: keyof ServerSettings) =>
     reference === null ||
@@ -423,6 +475,31 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ enableAgentBrowserAccess: value })}
                     />
                   </SettingsSection>
+                  {supportsComposerAssist ? (
+                    <SettingsSection title="Composer assist">
+                      {COMPOSER_ASSIST_SWITCHES.map((item, index) => (
+                        <View
+                          key={item.key}
+                          className={index > 0 ? "border-t border-border-subtle" : undefined}
+                        >
+                          <SettingsSwitchRow
+                            icon={item.icon}
+                            label={item.label}
+                            subtitle={
+                              projectSelected
+                                ? "Environment-wide setting. Select All projects to change it."
+                                : item.subtitle
+                            }
+                            value={uniformComposerAssist(item.key)}
+                            disabled={disabledFor("composerAssist")}
+                            onValueChange={(value) =>
+                              write({ composerAssist: { [item.key]: value } })
+                            }
+                          />
+                        </View>
+                      ))}
+                    </SettingsSection>
+                  ) : null}
                 </>
               ) : null}
 
