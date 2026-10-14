@@ -1,5 +1,7 @@
 // FORK: composer assist on the client (web and mobile): the draft goes to the server with every chip
 // replaced by a ⟦n⟧ marker, and what comes back is put into the draft without losing a chip.
+import type { ComposerAssistBlankResult, ComposerAssistCue } from "@t3tools/contracts";
+import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 
@@ -22,14 +24,19 @@ export interface ComposerTextRange {
   readonly end: number;
 }
 
-/** The chips a draft string shows: mentions, skills, file links and context references. */
+/** The chips a draft string shows: mentions, skills, file links, citations and context references. */
 export function composerDraftChipRanges(draft: string): ReadonlyArray<ComposerTextRange> {
   const ranges: ComposerTextRange[] = [];
-  for (const token of collectComposerInlineTokens(draft)) {
-    ranges.push({ start: token.start, end: token.end });
+  // Links first: an unfinished @ mention can otherwise claim the start of a link label.
+  for (const link of [
+    ...collectAssistantCitations(draft),
+    ...collectComposerContextReferences(draft),
+  ]) {
+    ranges.push({ start: link.start, end: link.end });
   }
-  for (const reference of collectComposerContextReferences(draft)) {
-    ranges.push({ start: reference.start, end: reference.end });
+  for (const token of collectComposerInlineTokens(draft)) {
+    if (ranges.some((range) => token.start < range.end && range.start < token.end)) continue;
+    ranges.push({ start: token.start, end: token.end });
   }
   return ranges;
 }
@@ -151,4 +158,73 @@ export function replaceComposerRange(
   text: string,
 ): string {
   return `${draft.slice(0, range.start)}${text}${draft.slice(range.end)}`;
+}
+
+/** The edit from `previous` to `next` was typing a blank at the end of the draft. */
+export function isTypedComposerBlank(previous: string, next: string): boolean {
+  const kept = previous.trimEnd();
+  return (
+    next.length > previous.length &&
+    next.startsWith(kept) &&
+    next.slice(kept.length).trim() === "_" &&
+    endsWithComposerBlank(next)
+  );
+}
+
+export type ComposerBlankOutcome =
+  | { readonly kind: "replace"; readonly text: string }
+  | { readonly kind: "note"; readonly text: string }
+  | { readonly kind: "nothing" };
+
+/** What a blank's answer does to the draft it was asked for. */
+export function composerBlankOutcome(
+  draft: string,
+  assist: ComposerAssistDraft,
+  result: ComposerAssistBlankResult,
+): ComposerBlankOutcome {
+  if (result._tag === "none") {
+    return result.reason === undefined
+      ? { kind: "nothing" }
+      : { kind: "note", text: result.reason };
+  }
+  const text = fromComposerAssistText(result.text, assist);
+  if (text === null) {
+    return { kind: "note", text: "The answer named a file or skill the draft does not have." };
+  }
+  return {
+    kind: "replace",
+    text: result._tag === "rewrite" ? text : fillComposerBlank(draft.trimEnd(), text),
+  };
+}
+
+export interface ComposerDraftCue extends ComposerCueSpan {
+  readonly id: string;
+  readonly kind: ComposerAssistCue["kind"];
+  readonly note: string;
+  readonly alternatives: ReadonlyArray<string>;
+}
+
+/** The server's cues as spans of the draft, ready to show; `key` keeps ids unique per answer. */
+export function composerDraftCues(
+  draft: string,
+  assist: ComposerAssistDraft,
+  cues: ReadonlyArray<ComposerAssistCue>,
+  key: string,
+): ReadonlyArray<ComposerDraftCue> {
+  return cues.flatMap((cue, index) => {
+    const span = composerAssistSpanToDraft(assist, cue);
+    const quote = draft.slice(span.start, span.end);
+    if (quote.length === 0) return [];
+    return [
+      {
+        id: `${key}:${index}`,
+        kind: cue.kind,
+        start: span.start,
+        end: span.end,
+        quote,
+        note: cue.note,
+        alternatives: cue.alternatives,
+      },
+    ];
+  });
 }

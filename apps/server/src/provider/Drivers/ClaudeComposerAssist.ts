@@ -19,7 +19,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** The fastest Claude; the alias follows Anthropic's newest Haiku. */
+/**
+ * The alias follows Anthropic's newest Haiku. Measured 2026-10-14 on Russian drafts: Haiku 4.5
+ * answers twice as fast (no thinking) but rewrote a Russian draft in English; Haiku 5.5 keeps the
+ * draft's language at about 3-8 s, thinking even when asked not to.
+ */
 const COMPOSER_ASSIST_MODEL = "haiku";
 /** A process started ahead and left unused this long is stopped; the next task starts cold. */
 const WARM_IDLE_MS = 3 * 60_000;
@@ -41,6 +45,8 @@ export function claudeComposerAssistArgs(system: string): ReadonlyArray<string> 
     "--verbose",
     "--model",
     COMPOSER_ASSIST_MODEL,
+    "--effort",
+    "low",
     "--system-prompt",
     system,
     "--safe-mode",
@@ -123,7 +129,9 @@ export const makeClaudeComposerAssist = Effect.fn("makeClaudeComposerAssist")(fu
   });
   const environment = {
     ...input.environment,
+    // Haiku 5.5 thinks regardless; these and --effort low keep it shorter.
     CLAUDE_CODE_DISABLE_THINKING: "1",
+    CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: "1",
     MAX_THINKING_TOKENS: "0",
   };
   const lock = yield* Semaphore.make(1);

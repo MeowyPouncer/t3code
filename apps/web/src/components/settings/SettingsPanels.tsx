@@ -171,6 +171,49 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+
+/** FORK: the composer assist parts that can each be turned off. */
+const COMPOSER_ASSIST_SWITCHES = [
+  {
+    key: "blanks",
+    searchId: "composer-assist-blanks",
+    label: "Blanks",
+    description:
+      "End a draft with “ _” and Claude rewrites or fills it in: “improve the prompt _”, “in English _”, “as a list _”.",
+  },
+  {
+    key: "contradictions",
+    searchId: "composer-assist-contradictions",
+    label: "Contradictions",
+    description:
+      "Flag a sentence that goes against the thread's decisions, the project's AGENTS.md, or the calendar.",
+  },
+  {
+    key: "spelling",
+    searchId: "composer-assist-spelling",
+    label: "Typos",
+    description: "Underline misspelled words and offer corrections.",
+  },
+  {
+    key: "sentences",
+    searchId: "composer-assist-sentences",
+    label: "Better sentences",
+    description: "Offer a clearer or shorter version of a sentence.",
+  },
+  {
+    key: "askCues",
+    searchId: "composer-assist-questions",
+    label: "Clarifying questions",
+    description: "Ask about a vague sentence and offer ways to make it precise.",
+  },
+  {
+    key: "auditor",
+    searchId: "composer-assist-auditor",
+    label: "Auditor",
+    description:
+      "After a pause, tidy the whole draft's grammar and clarity on its own. Undo puts it back.",
+  },
+] as const;
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 
@@ -543,6 +586,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
   const isBackgroundActivityDirty = hasChangedBackgroundActivitySettings(settings);
+  const isComposerAssistDirty = !Equal.equals(
+    settings.composerAssist,
+    DEFAULT_UNIFIED_SETTINGS.composerAssist,
+  );
 
   const changedSettingLabels = useMemo(
     () => [
@@ -676,6 +723,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit ? ["Quit shortcut"] : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
+      ...(isComposerAssistDirty ? ["Composer assist"] : []),
       ...getChangedBrowserSettingLabels(settings),
       ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
         ? ["Agent browser access"]
@@ -683,6 +731,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     ],
     [
       isTextGenerationModelDirty,
+      isComposerAssistDirty,
       isBackgroundActivityDirty,
       settings.browserDefaultViewport,
       settings.browserDefaultZoomFactor,
@@ -859,6 +908,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
       confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+      composerAssist: DEFAULT_UNIFIED_SETTINGS.composerAssist,
       fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
       fontFamilyComposer: DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer,
       fontFamilyCode: DEFAULT_UNIFIED_SETTINGS.fontFamilyCode,
@@ -2262,6 +2312,9 @@ export function GeneralSettingsPanel() {
     readLastEnabledProjectGroupingMode(),
   );
   const serverProviders = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
+  const supportsComposerAssist =
+    environment?.serverConfig?.environment.capabilities.composerAssist === true;
+  const claudeProviders = serverProviders.filter((provider) => provider.driver === "claudeAgent");
   const supportsAutoSettlement =
     connectedEnvironments.length > 0 &&
     connectedEnvironments.every(
@@ -3521,6 +3574,64 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      {/* FORK: composer assist, after OpenCues. */}
+      {supportsComposerAssist ? (
+        <SettingsSection id="composer-assist" title="Composer assist">
+          {COMPOSER_ASSIST_SWITCHES.map((item) => (
+            <SettingsRow
+              key={item.key}
+              serverScoped
+              {...searchableSetting(item.searchId)}
+              description={item.description}
+              settingKeys={["composerAssist"]}
+              control={
+                <ScopedSwitch
+                  settingKeys={["composerAssist"]}
+                  checked={settings.composerAssist[item.key]}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ composerAssist: { [item.key]: Boolean(checked) } })
+                  }
+                  aria-label={item.label}
+                />
+              }
+            />
+          ))}
+          <SettingsRow
+            serverScoped
+            {...searchableSetting("composer-assist-account")}
+            description="The Claude account that answers. By default it is the thread's own, so two accounts never work at once; a thread on another provider uses the first Claude."
+            settingKeys={["composerAssist"]}
+            control={
+              <Select
+                value={settings.composerAssist.instanceId}
+                onValueChange={(value) =>
+                  updateSettings({ composerAssist: { instanceId: value ?? "" } })
+                }
+              >
+                <SelectTrigger className="w-full sm:w-56" aria-label="Composer assist account">
+                  <SelectValue>
+                    {(value: string) =>
+                      value === ""
+                        ? "The thread's Claude"
+                        : (claudeProviders.find((provider) => provider.instanceId === value)
+                            ?.displayName ?? value)
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="">The thread's Claude</SelectItem>
+                  {claudeProviders.map((provider) => (
+                    <SelectItem key={provider.instanceId} value={provider.instanceId}>
+                      {provider.displayName ?? provider.instanceId}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection id="about" title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (

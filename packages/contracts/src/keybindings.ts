@@ -97,6 +97,9 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "composer.workspace",
   "composer.previousWorktree",
   "composer.branch",
+  // FORK: composer assist: the next or previous choice of the cue under the caret.
+  "composer.cue.next",
+  "composer.cue.previous",
   "chat.new",
   "chat.newLocal",
   "chat.newWithoutProject",

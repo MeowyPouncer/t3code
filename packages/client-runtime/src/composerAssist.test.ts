@@ -2,7 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   composerAssistSpanToDraft,
+  composerBlankOutcome,
+  composerDraftCues,
   endsWithComposerBlank,
+  isTypedComposerBlank,
   fillComposerBlank,
   fromComposerAssistText,
   relocateComposerCues,
@@ -61,6 +64,61 @@ describe("relocateComposerCues", () => {
     expect(relocateComposerCues(cues, next)).toEqual([
       { start: 0, end: 6, quote: "Pleese", id: "a" },
       { start: 20, end: 24, quote: "main", id: "b" },
+    ]);
+  });
+});
+
+describe("blank answers", () => {
+  const draft = "fix [a.ts](src/a.ts) please make it formal _";
+  const assist = toComposerAssistDraft(draft);
+
+  it("fire only for a blank typed at the end", () => {
+    expect(isTypedComposerBlank("make it formal ", "make it formal _")).toBe(true);
+    expect(isTypedComposerBlank("make it formal", "make it formal _")).toBe(true);
+    expect(isTypedComposerBlank("", "make it formal _")).toBe(false);
+    expect(isTypedComposerBlank("snake_case", "snake_case_")).toBe(false);
+    expect(isTypedComposerBlank("a _", "a _")).toBe(false);
+  });
+
+  it("puts a rewrite or a filled value in, chips restored", () => {
+    expect(
+      composerBlankOutcome(draft, assist, { _tag: "rewrite", text: "Please fix ⟦1⟧." }),
+    ).toEqual({ kind: "replace", text: "Please fix [a.ts](src/a.ts)." });
+    expect(
+      composerBlankOutcome("test command _", toComposerAssistDraft("test command _"), {
+        _tag: "fill",
+        text: "pnpm test",
+      }),
+    ).toEqual({ kind: "replace", text: "test command pnpm test" });
+    expect(
+      composerBlankOutcome(draft, assist, { _tag: "none", reason: "Blanks are off." }),
+    ).toEqual({ kind: "note", text: "Blanks are off." });
+    expect(composerBlankOutcome(draft, assist, { _tag: "none" })).toEqual({ kind: "nothing" });
+    expect(composerBlankOutcome(draft, assist, { _tag: "rewrite", text: "fix ⟦7⟧" }).kind).toBe(
+      "note",
+    );
+  });
+
+  it("place cues on the draft around its chips", () => {
+    const text = "see [a.ts](src/a.ts) and fix teh bug";
+    const cueAssist = toComposerAssistDraft(text);
+    const start = cueAssist.text.indexOf("teh");
+    const cues = composerDraftCues(
+      text,
+      cueAssist,
+      [{ kind: "spelling", start, end: start + 3, note: "", alternatives: ["the"] }],
+      "r1",
+    );
+    expect(cues).toEqual([
+      {
+        id: "r1:0",
+        kind: "spelling",
+        start: text.indexOf("teh"),
+        end: text.indexOf("teh") + 3,
+        quote: "teh",
+        note: "",
+        alternatives: ["the"],
+      },
     ]);
   });
 });

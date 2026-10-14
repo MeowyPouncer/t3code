@@ -2260,6 +2260,29 @@ code {
   pointer-events: none;
 }
 
+/* FORK: composer assist cues: a quiet underline per kind, never animated. */
+.composer-assist-cue {
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+.composer-assist-cue-contradiction {
+  text-decoration-style: wavy;
+  text-decoration-color: var(--warning);
+}
+.composer-assist-cue-spelling {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--destructive);
+}
+.composer-assist-cue-sentence {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--muted-foreground);
+}
+.composer-assist-cue-ask {
+  text-decoration-style: dashed;
+  text-decoration-color: var(--info);
+}
+
 /* Selected chips (node selection from arrowing into or clicking a chip). */
 .composer-tiptap .ProseMirror-selectednode {
   outline: 2px solid var(--ring);

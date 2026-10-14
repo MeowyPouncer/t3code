@@ -143,6 +143,8 @@ import {
   type ComposerTasksProgress,
 } from "./ComposerTasksBadge";
 import { ComposerActivityRow } from "./ComposerActivityStatus";
+import { ComposerAssistStatusRow } from "./ComposerAssistStatusRow";
+import { useComposerAssist } from "./useComposerAssist";
 import {
   reconcileAttachmentContextReferences,
   type RetainedAttachmentContextPayloads,
@@ -1465,6 +1467,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
+  /** FORK: the next (+1) or previous (-1) choice of the composer assist cue under the caret. */
+  cycleAssistCue: (direction: 1 | -1) => boolean;
   /** Expand the desktop composer at the timeline end without taking focus. */
   restoreAfterTimelineReachedEnd: () => void;
   collapseForTimelineScrollKey: (key: string) => void;
@@ -1753,7 +1757,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
     promptHistoryMessages,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
@@ -4004,6 +4008,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  // FORK: composer assist: " _" at the end of the draft, and cues after a pause in typing.
+  const composerAssistStatus = useComposerAssist({
+    environmentId,
+    threadId: isServerThread ? activeThreadId : null,
+    projectId: activeProjectId ?? null,
+    instanceId: selectedInstanceId,
+    prompt,
+    promptRef,
+    active: !isLiteralPendingAnswer && activePendingUserInput === null && canOperateThread,
+    editorRef: composerEditorRef,
+    replaceDraft: (expected, next) =>
+      applyPromptReplacement(0, promptRef.current.length, next, { expectedText: expected }),
+  });
+
   const readComposerSnapshot = useCallback((): {
     value: string;
     cursor: number;
@@ -5731,9 +5749,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         content: activityStackContent,
       }
     : null;
-  const bannerStackItems = activityStackItem
-    ? [activityStackItem, ...props.bannerItems]
-    : props.bannerItems;
+  const assistStackItem: ComposerBannerStackContent | null = composerAssistStatus
+    ? {
+        id: "composer-assist",
+        variant: "default",
+        priority: "activity",
+        content: <ComposerAssistStatusRow status={composerAssistStatus} />,
+      }
+    : null;
+  const bannerStackItems = [
+    ...(activityStackItem ? [activityStackItem] : []),
+    ...(assistStackItem ? [assistStackItem] : []),
+    ...props.bannerItems,
+  ];
   useEffect(() => {
     if (activeTasksProgress === null || activeTaskSteps === null) {
       setIsTasksDrawerOpen(false);
@@ -6424,6 +6452,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusAt: (cursor: number) => {
         composerEditorRef.current?.focusAt(cursor);
       },
+      cycleAssistCue: (direction) => composerEditorRef.current?.cycleAssistCue(direction) ?? false,
       restoreAfterTimelineReachedEnd,
       collapseForTimelineScrollKey: (key) => {
         const scrollNode = getTimelineScrollableNode();
