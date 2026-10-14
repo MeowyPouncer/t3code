@@ -148,6 +148,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadShelf: Schema.optionalKey(Schema.Boolean),
   /** FORK: threads can carry their own system instructions (orchestrators from Tasks). */
   threadInstructions: Schema.optionalKey(Schema.Boolean),
+  /** FORK: server answers composerAssist.blank / composerAssist.cues. */
+  composerAssist: Schema.optionalKey(Schema.Boolean),
   /** Server streams themes an environment publishes. Absent on servers from
       before environment themes shipped, which never emit the events -- so a
       client reconnecting to one must drop published themes rather than keep

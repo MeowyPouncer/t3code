@@ -15,6 +15,7 @@ import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import type { NodeType, ResolvedPos } from "@tiptap/pm/model";
 import type {
   AssistantCitation,
+  ComposerAssistCueKind,
   ComposerContextClipboardFragment,
   ServerProviderSkill,
 } from "@t3tools/contracts";
@@ -97,6 +98,18 @@ import { SkillChipIcon } from "./chat/SkillInlineText";
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
 import { getTimelinePageScrollKey } from "./chat/pageScrollController";
 import { ContextChipPopover } from "./contextChipParts";
+import {
+  chooseComposerAssistCue,
+  type ComposerAssistCueRange,
+  ComposerAssistCuesExtension,
+  composerAssistCueAt,
+  cycleComposerAssistCue,
+  dismissComposerAssistCue,
+  showComposerAssistCues,
+} from "./composerAssistCues";
+import { ComposerAssistCueCard } from "./chat/ComposerAssistCueCard";
+import { composerFloatingLayerProps } from "./chat/composerEventScope";
+import { Popover, PopoverPopup } from "./ui/popover";
 import { Button } from "./ui/button";
 import { ContextChip } from "./ContextChip";
 import {
@@ -111,6 +124,16 @@ import { composerCodeBlockHighlight } from "./composerCodeBlockHighlight";
 import { importPastedComposerText } from "./composerInlineTokenPaste";
 import { didComposerSelectionChangeVisibly } from "./composerSelection";
 import type { ComposerDraftContextRecords } from "./composerContextPresentation";
+
+/** FORK: a composer assist cue as the server placed it, in draft (Markdown) offsets. */
+export interface ComposerEditorAssistCue {
+  readonly id: string;
+  readonly kind: ComposerAssistCueKind;
+  readonly start: number;
+  readonly end: number;
+  readonly note: string;
+  readonly alternatives: ReadonlyArray<string>;
+}
 
 export interface ComposerPromptEditorHandle {
   focus: () => void;
@@ -131,6 +154,10 @@ export interface ComposerPromptEditorHandle {
    * text.
    */
   isCaretOnVisualEdge: (edge: "start" | "end") => boolean;
+  /** FORK: replaces the composer assist cues; ignored once the draft is no longer `value`. */
+  showAssistCues: (value: string, cues: ReadonlyArray<ComposerEditorAssistCue>) => void;
+  /** FORK: the next (+1) or previous (-1) choice of the cue under the caret. */
+  cycleAssistCue: (direction: 1 | -1) => boolean;
 }
 
 export interface ComposerPromptEditorProps {
@@ -928,6 +955,8 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
   const hasAppliedControlledSelectionRef = useRef(false);
   const citationRequestRef = useRef<ComposerCitationCommentRequest | null>(null);
   const [openCitation, setOpenCitation] = useState<OpenCitationComment | null>(null);
+  // FORK: the composer assist cue under the caret while the editor has focus.
+  const [activeAssistCue, setActiveAssistCue] = useState<ComposerAssistCueRange | null>(null);
   const [isEmpty, setIsEmpty] = useState(value.length === 0);
 
   const citationCommentActions = useMemo(
@@ -1068,6 +1097,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         ComposerCitationExtension,
         ComposerContextReferenceExtension,
         ComposerMarkersExtension,
+        ComposerAssistCuesExtension,
         ...(richText
           ? [
               ComposerCodeExtension,
@@ -1497,6 +1527,29 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
     editorHolder.current = editor;
   }, [editor]);
 
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => {
+      const next = editor.isFocused ? composerAssistCueAt(editor.state) : null;
+      setActiveAssistCue((current) =>
+        current?.cue.id === next?.cue.id &&
+        current?.cue.index === next?.cue.index &&
+        current?.from === next?.from &&
+        current?.to === next?.to
+          ? current
+          : next,
+      );
+    };
+    editor.on("transaction", sync);
+    editor.on("focus", sync);
+    editor.on("blur", sync);
+    return () => {
+      editor.off("transaction", sync);
+      editor.off("focus", sync);
+      editor.off("blur", sync);
+    };
+  }, [editor]);
+
   // Tiptap forwards option changes to the view from a passive effect, so a
   // class change here would reach the ProseMirror element one tick after
   // React commits. The chat composer measures its resting and expanded
@@ -1692,6 +1745,39 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         }
       },
       readSnapshot,
+      showAssistCues: (value, cues) => {
+        if (!editor) return;
+        const map = serializeEditorDoc(editor.state.doc);
+        if (map.value !== value) return;
+        const toPm = (offset: number) =>
+          flatToPm(
+            map,
+            collapsedToFlat(map, collapseExpandedComposerCursor(map.value, offset, literalText)),
+          );
+        const ranges: ComposerAssistCueRange[] = [];
+        for (const cue of cues) {
+          const quote = value.slice(cue.start, cue.end);
+          // A cue lives inside one line; Markdown markers or chips inside it make it unplaceable.
+          if (quote.length === 0 || quote.includes("\n")) continue;
+          const from = toPm(cue.start);
+          const to = toPm(cue.end);
+          if (to <= from || editor.state.doc.textBetween(from, to, "\n") !== quote) continue;
+          ranges.push({
+            from,
+            to,
+            cue: {
+              id: cue.id,
+              kind: cue.kind,
+              note: cue.note,
+              choices: [quote, ...cue.alternatives],
+              index: 0,
+            },
+          });
+        }
+        showComposerAssistCues(editor.view, ranges);
+      },
+      cycleAssistCue: (direction) =>
+        editor ? cycleComposerAssistCue(editor.view, direction) : false,
       isCaretOnVisualEdge: (edge) => {
         const snapshot = readSnapshot();
         if (snapshot.value.length === 0) return true;
@@ -1819,6 +1905,35 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
               >
                 {placeholder}
               </div>
+            ) : null}
+            {activeAssistCue && editor ? (
+              <Popover open>
+                <PopoverPopup
+                  {...composerFloatingLayerProps}
+                  side="top"
+                  align="start"
+                  padding="compact"
+                  initialFocus={() => false}
+                  finalFocus={() => false}
+                  anchor={{
+                    contextElement: editor.view.dom,
+                    getBoundingClientRect: () => {
+                      const spans = editor.view.dom.querySelectorAll(
+                        `[data-assist-cue="${CSS.escape(activeAssistCue.cue.id)}"]`,
+                      );
+                      return (spans.item(0) ?? editor.view.dom).getBoundingClientRect();
+                    },
+                  }}
+                >
+                  <ComposerAssistCueCard
+                    cue={activeAssistCue.cue}
+                    onChoose={(index) =>
+                      chooseComposerAssistCue(editor.view, activeAssistCue, index)
+                    }
+                    onDismiss={() => dismissComposerAssistCue(editor.view, activeAssistCue.cue.id)}
+                  />
+                </PopoverPopup>
+              </Popover>
             ) : null}
           </div>
         </ComposerCitationCommentContext>

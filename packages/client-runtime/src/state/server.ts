@@ -1352,6 +1352,21 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:agent-queue:cancel",
       tag: WS_METHODS.agentQueueCancel,
     }),
+    // FORK: composer assist. Cues for one draft run one at a time; a newer pause replaces a
+    // waiting one.
+    composerAssistBlank: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:composer-assist:blank",
+      tag: WS_METHODS.composerAssistBlank,
+    }),
+    composerAssistCues: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:composer-assist:cues",
+      tag: WS_METHODS.composerAssistCues,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId ?? null, input.projectId ?? null]),
+      },
+    }),
     rotateScheduledTaskWebhookToken: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:scheduled-task:rotate-webhook-token",
       tag: WS_METHODS.scheduledTasksRotateWebhookToken,

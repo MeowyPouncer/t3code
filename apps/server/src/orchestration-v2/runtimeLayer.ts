@@ -48,6 +48,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as NightRules from "../night/NightRules.ts";
 import * as NightService from "../night/NightService.ts";
 import * as AgentQueue from "../agentQueue/AgentQueueService.ts";
+import * as ComposerAssist from "../composerAssist/ComposerAssistService.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -392,6 +393,12 @@ export const layerProduction = Layer.mergeAll(
   FileChangeAutoDecline.layer.pipe(Layer.provide(layerThreadManagementProvided)),
   layerAgentQueueProvided,
   layerNightProvided,
+  // FORK: blanks and cues in the composer.
+  ComposerAssist.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(ProjectionStore.layer, ProjectStore.layer, layerThreadManagementProvided),
+    ),
+  ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),

@@ -350,6 +350,48 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset wake recover continue"],
   },
   {
+    id: "composer-assist-blanks",
+    title: "Composer assist: blanks",
+    to: "/settings/general",
+    searchTerms: ["underscore rewrite fill improve prompt translate opencues"],
+  },
+  {
+    id: "composer-assist-contradictions",
+    title: "Composer assist: contradictions",
+    to: "/settings/general",
+    searchTerms: ["decisions agents.md rules calendar weekday conflict cue"],
+  },
+  {
+    id: "composer-assist-spelling",
+    title: "Composer assist: typos",
+    to: "/settings/general",
+    searchTerms: ["spelling misspelled correction cue"],
+  },
+  {
+    id: "composer-assist-sentences",
+    title: "Composer assist: better sentences",
+    to: "/settings/general",
+    searchTerms: ["rephrase clearer shorter sentence cue"],
+  },
+  {
+    id: "composer-assist-questions",
+    title: "Composer assist: clarifying questions",
+    to: "/settings/general",
+    searchTerms: ["vague ask question cue"],
+  },
+  {
+    id: "composer-assist-auditor",
+    title: "Composer assist: auditor",
+    to: "/settings/general",
+    searchTerms: ["grammar tidy rewrite whole draft"],
+  },
+  {
+    id: "composer-assist-account",
+    title: "Composer assist: Claude account",
+    to: "/settings/general",
+    searchTerms: ["haiku claude instance account"],
+  },
+  {
     id: "auto-resume-limited-threads",
     title: "Auto-resume limited threads",
     to: "/settings/general",

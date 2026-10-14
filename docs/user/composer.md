@@ -152,6 +152,35 @@ Stashes containing uploaded files must be restored in their original environment
 Those files are retained for 24 hours. After an upload expires, restore the prompt
 and use **Attach again** or remove the missing file before sending.
 
+## Composer assist
+
+Composer assist uses Claude Haiku to help with a draft before you send it. It
+needs a Claude provider and answers with the thread's own Claude account, or the
+first one when the thread runs on another provider. Change the account or turn
+off any part in **Settings → General → Composer assist**.
+
+End a draft with a space and `_` to ask for something. `make it a numbered list _`,
+`in English _` or `improve the prompt _` rewrites the draft; `the command that runs
+the tests _` fills in the answer. Undo on web and desktop, or **Revert** on mobile,
+brings back what you wrote. Files, skills and attachments in the draft stay; a
+rewrite that would lose one is refused.
+
+After a pause in typing, underlines point out:
+
+- a sentence that goes against a decision made in the thread, a rule in the
+  project's `AGENTS.md` or `CLAUDE.md`, or the calendar;
+- a typo;
+- a sentence that could be clearer or shorter;
+- a vague sentence, with a question and ways to make it precise.
+
+Put the caret on an underline to see its note and choices, then pick one or switch
+with `Ctrl+Alt+↓` and `Ctrl+Alt+↑`. The first choice is what you wrote. On mobile
+the cues sit in a row above the composer. The auditor, off by default, tidies the
+whole draft after a pause instead.
+
+Each answer takes a few seconds. Cues wait while a Claude usage window is at 90%
+or more; blanks still work.
+
 ## Voice input on iPhone
 
 On supported iPhones with iOS 26 or later, use the composer's microphone to record,

@@ -8431,6 +8431,14 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "composer.cue.next" || command === "composer.cue.previous") {
+        // Only a cue under the caret takes the key; otherwise it does what it did before.
+        if (composerRef.current?.cycleAssistCue(command === "composer.cue.next" ? 1 : -1)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
       if (
         command === "composer.host" ||
         command === "composer.effort" ||

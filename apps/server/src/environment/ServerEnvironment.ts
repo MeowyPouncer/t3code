@@ -253,6 +253,7 @@ export const make = Effect.gen(function* () {
       todoBoard: true,
       nightMode: true,
       agentQueue: true,
+      composerAssist: true,
       threadPullRequestWatch: true,
       pullRequestStackActions: true,
       threadPullRequestLinking: true,

@@ -1157,6 +1157,23 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/**
+ * FORK: composer assist, after OpenCues: " _" at the end of a draft rewrites or fills it, and a
+ * pause in typing brings cues. Every part can be turned off; the auditor starts off because it
+ * rewrites the draft without being asked.
+ */
+export const ComposerAssistSettings = Schema.Struct({
+  blanks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  contradictions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  spelling: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  sentences: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  askCues: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  auditor: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** The Claude instance that answers. Empty follows the thread's own Claude account. */
+  instanceId: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type ComposerAssistSettings = typeof ComposerAssistSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
@@ -1373,6 +1390,9 @@ export const ServerSettings = Schema.Struct({
    * write guides, for people and agents alike.
    */
   reviewGuidesEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  composerAssist: ComposerAssistSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(ComposerAssistSettings)({}))),
+  ),
   /**
    * The model that reads a pull request to write its review guide. It investigates a checkout
    * over many turns, so it can want a stronger model than one-shot writing. `null` uses the
@@ -1694,6 +1714,17 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuidesEnabled: Schema.optionalKey(Schema.Boolean),
+  composerAssist: Schema.optionalKey(
+    Schema.Struct({
+      blanks: Schema.optionalKey(Schema.Boolean),
+      contradictions: Schema.optionalKey(Schema.Boolean),
+      spelling: Schema.optionalKey(Schema.Boolean),
+      sentences: Schema.optionalKey(Schema.Boolean),
+      askCues: Schema.optionalKey(Schema.Boolean),
+      auditor: Schema.optionalKey(Schema.Boolean),
+      instanceId: Schema.optionalKey(TrimmedString),
+    }),
+  ),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
