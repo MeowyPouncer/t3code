@@ -586,6 +586,11 @@ export const OrchestrationV2Run = Schema.Struct({
   contextHandoffId: Schema.NullOr(ContextHandoffId),
   /** Links server-generated restart continuations to the interrupted run. */
   restartContinuationOfRunId: Schema.optional(RunId),
+  /**
+   * FORK: set on the /compact run T3 starts on a thread left idle (IdleCompactionWorker): the run
+   * it followed. Clients show it as a compaction, not as a message.
+   */
+  idleCompactionOfRunId: Schema.optional(RunId),
   /** The delegated task this run answers, including a follow-up in an existing child thread. */
   delegatedTaskId: Schema.optional(NodeId),
   /**
@@ -1510,6 +1515,8 @@ export const OrchestrationV2TurnItem = Schema.Union([
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
+    /** FORK: the /compact of T3's idle compaction; clients show the compaction, not this message. */
+    idleCompaction: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2306,6 +2313,8 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
     attachments: Schema.Array(ChatAttachment),
+    /** FORK: the /compact of T3's idle compaction; clients show the compaction, not this message. */
+    idleCompaction: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
@@ -3015,6 +3024,11 @@ export const OrchestrationV2Command = Schema.Union([
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
+    /**
+     * FORK: T3's /compact of a thread idle since this run. Starts only while the thread is still
+     * idle after it, and leaves the thread where it is (settled, snoozed, shelved, sidebar order).
+     */
+    idleCompactionOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     /** Resolve untargeted delivery against the server's serialized thread state. */
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),

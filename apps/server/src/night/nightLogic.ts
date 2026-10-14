@@ -79,6 +79,17 @@ export function threadWorks(
   return awaitsLimitResume(thread, nowMs, autoResumeLimited);
 }
 
+/** T3's idle compaction (IdleCompactionWorker) is no session's work: such a thread reads as idle. */
+export const idleWhileCompacting = <T extends NightThread>(
+  threads: ReadonlyArray<T>,
+  compacting: ReadonlySet<ThreadId>,
+): ReadonlyArray<T> =>
+  compacting.size === 0
+    ? threads
+    : threads.map((thread) =>
+        compacting.has(thread.id) ? { ...thread, activityRunStatus: null } : thread,
+      );
+
 export const nothingWorks = (
   threads: ReadonlyArray<NightThread>,
   nowMs: number,

@@ -5774,6 +5774,123 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
   );
 });
 
+// FORK: T3's idle compaction (IdleCompactionWorker) starts only while the thread is still idle
+// after the run it follows, and leaves the thread where it is.
+it.layer(layerTest)("idle compaction", (it) => {
+  it.effect.each(["shelved", "busy", "stale", "settled"] as const)(
+    "handles an idle compaction of a %s thread",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const events = yield* EventSink.EventSinkV2;
+        const threadId = ThreadId.make(`idle-compaction:${scenario}`);
+        const projectId = ProjectId.make(`idle-compaction:project:${scenario}`);
+        yield* seedProject({
+          projectId,
+          title: "Idle project",
+          workspaceRoot: process.cwd(),
+          defaultModelSelection: modelSelection,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`idle-compaction:create:${scenario}`),
+          threadId,
+          projectId,
+          title: "Idle thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`idle-compaction:message:${scenario}`),
+          threadId,
+          messageId: MessageId.make(`idle-compaction:message:${scenario}`),
+          text: "Work on this.",
+          attachments: [],
+          dispatchMode: { type: "defer_start" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const completedAt = yield* DateTime.now;
+        yield* events.write({
+          commandId: CommandId.make(`idle-compaction:completed:${scenario}`),
+          events: [
+            {
+              id: EventId.make(`idle-compaction:completed:${scenario}`),
+              type: "run.updated",
+              threadId,
+              occurredAt: completedAt,
+              payload: { ...run, status: "completed", completedAt },
+            },
+          ],
+        });
+        if (scenario === "shelved") {
+          yield* orchestrator.dispatch({
+            type: "thread.shelve",
+            commandId: CommandId.make(`idle-compaction:shelve:${scenario}`),
+            threadId,
+          });
+        }
+        if (scenario === "settled") {
+          yield* orchestrator.dispatch({
+            type: "thread.settle",
+            commandId: CommandId.make(`idle-compaction:settle:${scenario}`),
+            threadId,
+          });
+        }
+        if (scenario === "busy") {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`idle-compaction:next:${scenario}`),
+            threadId,
+            messageId: MessageId.make(`idle-compaction:next:${scenario}`),
+            text: "One more thing.",
+            attachments: [],
+            dispatchMode: { type: "defer_start" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const messageId = MessageId.make(`idle-compaction:compact:${scenario}`);
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`idle-compaction:compact:${scenario}`),
+          threadId,
+          messageId,
+          idleCompactionOfRunId: scenario === "stale" ? RunId.make("idle-compaction:gone") : run.id,
+          text: "/compact",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "system",
+          creationSource: "server",
+        });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        if (scenario !== "shelved") {
+          // Accepted and nothing started: the thread is no longer idle where the worker saw it.
+          assert.lengthOf(after.runs, before.runs.length);
+          assert.deepEqual(after.thread, before.thread);
+          return;
+        }
+        assert.lengthOf(after.runs, 2);
+        assert.equal(after.runs[1]?.idleCompactionOfRunId, run.id);
+        assert.isNotNull(after.thread.shelvedAt);
+        assert.equal(after.thread.unsettledAt, before.thread.unsettledAt);
+        const item = after.turnItems.find(
+          (candidate) => candidate.type === "user_message" && candidate.messageId === messageId,
+        );
+        assert.isTrue(item?.type === "user_message" && item.idleCompaction === true);
+      }),
+  );
+});
+
 const queueResumeDisabledInstanceProjectId = ProjectId.make(
   "project:queue-resume-disabled-instance",
 );

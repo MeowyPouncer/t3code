@@ -40,6 +40,7 @@ import {
   CONTEXT_REARM_RATIO,
   CONTEXT_WARN_RATIO,
   contextRatio,
+  idleWhileCompacting,
   isNightSession,
   nextNightStep,
   nightRulesApply,
@@ -136,6 +137,8 @@ export const make = Effect.gen(function* () {
     /** Threads already reported near their context limit. */
     contextWarned: new Set<ThreadId>(),
     overseerNeedsCompact: false,
+    /** Threads running T3's idle compaction, which is nobody's work. */
+    idleCompacting: new Set<ThreadId>(),
   };
 
   const persist = (state: NightState | null) =>
@@ -220,7 +223,10 @@ export const make = Effect.gen(function* () {
       unsettledOnly: true,
     });
     const settings = yield* serverSettings.getSettings;
-    return { threads: snapshot.threads, autoResume: settings.autoResumeLimitedThreads };
+    return {
+      threads: idleWhileCompacting(snapshot.threads, runtime.idleCompacting),
+      autoResume: settings.autoResumeLimitedThreads,
+    };
   });
 
   const beginNight = (state: NightState, trigger: "leave" | "timer") =>
@@ -469,6 +475,22 @@ export const make = Effect.gen(function* () {
 
   /** Sees every domain event, so anything it does not need returns at once. */
   const onEvent = (event: OrchestrationV2DomainEvent): Effect.Effect<void> => {
+    // An idle compaction neither ends the quiet nor stops a session; it compacts the overseer too.
+    if (
+      (event.type === "run.created" || event.type === "run.updated") &&
+      event.payload.idleCompactionOfRunId !== undefined
+    ) {
+      if (!TERMINAL_RUN_STATUSES.has(event.payload.status)) {
+        runtime.idleCompacting.add(event.threadId);
+        return Effect.void;
+      }
+      runtime.idleCompacting.delete(event.threadId);
+      return Ref.get(stateRef).pipe(
+        Effect.map((state) => {
+          if (state?.overseerThreadId === event.threadId) runtime.overseerNeedsCompact = false;
+        }),
+      );
+    }
     switch (event.type) {
       case "run.created":
         return Clock.currentTimeMillis.pipe(
@@ -496,6 +518,8 @@ export const make = Effect.gen(function* () {
           runtime.contextWarned.delete(event.threadId);
           return Effect.void;
         }
+        // An idle compaction reads the whole context once on its way to shrinking it.
+        if (runtime.idleCompacting.has(event.threadId)) return Effect.void;
         if (ratio < CONTEXT_WARN_RATIO || runtime.contextWarned.has(event.threadId)) {
           return Effect.void;
         }

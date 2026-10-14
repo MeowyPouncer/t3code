@@ -54,12 +54,31 @@ export function contextCompactionLabel(
     Extract<OrchestrationV2TurnItem, { type: "compaction" }>,
     "status" | "beforeTokenCount" | "afterTokenCount"
   >,
+  /** FORK: T3 compacted the thread while it sat idle (idleCompactionRunIds). */
+  options: { readonly idle?: boolean } = {},
 ): string {
-  if (item.status === "running") return "Compacting context";
+  const idle = options.idle === true ? " while idle" : "";
+  if (item.status === "running") return `Compacting context${idle}`;
   if (item.beforeTokenCount !== undefined && item.afterTokenCount !== undefined) {
-    return `Context compacted ${formatTokens(item.beforeTokenCount)} → ${formatTokens(item.afterTokenCount)} tokens`;
+    return `Context compacted${idle} ${formatTokens(item.beforeTokenCount)} → ${formatTokens(item.afterTokenCount)} tokens`;
   }
-  return "Context compacted";
+  return `Context compacted${idle}`;
+}
+
+/**
+ * FORK: the runs that are T3's idle compaction. Their /compact message is no one's words, so
+ * timelines skip it and label the compaction instead.
+ */
+export function idleCompactionRunIds(
+  items: Iterable<{ readonly item: OrchestrationV2TurnItem }>,
+): ReadonlySet<string> {
+  const runIds = new Set<string>();
+  for (const { item } of items) {
+    if (item.type === "user_message" && item.idleCompaction === true && item.runId !== null) {
+      runIds.add(item.runId);
+    }
+  }
+  return runIds;
 }
 
 export interface WorkLogPresentationEntry {

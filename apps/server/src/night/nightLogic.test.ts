@@ -11,8 +11,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 
 import {
+  idleWhileCompacting,
   nextNightStep,
   nightSessions,
+  nothingWorks,
   stoppedSessions,
   threadWorks,
   type NightThread,
@@ -85,6 +87,15 @@ describe("threadWorks", () => {
       ),
     ).toBe(false);
     expect(threadWorks(thread("a"), NOW, false)).toBe(false);
+  });
+
+  it("does not count T3's idle compaction as a session's work", () => {
+    const threads = [thread("a", { activityRunStatus: "running" }), thread("b")];
+    expect(nothingWorks(threads, NOW, false)).toBe(false);
+    expect(
+      nothingWorks(idleWhileCompacting(threads, new Set([ThreadId.make("a")])), NOW, false),
+    ).toBe(true);
+    expect(idleWhileCompacting(threads, new Set())).toBe(threads);
   });
 
   it("does not wait for a dev server the agent left running", () => {

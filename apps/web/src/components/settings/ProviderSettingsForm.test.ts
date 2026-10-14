@@ -98,12 +98,20 @@ describe("ProviderSettingsForm helpers", () => {
     const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"));
     expect(claude).toBeDefined();
 
-    expect(deriveProviderSettingsFields(claude!).map((field) => field.key)).toEqual([
+    const fields = deriveProviderSettingsFields(claude!);
+    expect(fields.map((field) => field.key)).toEqual([
       "binaryPath",
       "homePath",
       "autoCompactWindow",
+      "idleCompaction",
+      "idleCompactionMinTokens",
       "launchArgs",
     ]);
+    // FORK: idle compaction is a switch that is on until turned off.
+    expect(fields.find((field) => field.key === "idleCompaction")).toMatchObject({
+      control: "switch",
+      defaultBooleanValue: true,
+    });
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

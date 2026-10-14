@@ -28,6 +28,7 @@ import type { McpAppReference } from "@t3tools/shared/mcpApp";
 import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import {
   contextCompactionLabel,
+  idleCompactionRunIds,
   workEntryIndicatesToolFailure,
 } from "@t3tools/client-runtime/work-log/presentation";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
@@ -427,7 +428,10 @@ export function providerErrorPresentation(
   };
 }
 
-function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry {
+function projectedWorkEntry(
+  row: OrchestrationV2ProjectedTurnItem,
+  idleCompaction = false,
+): WorkLogEntry {
   const { item } = row;
   const title = item.title?.trim() || null;
   const common = {
@@ -451,7 +455,7 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
     case "compaction":
       return {
         ...common,
-        label: contextCompactionLabel(item),
+        label: contextCompactionLabel(item, { idle: idleCompaction }),
         sourceActivityKind: "context-compaction",
         ...(item.summary ? { detail: item.summary } : {}),
       };
@@ -624,12 +628,15 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
         : [],
     ),
   );
+  // FORK: T3's idle compaction shows as its compaction, without its /compact message.
+  const idleCompactionRuns = idleCompactionRunIds(input.visibleTurnItems);
   for (const row of input.visibleTurnItems) {
     const { item } = row;
     if (turnItemIsWorkspacePreparation(item)) continue;
     // Task progress belongs in the composer, not between conversation entries.
     if (item.type === "todo_list" || item.type === "checkpoint") continue;
     if (item.type === "user_message" && foldedAnswerMessageIds.has(item.messageId)) continue;
+    if (item.type === "user_message" && item.idleCompaction === true) continue;
     const createdAt = projectedItemCreatedAt(row);
     const attempt = resolveAttempt(item);
     const attemptMetadata = attempt === undefined ? {} : { attempt };
@@ -764,7 +771,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       id: item.id,
       kind: "work",
       createdAt,
-      entry: projectedWorkEntry(row),
+      entry: projectedWorkEntry(row, item.runId !== null && idleCompactionRuns.has(item.runId)),
       ...attemptMetadata,
     });
   }

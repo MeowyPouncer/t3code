@@ -1719,6 +1719,35 @@ describe("retained v2 feed presentation", () => {
     ).toMatchObject({ activities: [{ summary: "Context compacted" }] });
   });
 
+  it("shows T3's idle compaction as its compaction, without the /compact message", () => {
+    const compactMessage = {
+      ...userMessage(),
+      messageId: MessageId.make("message-idle-compact"),
+      createdBy: "system" as const,
+      creationSource: "server" as const,
+      text: "/compact",
+      idleCompaction: true as const,
+    };
+    const compact = projected(
+      {
+        ...base("compacted", "2026-06-20T00:00:02.000Z", 1),
+        type: "compaction",
+        driver: null,
+        beforeTokenCount: 412_000,
+        afterTokenCount: 13_000,
+      },
+      1,
+    );
+    const feed = buildThreadFeed([projected(compactMessage, 0), compact]);
+    expect(feed.some((entry) => entry.type === "message")).toBe(false);
+    const activities = feed.flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    );
+    expect(activities.map((activity) => activity.summary)).toEqual([
+      "Context compacted while idle 412K → 13K tokens",
+    ]);
+  });
+
   it("retains assistant image attachments from the wire", () => {
     const image = {
       type: "image" as const,
