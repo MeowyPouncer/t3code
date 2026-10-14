@@ -2,13 +2,14 @@
 // Claude to rewrite or fill it in; a pause in typing asks for cues, which the editor shows on
 // their spans. An answer for a draft that has changed since is dropped, never applied.
 import {
-  COMPOSER_ASSIST_MIN_CUE_CHARS,
   COMPOSER_ASSIST_PAUSE_MS,
   composerBlankOutcome,
+  composerBlankTooLong,
   composerDraftCues,
   fromComposerAssistText,
   isTypedComposerBlank,
   toComposerAssistDraft,
+  wantsComposerCues,
 } from "@t3tools/client-runtime/composer-assist";
 import {
   isAtomCommandInterrupted,
@@ -90,6 +91,10 @@ export function useComposerAssist(input: {
     if (settings.blanks && isTypedComposerBlank(previous, draft)) {
       const assist = assistDraftOf(draft);
       latest.current.editorRef.current?.showAssistCues(draft, []);
+      if (composerBlankTooLong(assist)) {
+        setStatus({ kind: "note", text: "The draft is too long for a blank." });
+        return;
+      }
       setStatus({ kind: "working" });
       void askBlank({
         environmentId: input.environmentId,
@@ -119,7 +124,7 @@ export function useComposerAssist(input: {
     }
 
     if (!wantsCues) return;
-    if (draft.trim().length < COMPOSER_ASSIST_MIN_CUE_CHARS) {
+    if (!wantsComposerCues(draft)) {
       latest.current.editorRef.current?.showAssistCues(draft, []);
       return;
     }

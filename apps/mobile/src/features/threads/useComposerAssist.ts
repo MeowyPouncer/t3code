@@ -4,16 +4,17 @@
 // has changed since is dropped, never applied.
 import { useAtomValue } from "@effect/atom-react";
 import {
-  COMPOSER_ASSIST_MIN_CUE_CHARS,
   COMPOSER_ASSIST_PAUSE_MS,
   type ComposerDraftCue,
   composerBlankOutcome,
+  composerBlankTooLong,
   composerDraftCues,
   fromComposerAssistText,
   isTypedComposerBlank,
   relocateComposerCues,
   replaceComposerRange,
   toComposerAssistDraft,
+  wantsComposerCues,
 } from "@t3tools/client-runtime/composer-assist";
 import {
   isAtomCommandInterrupted,
@@ -111,6 +112,10 @@ export function useComposerAssist(input: {
     if (settings.blanks && isTypedComposerBlank(previous, draft)) {
       const assist = toComposerAssistDraft(draft);
       setCues([]);
+      if (composerBlankTooLong(assist)) {
+        setStatus({ kind: "note", text: "The draft is too long for a blank." });
+        return;
+      }
       setStatus({ kind: "working" });
       void askBlank({
         environmentId: input.environmentId,
@@ -145,7 +150,7 @@ export function useComposerAssist(input: {
       return;
     }
 
-    if (!wantsCues || draft.trim().length < COMPOSER_ASSIST_MIN_CUE_CHARS) return;
+    if (!wantsCues || !wantsComposerCues(draft)) return;
     const timer = setTimeout(() => {
       if (latestDraftRef.current !== draft) return;
       const assist = toComposerAssistDraft(draft);
@@ -210,7 +215,6 @@ export function useComposerAssist(input: {
   }, [replaceDraft, status]);
 
   // A draft too short for cues shows none, whatever an earlier answer said.
-  const shown =
-    enabled && input.draft.trim().length >= COMPOSER_ASSIST_MIN_CUE_CHARS ? cues : NO_CUES;
+  const shown = enabled && wantsComposerCues(input.draft) ? cues : NO_CUES;
   return { status, cues: shown, choose, dismiss, revert };
 }

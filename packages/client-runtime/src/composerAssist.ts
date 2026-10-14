@@ -1,6 +1,10 @@
 // FORK: composer assist on the client (web and mobile): the draft goes to the server with every chip
 // replaced by a ⟦n⟧ marker, and what comes back is put into the draft without losing a chip.
-import type { ComposerAssistBlankResult, ComposerAssistCue } from "@t3tools/contracts";
+import {
+  COMPOSER_ASSIST_MAX_DRAFT_CHARS,
+  type ComposerAssistBlankResult,
+  type ComposerAssistCue,
+} from "@t3tools/contracts";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
@@ -9,6 +13,16 @@ import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineToken
 export const COMPOSER_ASSIST_PAUSE_MS = 1_500;
 /** Drafts shorter than this get no cues: there is nothing worth saying yet. */
 export const COMPOSER_ASSIST_MIN_CUE_CHARS = 12;
+/** Longer drafts get no cues (mostly pasted logs or code); the server refuses them too. */
+export const COMPOSER_ASSIST_MAX_CUE_CHARS = 12_000;
+
+/** Whether a draft is worth a cue check at all. */
+export function wantsComposerCues(draft: string): boolean {
+  return (
+    draft.trim().length >= COMPOSER_ASSIST_MIN_CUE_CHARS &&
+    draft.length <= COMPOSER_ASSIST_MAX_CUE_CHARS
+  );
+}
 
 export interface ComposerAssistDraft {
   /** The draft as sent to the server, chips as ⟦1⟧, ⟦2⟧, … in order. */
@@ -177,6 +191,10 @@ export type ComposerBlankOutcome =
   | { readonly kind: "nothing" };
 
 /** What a blank's answer does to the draft it was asked for. */
+export function composerBlankTooLong(assist: ComposerAssistDraft): boolean {
+  return assist.text.length > COMPOSER_ASSIST_MAX_DRAFT_CHARS;
+}
+
 export function composerBlankOutcome(
   draft: string,
   assist: ComposerAssistDraft,
