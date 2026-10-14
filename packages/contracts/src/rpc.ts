@@ -372,6 +372,12 @@ import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 import { TodoBoardReadInput, TodoBoardReadResult, TodoBoardReadError } from "./todoBoard.ts";
 import { NightError, NightPlan, NightState, UnattendedStreamItem } from "./night.ts";
 import { AgentQueue, AgentQueueError, AgentQueueStartInput } from "./agentQueue.ts";
+import {
+  ComposerAssistBlankResult,
+  ComposerAssistCuesResult,
+  ComposerAssistError,
+  ComposerAssistRequest,
+} from "./composerAssist.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -539,6 +545,10 @@ export const WS_METHODS = {
   // FORK: card agents a few at a time
   agentQueueStart: "agentQueue.start",
   agentQueueCancel: "agentQueue.cancel",
+
+  // FORK: composer assist (blanks and cues in the composer)
+  composerAssistBlank: "composerAssist.blank",
+  composerAssistCues: "composerAssist.cues",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1853,6 +1863,21 @@ const WsAgentQueueCancelRpc = Rpc.make(WS_METHODS.agentQueueCancel, {
   error: Schema.Union([AgentQueueError, EnvironmentAuthorizationError]),
 });
 
+// FORK: composer assist.
+/** A draft ending in " _": what to put in its place. */
+const WsComposerAssistBlankRpc = Rpc.make(WS_METHODS.composerAssistBlank, {
+  payload: ComposerAssistRequest,
+  success: ComposerAssistBlankResult,
+  error: Schema.Union([ComposerAssistError, EnvironmentAuthorizationError]),
+});
+
+/** A draft after a pause in typing: what is worth pointing out before it is sent. */
+const WsComposerAssistCuesRpc = Rpc.make(WS_METHODS.composerAssistCues, {
+  payload: ComposerAssistRequest,
+  success: ComposerAssistCuesResult,
+  error: Schema.Union([ComposerAssistError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2068,6 +2093,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsUnattendedSubscribeRpc,
   WsAgentQueueStartRpc,
   WsAgentQueueCancelRpc,
+  WsComposerAssistBlankRpc,
+  WsComposerAssistCuesRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

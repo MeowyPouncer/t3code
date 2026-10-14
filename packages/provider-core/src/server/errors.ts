@@ -20,6 +20,19 @@ export class ProviderDriverError extends Schema.TaggedError<ProviderDriverError>
   }
 }
 
+/** FORK: a composer assist task on the provider's fast model failed. */
+export class ProviderComposerAssistError extends Schema.TaggedError<ProviderComposerAssistError>()(
+  "ProviderComposerAssistError",
+  {
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 /** Reading or writing a provider's stored credentials failed. */
 export class ProviderCredentialError extends Schema.TaggedError<ProviderCredentialError>()(
   "ProviderCredentialError",

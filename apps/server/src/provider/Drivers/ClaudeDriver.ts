@@ -70,8 +70,10 @@ import {
 import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
+  makeClaudeEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
+import { makeClaudeComposerAssist } from "./ClaudeComposerAssist.ts";
 import { claudeIdleCompaction, readClaudeIdleCompactionSetting } from "./ClaudeIdleCompaction.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -286,6 +288,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ),
       );
 
+      // FORK: composer assist runs Claude Haiku on this instance's own login.
+      const composerAssist = yield* makeClaudeComposerAssist({
+        binaryPath: effectiveConfig.binaryPath,
+        environment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+        usageLimits: snapshot.getSnapshot.pipe(Effect.map((current) => current.usageLimits)),
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        // Without a scratch directory there is no composer assist; the instance still works.
+        Effect.catch((cause) =>
+          Effect.logWarning("Claude composer assist is unavailable.", { cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+
       // Same rules as Codex: serialised on the config directory that holds the
       // login, one request id kept until Claude answers (a cooldown or rate
       // limit is an answer), then a re-probe.
@@ -371,6 +389,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         orchestrationAdapter,
         textGeneration,
         consumeResetCredit,
+        ...(composerAssist === undefined ? {} : { composerAssist }),
         idleCompaction: Effect.all([
           snapshot.getSnapshot,
           readClaudeIdleCompactionSetting(configDir),

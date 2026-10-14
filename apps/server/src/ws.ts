@@ -194,6 +194,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as TodoBoard from "./project/TodoBoard.ts";
 import * as Night from "./night/NightService.ts";
 import * as AgentQueue from "./agentQueue/AgentQueueService.ts";
+import * as ComposerAssist from "./composerAssist/ComposerAssistService.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import {
   claudeSessionIdsForThread,
@@ -1298,6 +1299,7 @@ const layerWsRpc = (
       const todoBoard = yield* TodoBoard.TodoBoard;
       const night = yield* Night.NightService;
       const agentQueue = yield* AgentQueue.AgentQueueService;
+      const composerAssist = yield* ComposerAssist.ComposerAssistService;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2709,6 +2711,8 @@ const layerWsRpc = (
         [WS_METHODS.unattendedSubscribe]: (_input) => night.subscribe(),
         [WS_METHODS.agentQueueStart]: (input) => agentQueue.start(input),
         [WS_METHODS.agentQueueCancel]: (input) => agentQueue.cancel(input.id),
+        [WS_METHODS.composerAssistBlank]: (input) => composerAssist.blank(input),
+        [WS_METHODS.composerAssistCues]: (input) => composerAssist.cues(input),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(

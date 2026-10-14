@@ -39,7 +39,7 @@ import type * as Scope from "effect/Scope";
 
 import type * as ProviderAdapter from "./ProviderAdapter.ts";
 import type { ProviderAuthController } from "./auth.ts";
-import type { ProviderDriverError } from "./errors.ts";
+import type { ProviderComposerAssistError, ProviderDriverError } from "./errors.ts";
 import type { ManagedServerProvider } from "./snapshot.ts";
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import type { ProviderUsageReader } from "./usage.ts";
@@ -109,6 +109,8 @@ export interface ProviderInstance {
    * Null for no compaction now; absent for an instance that never wants it.
    */
   readonly idleCompaction?: Effect.Effect<ProviderIdleCompaction | null>;
+  /** FORK: composer assist (blanks and cues) on this instance's fast model; absent when it has none. */
+  readonly composerAssist?: ProviderComposerAssist;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
@@ -133,6 +135,18 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
+}
+
+/** FORK: one composer assist task at a time, each on a fresh model context. */
+export interface ProviderComposerAssist {
+  /** `system` is the same for every task, so a process started ahead can take the next one. */
+  readonly complete: (input: {
+    readonly system: string;
+    readonly task: string;
+    readonly timeoutMs: number;
+  }) => Effect.Effect<string, ProviderComposerAssistError>;
+  /** False near a usage limit: cues nobody asked for wait, a blank the user typed still runs. */
+  readonly roomForBackground: Effect.Effect<boolean>;
 }
 
 /** FORK: what an instance's idle compaction needs from T3. */
