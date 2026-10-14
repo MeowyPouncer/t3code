@@ -301,6 +301,61 @@ describe("V2 session presentation", () => {
     expect(targets.has(steerMessageId)).toBe(false);
   });
 
+  it("shows T3's idle compaction as its compaction, without the /compact message", () => {
+    const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
+    const threadId = ThreadId.make("thread-idle");
+    const runId = RunId.make("run-idle-compact");
+    const base = (id: string, ordinal: number) => ({
+      id: TurnItemId.make(id),
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      status: "completed" as const,
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+    const compactMessage = {
+      ...base("item-idle-compact", 0),
+      type: "user_message" as const,
+      messageId: MessageId.make("message-idle-compact"),
+      inputIntent: "turn_start" as const,
+      text: "/compact",
+      attachments: [],
+      createdBy: "system" as const,
+      creationSource: "server" as const,
+      idleCompaction: true as const,
+    } satisfies OrchestrationV2TurnItem;
+    const compaction = {
+      ...base("item-compaction", 1),
+      type: "compaction" as const,
+      driver: null,
+      beforeTokenCount: 412_000,
+      afterTokenCount: 13_000,
+    } satisfies OrchestrationV2TurnItem;
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [compactMessage, compaction].map((item, position) => ({
+        position,
+        visibility: "local" as const,
+        sourceThreadId: threadId,
+        sourceItemId: item.id,
+        item,
+      })),
+      optimisticMessages: [],
+    });
+    expect(entries.map((entry) => [entry.kind, entry.id])).toEqual([["work", compaction.id]]);
+    const [entry] = entries;
+    expect(entry?.kind === "work" ? entry.entry.label : null).toBe(
+      "Context compacted while idle 412K → 13K tokens",
+    );
+  });
+
   it("uses visible turn item order and keeps provider errors in the work log", () => {
     const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
     const threadId = ThreadId.make("thread-visible");

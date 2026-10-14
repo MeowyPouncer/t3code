@@ -57,6 +57,16 @@ history for that message. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
+T3 Code also compacts a thread you left before its cache expires, so coming back
+to it does not re-read the whole history. About 50 minutes after a turn ends, a
+thread holding at least 200,000 tokens is compacted and shows **Context
+compacted while idle**. It stays where it was in the sidebar or on the shelf.
+Settled, archived and snoozed threads, delegated tasks, and threads on a
+5-minute cache are left alone, and nothing is compacted near a usage limit. Turn
+it off with **Compact idle threads** in the Claude provider settings, or change
+the threshold with **Compact idle threads from**. `"idleCompaction": false` in
+the config directory's `settings.json` turns it off too.
+
 ## Usage limits
 
 If your Claude subscription runs out of usage mid-turn, the thread shows which

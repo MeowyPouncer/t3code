@@ -472,6 +472,47 @@ export function isNativeMaintenanceCommand(message: {
   );
 }
 
+const IDLE_COMPACTION_BLOCKING_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["status"]> = new Set([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/**
+ * FORK: whether T3's /compact of a thread idle since `runId` (IdleCompactionWorker) may start:
+ * nothing ran, waits or is queued since that run, and the thread is not archived, settled or
+ * snoozed. Otherwise the command is accepted and does nothing.
+ */
+export function idleCompactionMayStart(input: {
+  readonly projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">;
+  readonly command: Pick<
+    Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    "createdBy" | "creationSource" | "text" | "attachments" | "dispatchMode"
+  >;
+  readonly runId: RunId;
+  readonly nowMs: number;
+}): boolean {
+  const { projection, command } = input;
+  const { thread } = projection;
+  return (
+    command.createdBy === "system" &&
+    command.creationSource === "server" &&
+    command.attachments.length === 0 &&
+    command.text.trim().toLowerCase() === "/compact" &&
+    command.dispatchMode.type === "start_immediately" &&
+    latestExecutedRun(projection.runs)?.id === input.runId &&
+    !projection.runs.some((run) => IDLE_COMPACTION_BLOCKING_RUN_STATUSES.has(run.status)) &&
+    !projection.runtimeRequests.some((request) => request.status === "pending") &&
+    thread.archivedAt === null &&
+    thread.deletedAt === null &&
+    thread.settledOverride !== "settled" &&
+    thread.settledAt === null &&
+    (thread.snoozedUntil == null || DateTime.toEpochMillis(thread.snoozedUntil) <= input.nowMs)
+  );
+}
+
 /** A native `/goal` command. It changes the provider's goal, so it never steers a running turn. */
 function isGoalCommand(message: {
   readonly text: string;
@@ -4750,6 +4791,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           !recovery?.autoResume ||
           recovery.requestId !== command.usageLimitRecoveryRequestId ||
           recovery.runId !== run.id ||
+          // FORK: a limit that stopped T3's idle compaction leaves no work to continue.
+          run.idleCompactionOfRunId !== undefined ||
           recovery.resetAt !== failure.resetAt ||
           Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now) ||
           projection.thread.archivedAt !== null ||
@@ -4813,11 +4856,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
 
+      // FORK: an idle compaction starts only on a thread still idle, and changes nothing about the
+      // thread itself: it stays shelved, its settle override and sidebar place are kept.
+      const idleCompaction = command.idleCompactionOfRunId !== undefined;
+      if (
+        command.idleCompactionOfRunId !== undefined &&
+        !idleCompactionMayStart({
+          projection,
+          command,
+          runId: command.idleCompactionOfRunId,
+          nowMs: DateTime.toEpochMillis(yield* DateTime.now),
+        })
+      ) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: yield* DateTime.now,
+          payload: projection.thread,
+        });
+        return;
+      }
+
       const continuedTaskId = projection.runs.find(
         (run) => run.id === command.restartContinuationOfRunId,
       )?.delegatedTaskId;
 
-      if (projection.thread.settledOverride !== null) {
+      if (!idleCompaction && projection.thread.settledOverride !== null) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
           ...projection.thread,
@@ -4841,7 +4908,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
-      if (projection.thread.snoozedUntil != null) {
+      if (!idleCompaction && projection.thread.snoozedUntil != null) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
           ...projection.thread,
@@ -4863,7 +4930,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       // FORK: a message, the user's or an agent's wake, brings a shelved thread
       // back to the top of the active list; its note stays.
-      if (projection.thread.shelvedAt != null) {
+      if (!idleCompaction && projection.thread.shelvedAt != null) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
           ...projection.thread,
@@ -5278,6 +5345,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+          ...(command.idleCompactionOfRunId === undefined
+            ? {}
+            : { idleCompactionOfRunId: command.idleCompactionOfRunId }),
           ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         };
         const attempt: OrchestrationV2RunAttempt = {
@@ -5618,6 +5688,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+          ...(command.idleCompactionOfRunId === undefined
+            ? {}
+            : { idleCompactionOfRunId: command.idleCompactionOfRunId }),
           ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
             ? { workspacePreparation: dispatchMode.workspaceStrategy }
             : {}),
@@ -5706,6 +5779,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
           attachments: command.attachments,
+          ...(command.idleCompactionOfRunId === undefined ? {} : { idleCompaction: true as const }),
         };
         const preparationTurnItem: OrchestrationV2TurnItem | null =
           dispatchMode.type === "defer_start"
@@ -6315,6 +6389,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
+        ...(command.idleCompactionOfRunId === undefined
+          ? {}
+          : { idleCompactionOfRunId: command.idleCompactionOfRunId }),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
         ...wakeWorkStartedAt(projection.runs, command),
       };
@@ -6396,6 +6473,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
         attachments: command.attachments,
+        ...(command.idleCompactionOfRunId === undefined ? {} : { idleCompaction: true as const }),
       };
       const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
       const handoffSourceRuns =

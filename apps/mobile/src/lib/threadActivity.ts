@@ -18,6 +18,7 @@ import {
 } from "@t3tools/client-runtime/work-log/command-label";
 import {
   contextCompactionLabel,
+  idleCompactionRunIds,
   liveThoughtLine,
   toolItemForDisplay,
   workEntryDisplayIndicatesToolFailure,
@@ -305,6 +306,8 @@ const projectedEntriesCache = new WeakMap<
   OrchestrationV2ProjectedTurnItem,
   {
     readonly attemptId: RunAttemptId | null;
+    /** FORK: whether the row's run is T3's idle compaction, which relabels a compaction. */
+    readonly idle: boolean;
     readonly entry: RawThreadFeedEntry;
   }
 >();
@@ -593,10 +596,11 @@ function itemToolPresentation(item: OrchestrationV2TurnItem): T3McpToolPresentat
 function itemSummary(
   item: OrchestrationV2TurnItem,
   toolPresentation: T3McpToolPresentation | null = null,
+  idleCompaction = false,
 ): string {
   if (item.type === "notification") return item.summary;
   if (item.type === "system_notice") return item.message;
-  if (item.type === "compaction") return contextCompactionLabel(item);
+  if (item.type === "compaction") return contextCompactionLabel(item, { idle: idleCompaction });
   const title =
     (item.type === "dynamic_tool" ? dynamicToolTitle(item.toolName, item.input) : undefined) ??
     item.title?.trim();
@@ -803,10 +807,11 @@ export function formatItemFullDetail(
 function toFeedActivity(
   row: OrchestrationV2ProjectedTurnItem,
   attemptId: RunAttemptId | null,
+  idleCompaction = false,
 ): ThreadFeedActivity {
   const item = row.item;
   const toolPresentation = itemToolPresentation(item);
-  const summary = itemSummary(item, toolPresentation);
+  const summary = itemSummary(item, toolPresentation, idleCompaction);
   const detail = item.type === "notification" ? null : itemPreview(item);
   const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
   const workEntry = toWorkLogEntry(item, createdAt, summary, detail);
@@ -1760,19 +1765,24 @@ export function buildThreadFeed(
         : [],
     ),
   );
+  // FORK: T3's idle compaction shows as its compaction, without its /compact message.
+  const idleCompactionRuns = idleCompactionRunIds(visibleTurnItems);
   for (const row of visibleTurnItems) {
     const item = row.item;
     if (turnItemIsWorkspacePreparation(item)) continue;
     if (item.type === "todo_list" || item.type === "checkpoint") continue;
     if (item.type === "user_message" && foldedAnswerMessageIds.has(item.messageId)) continue;
+    if (item.type === "user_message" && item.idleCompaction === true) continue;
     // Match the web timeline: only the terminal interrupt result is useful to
     // users; the preceding request is transient bookkeeping.
     if (item.type === "run_interrupt_request") {
       continue;
     }
     const attemptId = resolveAttemptId(item);
+    const idle =
+      item.type === "compaction" && item.runId !== null && idleCompactionRuns.has(item.runId);
     const cached = projectedEntriesCache.get(row);
-    if (cached?.attemptId === attemptId) {
+    if (cached?.attemptId === attemptId && cached.idle === idle) {
       entries.push(cached.entry);
       continue;
     }
@@ -1790,7 +1800,7 @@ export function buildThreadFeed(
         runId: item.runId,
         render,
       };
-      projectedEntriesCache.set(row, { attemptId, entry });
+      projectedEntriesCache.set(row, { attemptId, idle, entry });
       entries.push(entry);
       continue;
     }
@@ -1809,7 +1819,7 @@ export function buildThreadFeed(
         revision: turnItemDetailRevision(item),
         app,
       };
-      projectedEntriesCache.set(row, { attemptId, entry });
+      projectedEntriesCache.set(row, { attemptId, idle, entry });
       entries.push(entry);
       continue;
     }
@@ -1843,11 +1853,11 @@ export function buildThreadFeed(
           projectedItem: row,
         },
       };
-      projectedEntriesCache.set(row, { attemptId, entry });
+      projectedEntriesCache.set(row, { attemptId, idle, entry });
       entries.push(entry);
       continue;
     }
-    const activity = toFeedActivity(row, attemptId);
+    const activity = toFeedActivity(row, attemptId, idle);
     const entry: RawThreadFeedEntry = {
       type: "activity",
       id: activity.id,
@@ -1855,7 +1865,7 @@ export function buildThreadFeed(
       runId: item.runId,
       activity,
     };
-    projectedEntriesCache.set(row, { attemptId, entry });
+    projectedEntriesCache.set(row, { attemptId, idle, entry });
     entries.push(entry);
   }
   const retainedMessageIds = new Set([

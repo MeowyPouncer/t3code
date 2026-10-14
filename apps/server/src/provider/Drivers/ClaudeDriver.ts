@@ -14,6 +14,7 @@
  */
 import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -71,6 +72,7 @@ import {
   makeClaudeContinuationGroupKey,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
+import { claudeIdleCompaction, readClaudeIdleCompactionSetting } from "./ClaudeIdleCompaction.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -369,6 +371,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         orchestrationAdapter,
         textGeneration,
         consumeResetCredit,
+        idleCompaction: Effect.all([
+          snapshot.getSnapshot,
+          readClaudeIdleCompactionSetting(configDir),
+          Clock.currentTimeMillis,
+        ]).pipe(
+          Effect.map(([current, claudeSetting, nowMs]) =>
+            claudeIdleCompaction({
+              config: effectiveConfig,
+              claudeSetting,
+              usageLimits: current.usageLimits,
+              nowMs,
+            }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
       } satisfies ProviderInstance;
     }),
 };

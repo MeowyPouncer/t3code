@@ -1,4 +1,5 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
+import * as IdleCompactionWorker from "./IdleCompactionWorker.ts";
 import * as FileChangeAutoDecline from "./FileChangeAutoDecline.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -382,6 +383,10 @@ export const layerProduction = Layer.mergeAll(
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
   UsageLimitRecoveryWorker.layer.pipe(
+    Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
+  ),
+  // FORK: compacts idle Claude threads before their prompt cache expires.
+  IdleCompactionWorker.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
   FileChangeAutoDecline.layer.pipe(Layer.provide(layerThreadManagementProvided)),

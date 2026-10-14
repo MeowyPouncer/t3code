@@ -692,8 +692,11 @@ export type CodexSettings = typeof CodexSettings.Type;
 
 // Empty, or an integer from 100,000 to 1,000,000. Shared by the full
 // Claude settings schema and its patch so an out-of-range value fails at
-// the update that introduced it.
+// the update that introduced it. FORK: idle compaction's threshold takes the same range.
 const CLAUDE_AUTO_COMPACT_WINDOW_PATTERN = /^(?:|[1-9]\d{5}|1000000)$/;
+
+/** FORK: the context below which T3 leaves an idle Claude thread alone, as in Claude Code. */
+export const DEFAULT_CLAUDE_IDLE_COMPACTION_MIN_TOKENS = 200_000;
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
@@ -746,9 +749,40 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    // FORK: T3 compacts idle threads itself (IdleCompactionWorker); Claude Code does only in a terminal.
+    idleCompaction: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Compact idle threads",
+        description:
+          "About 50 minutes after a turn ends, before Claude's one-hour prompt cache expires, compact a large thread nobody is using, so the next message does not re-read all of it. Claude subscriptions only.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+    idleCompactionMinTokens: TrimmedString.check(
+      Schema.isPattern(CLAUDE_AUTO_COMPACT_WINDOW_PATTERN),
+    ).pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Compact idle threads from",
+        description:
+          "Compact idle threads holding at least 100,000 to 1,000,000 tokens. Leave empty for 200,000.",
+        providerSettingsForm: {
+          placeholder: "200000",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "idleCompaction",
+      "idleCompactionMinTokens",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;

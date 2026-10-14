@@ -104,6 +104,11 @@ export interface ProviderInstance {
   >;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
+  /**
+   * FORK: whether T3 compacts this instance's threads once they sit idle, read when one is due.
+   * Null for no compaction now; absent for an instance that never wants it.
+   */
+  readonly idleCompaction?: Effect.Effect<ProviderIdleCompaction | null>;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
@@ -128,6 +133,12 @@ export interface ProviderInstance {
       readonly providerId: string;
     }) => Effect.Effect<void, AcpRegistryOperationError>;
   };
+}
+
+/** FORK: what an instance's idle compaction needs from T3. */
+export interface ProviderIdleCompaction {
+  /** A thread with less context than this is not worth compacting. */
+  readonly minTokens: number;
 }
 
 export interface ProviderContinuationIdentity {
