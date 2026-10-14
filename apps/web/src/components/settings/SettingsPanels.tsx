@@ -3583,6 +3583,8 @@ export function GeneralSettingsPanel() {
               key={item.key}
               serverScoped
               {...searchableSetting(item.searchId)}
+              // The section names the feature; search results keep the longer title.
+              title={item.label}
               description={item.description}
               settingKeys={["composerAssist"]}
               control={
@@ -3600,6 +3602,7 @@ export function GeneralSettingsPanel() {
           <SettingsRow
             serverScoped
             {...searchableSetting("composer-assist-account")}
+            title="Claude account"
             description="The Claude account that answers. By default it is the thread's own, so two accounts never work at once; a thread on another provider uses the first Claude."
             settingKeys={["composerAssist"]}
             control={
