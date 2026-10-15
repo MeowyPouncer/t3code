@@ -1,4 +1,5 @@
 import { useNavigation } from "@react-navigation/native";
+import { COMPOSER_ASSIST_LANGUAGES } from "@t3tools/client-runtime/composer-assist";
 import { SettingsRow } from "./components/SettingsRow";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
@@ -47,7 +48,8 @@ const COMPOSER_ASSIST_SWITCHES = [
     key: "blanks",
     icon: "square.and.pencil",
     label: "Blanks",
-    subtitle: "End a draft with “ _” and Claude rewrites or fills it in.",
+    subtitle:
+      "End a draft with “ _” and Claude improves it as a prompt, follows the instruction before it, or fills in a value.",
   },
   {
     key: "contradictions",
@@ -202,8 +204,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const reference = displayTargets[0] ?? null;
   const uniform = <K extends keyof ServerSettings>(key: K) =>
     uniformMobileSetting(displayTargets, key);
-  // FORK: composer assist's switches live in one settings object.
-  const uniformComposerAssist = (key: (typeof COMPOSER_ASSIST_SWITCHES)[number]["key"]) => {
+  // FORK: composer assist's settings live in one settings object.
+  const uniformComposerAssist = <K extends keyof ServerSettings["composerAssist"]>(key: K) => {
     const values = displayTargets.map((entry) => entry.settings.composerAssist[key]);
     return values.length > 0 && values.every((value) => value === values[0])
       ? (values[0] ?? null)
@@ -476,29 +478,55 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     />
                   </SettingsSection>
                   {supportsComposerAssist ? (
-                    <SettingsSection title="Composer assist">
-                      {COMPOSER_ASSIST_SWITCHES.map((item, index) => (
-                        <View
-                          key={item.key}
-                          className={index > 0 ? "border-t border-border-subtle" : undefined}
-                        >
-                          <SettingsSwitchRow
-                            icon={item.icon}
-                            label={item.label}
-                            subtitle={
-                              projectSelected
-                                ? "Environment-wide setting. Select All projects to change it."
-                                : item.subtitle
+                    <>
+                      <SettingsSection title="Composer assist">
+                        {COMPOSER_ASSIST_SWITCHES.map((item, index) => (
+                          <View
+                            key={item.key}
+                            className={index > 0 ? "border-t border-border-subtle" : undefined}
+                          >
+                            <SettingsSwitchRow
+                              icon={item.icon}
+                              label={item.label}
+                              subtitle={
+                                projectSelected
+                                  ? "Environment-wide setting. Select All projects to change it."
+                                  : item.subtitle
+                              }
+                              value={uniformComposerAssist(item.key)}
+                              disabled={disabledFor("composerAssist")}
+                              onValueChange={(value) =>
+                                write({ composerAssist: { [item.key]: value } })
+                              }
+                            />
+                          </View>
+                        ))}
+                      </SettingsSection>
+                      <SettingsSection
+                        title="Prompt language"
+                        trailing={
+                          pendingWrites === 0 && uniformComposerAssist("language") === null ? (
+                            <MixedValuesLabel projectSelected={projectSelected} />
+                          ) : null
+                        }
+                      >
+                        {COMPOSER_ASSIST_LANGUAGES.map((choice, index) => (
+                          <SettingsChoiceRow
+                            key={choice.value}
+                            label={choice.label}
+                            description={
+                              choice.value === ""
+                                ? "A blank's rewrite keeps the language you wrote in."
+                                : `A blank's rewrite comes out in ${choice.label}.`
                             }
-                            value={uniformComposerAssist(item.key)}
+                            selected={uniformComposerAssist("language") === choice.value}
+                            separated={index > 0}
                             disabled={disabledFor("composerAssist")}
-                            onValueChange={(value) =>
-                              write({ composerAssist: { [item.key]: value } })
-                            }
+                            onPress={() => write({ composerAssist: { language: choice.value } })}
                           />
-                        </View>
-                      ))}
-                    </SettingsSection>
+                        ))}
+                      </SettingsSection>
+                    </>
                   ) : null}
                 </>
               ) : null}

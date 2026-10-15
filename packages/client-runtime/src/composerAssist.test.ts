@@ -93,7 +93,7 @@ describe("blank answers", () => {
     expect(
       composerBlankOutcome(draft, assist, { _tag: "none", reason: "Blanks are off." }),
     ).toEqual({ kind: "note", text: "Blanks are off." });
-    expect(composerBlankOutcome(draft, assist, { _tag: "none" })).toEqual({ kind: "nothing" });
+    expect(composerBlankOutcome(draft, assist, { _tag: "none" }).kind).toBe("note");
     expect(composerBlankOutcome(draft, assist, { _tag: "rewrite", text: "fix ⟦7⟧" }).kind).toBe(
       "note",
     );

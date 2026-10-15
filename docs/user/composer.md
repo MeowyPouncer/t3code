@@ -159,11 +159,14 @@ needs a Claude provider and answers with the thread's own Claude account, or the
 first one when the thread runs on another provider. Change the account or turn
 off any part in **Settings → General → Composer assist**.
 
-End a draft with a space and `_` to ask for something. `make it a numbered list _`,
-`in English _` or `improve the prompt _` rewrites the draft; `the command that runs
-the tests _` fills in the answer. Undo on web and desktop, or **Revert** on mobile,
-brings back what you wrote. Files, skills and attachments in the draft stay; a
-rewrite that would lose one is refused.
+End a draft with a space and `_`, and Claude improves it as a prompt: typos fixed,
+clearer and more specific, nothing added. An instruction right before the `_` asks
+for something else, such as `make it a numbered list _`, `shorter _` or `in English _`;
+a phrase that leaves a slot, such as `the command that runs the tests: _`, gets the
+value filled in. To write in one language and send prompts in another, pick it in
+**Prompt language**. Undo on web and desktop, or **Revert** on mobile, brings back
+what you wrote. Files, skills and attachments in the draft stay; a rewrite that would
+lose one is refused, and a note says why whenever nothing changes.
 
 After a pause in typing, underlines point out:
 

@@ -16,6 +16,13 @@ export const COMPOSER_ASSIST_MIN_CUE_CHARS = 12;
 /** Longer drafts get no cues (mostly pasted logs or code); the server refuses them too. */
 export const COMPOSER_ASSIST_MAX_CUE_CHARS = 12_000;
 
+/** The languages a blank can rewrite into, for the settings; "" keeps the draft's language. */
+export const COMPOSER_ASSIST_LANGUAGES = [
+  { value: "", label: "Same as the draft" },
+  { value: "English", label: "English" },
+  { value: "Russian", label: "Russian" },
+] as const;
+
 /** Whether a draft is worth a cue check at all. */
 export function wantsComposerCues(draft: string): boolean {
   return (
@@ -187,23 +194,21 @@ export function isTypedComposerBlank(previous: string, next: string): boolean {
 
 export type ComposerBlankOutcome =
   | { readonly kind: "replace"; readonly text: string }
-  | { readonly kind: "note"; readonly text: string }
-  | { readonly kind: "nothing" };
+  | { readonly kind: "note"; readonly text: string };
 
-/** What a blank's answer does to the draft it was asked for. */
 export function composerBlankTooLong(assist: ComposerAssistDraft): boolean {
   return assist.text.length > COMPOSER_ASSIST_MAX_DRAFT_CHARS;
 }
 
+/** What a blank's answer does to the draft it was asked for. A blank never ends silently. */
 export function composerBlankOutcome(
   draft: string,
   assist: ComposerAssistDraft,
   result: ComposerAssistBlankResult,
 ): ComposerBlankOutcome {
   if (result._tag === "none") {
-    return result.reason === undefined
-      ? { kind: "nothing" }
-      : { kind: "note", text: result.reason };
+    // Older servers answered some blanks with no reason.
+    return { kind: "note", text: result.reason ?? "Claude left the draft as it is." };
   }
   const text = fromComposerAssistText(result.text, assist);
   if (text === null) {

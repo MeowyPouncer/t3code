@@ -28,17 +28,23 @@ describe("parseBlankReply", () => {
       parseBlankReply("<verdict>FILL</verdict><text> pnpm vitest run </text>", "test command _"),
       { kind: "fill", text: "pnpm vitest run" },
     );
-    assert.deepStrictEqual(
-      parseBlankReply("<verdict>FILL</verdict><text>see ⟦2⟧</text>", "which file _"),
-      { kind: "none" },
+    assert.strictEqual(
+      parseBlankReply("<verdict>FILL</verdict><text>see ⟦2⟧</text>", "which file _").kind,
+      "none",
     );
   });
 
-  it("treats NONE and malformed replies as nothing to do", () => {
-    assert.deepStrictEqual(parseBlankReply("<verdict>NONE</verdict><text></text>", "a _"), {
-      kind: "none",
-    });
-    assert.deepStrictEqual(parseBlankReply("Sure! Here you go.", "a _"), { kind: "none" });
+  it("gives a reason whenever the blank changes nothing", () => {
+    for (const reply of [
+      "<verdict>NONE</verdict><text></text>",
+      "<verdict>REWRITE</verdict><text>\n</text>",
+      "<verdict>FILL</verdict><text></text>",
+      "Sure! Here you go.",
+    ]) {
+      const outcome = parseBlankReply(reply, "a _");
+      assert.strictEqual(outcome.kind, "none");
+      assert.isAbove(outcome.kind === "none" ? outcome.reason.length : 0, 0);
+    }
   });
 });
 

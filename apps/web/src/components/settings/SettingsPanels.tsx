@@ -15,6 +15,7 @@ import {
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { COMPOSER_ASSIST_LANGUAGES } from "@t3tools/client-runtime/composer-assist";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
@@ -179,7 +180,7 @@ const COMPOSER_ASSIST_SWITCHES = [
     searchId: "composer-assist-blanks",
     label: "Blanks",
     description:
-      "End a draft with “ _” and Claude rewrites or fills it in: “improve the prompt _”, “in English _”, “as a list _”.",
+      "End a draft with “ _” and Claude improves it as a prompt, follows the instruction before the “_” (“as a list _”), or fills in a value (“the test command: _”).",
   },
   {
     key: "contradictions",
@@ -3599,6 +3600,37 @@ export function GeneralSettingsPanel() {
               }
             />
           ))}
+          <SettingsRow
+            serverScoped
+            {...searchableSetting("composer-assist-language")}
+            title="Prompt language"
+            description="The language a blank's rewrite comes out in, so a draft written in one language is sent in another."
+            settingKeys={["composerAssist"]}
+            control={
+              <Select
+                value={settings.composerAssist.language}
+                onValueChange={(value) =>
+                  updateSettings({ composerAssist: { language: value ?? "" } })
+                }
+              >
+                <SelectTrigger className="w-full sm:w-56" aria-label="Prompt language">
+                  <SelectValue>
+                    {(value: string) =>
+                      COMPOSER_ASSIST_LANGUAGES.find((language) => language.value === value)
+                        ?.label ?? value
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  {COMPOSER_ASSIST_LANGUAGES.map((language) => (
+                    <SelectItem key={language.value} value={language.value}>
+                      {language.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
           <SettingsRow
             serverScoped
             {...searchableSetting("composer-assist-account")}

@@ -394,7 +394,12 @@ export const make = Effect.gen(function* () {
       if (!settings.blanks) {
         return { _tag: "none" as const, reason: "Blanks are off in Settings." };
       }
-      if (!/(?:^|\s)_\s*$/.test(input.text)) return { _tag: "none" as const };
+      if (!/(?:^|\s)_\s*$/.test(input.text)) {
+        return { _tag: "none" as const, reason: "The draft does not end with a _." };
+      }
+      if (input.text.replace(/\s*_\s*$/, "").trim().length === 0) {
+        return { _tag: "none" as const, reason: "Write something before the _." };
+      }
       const { assistant, shell } = yield* assistantFor(input, settings.instanceId, "blank");
       let thread: ComposerAssistThreadContext | null = null;
       if (input.threadId !== undefined) {
@@ -409,7 +414,11 @@ export const make = Effect.gen(function* () {
       }
       const reply = yield* complete(
         assistant,
-        blankTask({ text: input.text.replace(/\s+$/, ""), thread }),
+        blankTask({
+          text: input.text.replace(/\s+$/, ""),
+          thread,
+          language: settings.language === "" ? null : settings.language,
+        }),
         BLANK_TIMEOUT_MS,
         "blank",
       );
@@ -421,9 +430,7 @@ export const make = Effect.gen(function* () {
         case "fill":
           return { _tag: "fill" as const, text: outcome.text };
         case "none":
-          return outcome.reason === undefined
-            ? { _tag: "none" as const }
-            : { _tag: "none" as const, reason: outcome.reason };
+          return { _tag: "none" as const, reason: outcome.reason };
       }
     },
   );
