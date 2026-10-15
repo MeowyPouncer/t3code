@@ -1,5 +1,9 @@
 import { useNavigation } from "@react-navigation/native";
-import { COMPOSER_ASSIST_LANGUAGES } from "@t3tools/client-runtime/composer-assist";
+import {
+  COMPOSER_ASSIST_LANGUAGES,
+  COMPOSER_ASSIST_MODELS,
+  COMPOSER_ASSIST_PAUSES,
+} from "@t3tools/client-runtime/composer-assist";
 import { SettingsRow } from "./components/SettingsRow";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
@@ -42,44 +46,52 @@ import {
 
 type SettingsPage = "new-threads" | "source-control" | "agent-behavior" | "maintenance";
 
-/** FORK: the composer assist parts; the Claude account is chosen on web and desktop. */
+/** FORK: the composer assist parts; the Claude account, status, rules and Try are on web and desktop. */
 const COMPOSER_ASSIST_SWITCHES = [
   {
     key: "blanks",
+    group: "blanks",
     icon: "square.and.pencil",
     label: "Blanks",
     subtitle:
-      "End a draft with “ _” and Claude improves it as a prompt, follows the instruction before it, or fills in a value.",
+      "End a draft with “ _” and Claude works on it. Bare, it improves the draft as a prompt; after an instruction (“as a list _”) it follows it; after a slot (“the test command: _”) it fills in the value.",
   },
   {
     key: "contradictions",
+    group: "cues",
     icon: "exclamationmark.triangle",
     label: "Contradictions",
-    subtitle: "Flag what goes against the thread's decisions, AGENTS.md or the calendar.",
+    subtitle:
+      "Flag what goes against the thread's decisions, the project's AGENTS.md or the calendar.",
   },
   {
     key: "spelling",
+    group: "cues",
     icon: "textformat.size",
     label: "Typos",
     subtitle: "Point out misspelled words and offer corrections.",
   },
   {
     key: "sentences",
+    group: "cues",
     icon: "text.alignleft",
     label: "Better sentences",
-    subtitle: "Offer a clearer or shorter version of a sentence.",
+    subtitle: "Offer a clearer or shorter version of a sentence, with the reason.",
   },
   {
     key: "askCues",
+    group: "cues",
     icon: "questionmark.bubble",
     label: "Clarifying questions",
     subtitle: "Ask about a vague sentence and offer ways to make it precise.",
   },
   {
     key: "auditor",
+    group: "cues",
     icon: "checkmark.circle",
     label: "Auditor",
-    subtitle: "After a pause, tidy the whole draft on its own.",
+    subtitle:
+      "After a pause, tidy the whole draft on its own. Revert puts it back; it can change a prompt's meaning, so it is off by default.",
   },
 ] as const;
 
@@ -216,6 +228,23 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     targets.every(
       (target) => target.environment.serverConfig.environment.capabilities.composerAssist === true,
     );
+  const renderComposerAssistSwitches = (group: "blanks" | "cues") =>
+    COMPOSER_ASSIST_SWITCHES.filter((item) => item.group === group).map((item, index) => (
+      <View key={item.key} className={index > 0 ? "border-t border-border-subtle" : undefined}>
+        <SettingsSwitchRow
+          icon={item.icon}
+          label={item.label}
+          subtitle={
+            projectSelected
+              ? "Environment-wide setting. Select All projects to change it."
+              : item.subtitle
+          }
+          value={uniformComposerAssist(item.key)}
+          disabled={disabledFor("composerAssist")}
+          onValueChange={(value) => write({ composerAssist: { [item.key]: value } })}
+        />
+      </View>
+    ));
   // `uniform` folds a real null into "mixed"; nullable keys need the distinction.
   const isMixed = (key: keyof ServerSettings) =>
     reference === null ||
@@ -479,28 +508,28 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   </SettingsSection>
                   {supportsComposerAssist ? (
                     <>
-                      <SettingsSection title="Composer assist">
-                        {COMPOSER_ASSIST_SWITCHES.map((item, index) => (
-                          <View
-                            key={item.key}
-                            className={index > 0 ? "border-t border-border-subtle" : undefined}
-                          >
-                            <SettingsSwitchRow
-                              icon={item.icon}
-                              label={item.label}
-                              subtitle={
-                                projectSelected
-                                  ? "Environment-wide setting. Select All projects to change it."
-                                  : item.subtitle
-                              }
-                              value={uniformComposerAssist(item.key)}
-                              disabled={disabledFor("composerAssist")}
-                              onValueChange={(value) =>
-                                write({ composerAssist: { [item.key]: value } })
-                              }
-                            />
-                          </View>
+                      <SettingsSection
+                        title="Composer assist model"
+                        trailing={
+                          pendingWrites === 0 && uniformComposerAssist("model") === null ? (
+                            <MixedValuesLabel projectSelected={projectSelected} />
+                          ) : null
+                        }
+                      >
+                        {COMPOSER_ASSIST_MODELS.map((choice, index) => (
+                          <SettingsChoiceRow
+                            key={choice.value}
+                            label={choice.label}
+                            description={choice.note}
+                            selected={uniformComposerAssist("model") === choice.value}
+                            separated={index > 0}
+                            disabled={disabledFor("composerAssist")}
+                            onPress={() => write({ composerAssist: { model: choice.value } })}
+                          />
                         ))}
+                      </SettingsSection>
+                      <SettingsSection title="Blanks">
+                        {renderComposerAssistSwitches("blanks")}
                       </SettingsSection>
                       <SettingsSection
                         title="Prompt language"
@@ -523,6 +552,57 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                             separated={index > 0}
                             disabled={disabledFor("composerAssist")}
                             onPress={() => write({ composerAssist: { language: choice.value } })}
+                          />
+                        ))}
+                      </SettingsSection>
+                      <SettingsSection title="Cues while you type">
+                        {renderComposerAssistSwitches("cues")}
+                      </SettingsSection>
+                      <SettingsSection
+                        title="Pause before cues"
+                        trailing={
+                          pendingWrites === 0 && uniformComposerAssist("pauseMs") === null ? (
+                            <MixedValuesLabel projectSelected={projectSelected} />
+                          ) : null
+                        }
+                      >
+                        {COMPOSER_ASSIST_PAUSES.map((choice, index) => (
+                          <SettingsChoiceRow
+                            key={choice.value}
+                            label={choice.label}
+                            description={
+                              choice.value === 1_500
+                                ? "The default."
+                                : "How long the draft stays quiet before cues are asked for."
+                            }
+                            selected={uniformComposerAssist("pauseMs") === choice.value}
+                            separated={index > 0}
+                            disabled={disabledFor("composerAssist")}
+                            onPress={() => write({ composerAssist: { pauseMs: choice.value } })}
+                          />
+                        ))}
+                      </SettingsSection>
+                      <SettingsSection
+                        title="Cue language"
+                        trailing={
+                          pendingWrites === 0 && uniformComposerAssist("cueLanguage") === null ? (
+                            <MixedValuesLabel projectSelected={projectSelected} />
+                          ) : null
+                        }
+                      >
+                        {COMPOSER_ASSIST_LANGUAGES.map((choice, index) => (
+                          <SettingsChoiceRow
+                            key={choice.value}
+                            label={choice.label}
+                            description={
+                              choice.value === ""
+                                ? "A cue's note keeps the language you wrote in."
+                                : `A cue's note is written in ${choice.label}. Suggested rewrites keep your language.`
+                            }
+                            selected={uniformComposerAssist("cueLanguage") === choice.value}
+                            separated={index > 0}
+                            disabled={disabledFor("composerAssist")}
+                            onPress={() => write({ composerAssist: { cueLanguage: choice.value } })}
                           />
                         ))}
                       </SettingsSection>

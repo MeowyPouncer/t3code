@@ -84,6 +84,18 @@ describe("ClaudeComposerAssist", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.live("starts a process for the model asked, not the one started ahead", () =>
+    Effect.gen(function* () {
+      const { assist, starts } = yield* setup("echo");
+      yield* assist.complete({ system: "SYS", task: "one", timeoutMs: 15_000 });
+      yield* assist.complete({ system: "SYS", task: "two", timeoutMs: 15_000, model: "sonnet" });
+      const models = (yield* starts).map((argv) => argv[argv.indexOf("--model") + 1]);
+      // Two for haiku (the one used and the next one started ahead), then sonnet's own.
+      assert.deepEqual(models.slice(0, 2), ["haiku", "haiku"]);
+      assert.include(models, "sonnet");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.live("reports why Claude gave no answer", () =>
     Effect.gen(function* () {
       const silent = yield* setup("silent");

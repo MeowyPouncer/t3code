@@ -2,7 +2,7 @@
 // Claude to rewrite or fill it in; a pause in typing asks for cues, which the editor shows on
 // their spans. An answer for a draft that has changed since is dropped, never applied.
 import {
-  COMPOSER_ASSIST_PAUSE_MS,
+  composerAssistAnswer,
   composerBlankOutcome,
   composerBlankTooLong,
   composerDraftCues,
@@ -63,8 +63,7 @@ export function useComposerAssist(input: {
     settings.sentences ||
     settings.askCues ||
     settings.auditor;
-  const askBlank = useAtomCommand(serverEnvironment.composerAssistBlank, { reportFailure: false });
-  const askCues = useAtomCommand(serverEnvironment.composerAssistCues, { reportFailure: false });
+  const askAssist = useAtomCommand(serverEnvironment.composerAssist, { reportFailure: false });
   const [status, setStatus] = useState<ComposerAssistStatus | null>(null);
   const previousPromptRef = useRef(input.prompt);
   const answerCountRef = useRef(0);
@@ -96,9 +95,9 @@ export function useComposerAssist(input: {
         return;
       }
       setStatus({ kind: "working" });
-      void askBlank({
+      void askAssist({
         environmentId: input.environmentId,
-        input: { ...target, text: assist.text },
+        input: { operation: "blank", ...target, text: assist.text },
       }).then((result) => {
         setStatus((current) => (current?.kind === "working" ? null : current));
         if (result._tag === "Failure") {
@@ -110,7 +109,9 @@ export function useComposerAssist(input: {
           });
           return;
         }
-        const outcome = composerBlankOutcome(draft, assist, result.value);
+        const answer = composerAssistAnswer(result.value, "blank");
+        if (answer === null) return;
+        const outcome = composerBlankOutcome(draft, assist, answer.blank);
         if (outcome.kind === "note") setStatus({ kind: "note", text: outcome.text });
         if (outcome.kind !== "replace") return;
         if (!latest.current.replaceDraft(draft, outcome.text)) {
@@ -131,29 +132,30 @@ export function useComposerAssist(input: {
     const timer = window.setTimeout(() => {
       if (latest.current.promptRef.current !== draft) return;
       const assist = assistDraftOf(draft);
-      void askCues({
+      void askAssist({
         environmentId: input.environmentId,
-        input: { ...target, text: assist.text },
+        input: { operation: "cues", ...target, text: assist.text },
       }).then((result) => {
         // Cues are optional: a failed check just shows nothing.
-        if (result._tag === "Failure" || latest.current.promptRef.current !== draft) return;
+        const answer =
+          result._tag === "Failure" ? null : composerAssistAnswer(result.value, "cues");
+        if (answer === null || latest.current.promptRef.current !== draft) return;
         answerCountRef.current += 1;
         latest.current.editorRef.current?.showAssistCues(
           draft,
-          composerDraftCues(draft, assist, result.value.cues, `cue-${answerCountRef.current}`),
+          composerDraftCues(draft, assist, answer.cues.cues, `cue-${answerCountRef.current}`),
         );
-        const audit = result.value.audit;
+        const audit = answer.cues.audit;
         if (audit === undefined) return;
         const text = fromComposerAssistText(audit, assist);
         if (text !== null && latest.current.replaceDraft(draft, text)) {
           setStatus({ kind: "note", text: "The auditor tidied the draft. Undo puts it back." });
         }
       });
-    }, COMPOSER_ASSIST_PAUSE_MS);
+    }, settings.pauseMs);
     return () => window.clearTimeout(timer);
   }, [
-    askBlank,
-    askCues,
+    askAssist,
     enabled,
     input.environmentId,
     input.instanceId,
@@ -161,6 +163,7 @@ export function useComposerAssist(input: {
     input.prompt,
     input.threadId,
     settings.blanks,
+    settings.pauseMs,
     wantsCues,
   ]);
 

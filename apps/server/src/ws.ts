@@ -2711,8 +2711,7 @@ const layerWsRpc = (
         [WS_METHODS.unattendedSubscribe]: (_input) => night.subscribe(),
         [WS_METHODS.agentQueueStart]: (input) => agentQueue.start(input),
         [WS_METHODS.agentQueueCancel]: (input) => agentQueue.cancel(input.id),
-        [WS_METHODS.composerAssistBlank]: (input) => composerAssist.blank(input),
-        [WS_METHODS.composerAssistCues]: (input) => composerAssist.cues(input),
+        [WS_METHODS.composerAssistRun]: (input) => composerAssist.run(input),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(

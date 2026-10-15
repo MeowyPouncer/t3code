@@ -4,17 +4,46 @@ import {
   COMPOSER_ASSIST_MAX_DRAFT_CHARS,
   type ComposerAssistBlankResult,
   type ComposerAssistCue,
+  type ComposerAssistRunResult,
 } from "@t3tools/contracts";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 
-/** A pause this long after the last keystroke asks for cues. */
-export const COMPOSER_ASSIST_PAUSE_MS = 1_500;
 /** Drafts shorter than this get no cues: there is nothing worth saying yet. */
 export const COMPOSER_ASSIST_MIN_CUE_CHARS = 12;
 /** Longer drafts get no cues (mostly pasted logs or code); the server refuses them too. */
 export const COMPOSER_ASSIST_MAX_CUE_CHARS = 12_000;
+
+/** What the server answered to the operation that was asked; anything else is not an answer. */
+export function composerAssistAnswer<K extends ComposerAssistRunResult["operation"]>(
+  result: ComposerAssistRunResult,
+  operation: K,
+): Extract<ComposerAssistRunResult, { readonly operation: K }> | null {
+  return result.operation === operation
+    ? (result as Extract<ComposerAssistRunResult, { readonly operation: K }>)
+    : null;
+}
+
+/** The models composer assist can answer with, for the settings; "" is Haiku. */
+export const COMPOSER_ASSIST_MODELS = [
+  { value: "", label: "Haiku", note: "Fastest, about 3 to 7 seconds" },
+  {
+    value: "sonnet",
+    label: "Sonnet",
+    note: "Writes better, slower, uses more of the Claude limit",
+  },
+  { value: "opus", label: "Opus", note: "Slowest, uses the most of the Claude limit" },
+] as const;
+
+/** How long a draft stays quiet before cues are asked for, for the settings. */
+export const COMPOSER_ASSIST_PAUSES = [
+  { value: 500, label: "0.5 seconds" },
+  { value: 1_000, label: "1 second" },
+  { value: 1_500, label: "1.5 seconds" },
+  { value: 3_000, label: "3 seconds" },
+  { value: 5_000, label: "5 seconds" },
+] as const;
 
 /** The languages a blank can rewrite into, for the settings; "" keeps the draft's language. */
 export const COMPOSER_ASSIST_LANGUAGES = [

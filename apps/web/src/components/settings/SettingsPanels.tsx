@@ -15,7 +15,6 @@ import {
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
-import { COMPOSER_ASSIST_LANGUAGES } from "@t3tools/client-runtime/composer-assist";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
@@ -142,6 +141,7 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { ComposerAssistSettingsSections } from "./ComposerAssistSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -173,48 +173,6 @@ import {
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
-/** FORK: the composer assist parts that can each be turned off. */
-const COMPOSER_ASSIST_SWITCHES = [
-  {
-    key: "blanks",
-    searchId: "composer-assist-blanks",
-    label: "Blanks",
-    description:
-      "End a draft with “ _” and Claude improves it as a prompt, follows the instruction before the “_” (“as a list _”), or fills in a value (“the test command: _”).",
-  },
-  {
-    key: "contradictions",
-    searchId: "composer-assist-contradictions",
-    label: "Contradictions",
-    description:
-      "Flag a sentence that goes against the thread's decisions, the project's AGENTS.md, or the calendar.",
-  },
-  {
-    key: "spelling",
-    searchId: "composer-assist-spelling",
-    label: "Typos",
-    description: "Underline misspelled words and offer corrections.",
-  },
-  {
-    key: "sentences",
-    searchId: "composer-assist-sentences",
-    label: "Better sentences",
-    description: "Offer a clearer or shorter version of a sentence.",
-  },
-  {
-    key: "askCues",
-    searchId: "composer-assist-questions",
-    label: "Clarifying questions",
-    description: "Ask about a vague sentence and offer ways to make it precise.",
-  },
-  {
-    key: "auditor",
-    searchId: "composer-assist-auditor",
-    label: "Auditor",
-    description:
-      "After a pause, tidy the whole draft's grammar and clarity on its own. Undo puts it back.",
-  },
-] as const;
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 
@@ -3578,94 +3536,10 @@ export function GeneralSettingsPanel() {
 
       {/* FORK: composer assist, after OpenCues. */}
       {supportsComposerAssist ? (
-        <SettingsSection id="composer-assist" title="Composer assist">
-          {COMPOSER_ASSIST_SWITCHES.map((item) => (
-            <SettingsRow
-              key={item.key}
-              serverScoped
-              {...searchableSetting(item.searchId)}
-              // The section names the feature; search results keep the longer title.
-              title={item.label}
-              description={item.description}
-              settingKeys={["composerAssist"]}
-              control={
-                <ScopedSwitch
-                  settingKeys={["composerAssist"]}
-                  checked={settings.composerAssist[item.key]}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ composerAssist: { [item.key]: Boolean(checked) } })
-                  }
-                  aria-label={item.label}
-                />
-              }
-            />
-          ))}
-          <SettingsRow
-            serverScoped
-            {...searchableSetting("composer-assist-language")}
-            title="Prompt language"
-            description="The language a blank's rewrite comes out in, so a draft written in one language is sent in another."
-            settingKeys={["composerAssist"]}
-            control={
-              <Select
-                value={settings.composerAssist.language}
-                onValueChange={(value) =>
-                  updateSettings({ composerAssist: { language: value ?? "" } })
-                }
-              >
-                <SelectTrigger className="w-full sm:w-56" aria-label="Prompt language">
-                  <SelectValue>
-                    {(value: string) =>
-                      COMPOSER_ASSIST_LANGUAGES.find((language) => language.value === value)
-                        ?.label ?? value
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  {COMPOSER_ASSIST_LANGUAGES.map((language) => (
-                    <SelectItem key={language.value} value={language.value}>
-                      {language.label}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            }
-          />
-          <SettingsRow
-            serverScoped
-            {...searchableSetting("composer-assist-account")}
-            title="Claude account"
-            description="The Claude account that answers. By default it is the thread's own, so two accounts never work at once; a thread on another provider uses the first Claude."
-            settingKeys={["composerAssist"]}
-            control={
-              <Select
-                value={settings.composerAssist.instanceId}
-                onValueChange={(value) =>
-                  updateSettings({ composerAssist: { instanceId: value ?? "" } })
-                }
-              >
-                <SelectTrigger className="w-full sm:w-56" aria-label="Composer assist account">
-                  <SelectValue>
-                    {(value: string) =>
-                      value === ""
-                        ? "The thread's Claude"
-                        : (claudeProviders.find((provider) => provider.instanceId === value)
-                            ?.displayName ?? value)
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  <SelectItem value="">The thread's Claude</SelectItem>
-                  {claudeProviders.map((provider) => (
-                    <SelectItem key={provider.instanceId} value={provider.instanceId}>
-                      {provider.displayName ?? provider.instanceId}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            }
-          />
-        </SettingsSection>
+        <ComposerAssistSettingsSections
+          environmentId={isEnvironmentScope ? environmentId : null}
+          claudeProviders={claudeProviders}
+        />
       ) : null}
 
       <SettingsSection id="about" title="About">

@@ -8,6 +8,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderComposerAssist } from "@t3tools/provider-core/server/driver";
+import { ProviderComposerAssistError } from "@t3tools/provider-core/server/errors";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -71,7 +72,11 @@ describe("composer assist choices", () => {
 interface Harness {
   readonly service: ComposerAssist.ComposerAssistService["Service"];
   /** Every task Claude was given, in order, by instance; `taken` drains it. */
-  readonly calls: Array<{ readonly instanceId: ProviderInstanceId; readonly task: string }>;
+  readonly calls: Array<{
+    readonly instanceId: ProviderInstanceId;
+    readonly task: string;
+    readonly model: string | undefined;
+  }>;
   /** The same tasks as they arrive, to wait for one run in the background. */
   readonly arrivals: Queue.Queue<{
     readonly instanceId: ProviderInstanceId;
@@ -99,7 +104,11 @@ const reply = (task: string) => {
   });
 };
 
-const makeHarness = (settings: Parameters<typeof ServerSettings.layerTest>[0] = {}) =>
+const makeHarness = (
+  settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
+  /** Every request to Claude fails with this. */
+  failWith?: string,
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -107,15 +116,23 @@ const makeHarness = (settings: Parameters<typeof ServerSettings.layerTest>[0] = 
     const root = path.join(baseDir, "project");
     yield* fs.makeDirectory(root, { recursive: true });
     yield* fs.writeFileString(path.join(root, "AGENTS.md"), "# Rules\n- Push only to mp/main.\n");
-    const calls: Array<{ instanceId: ProviderInstanceId; task: string }> = [];
+    const calls: Array<{
+      instanceId: ProviderInstanceId;
+      task: string;
+      model: string | undefined;
+    }> = [];
     const arrivals = yield* Queue.unbounded<{ instanceId: ProviderInstanceId; task: string }>();
     const runId = yield* Ref.make("run-1");
     const room = yield* Ref.make(true);
     const assistFor = (instanceId: ProviderInstanceId): ProviderComposerAssist => ({
-      complete: ({ task }) =>
-        Effect.sync(() => calls.push({ instanceId, task })).pipe(
+      complete: ({ task, model }) =>
+        Effect.sync(() => calls.push({ instanceId, task, model })).pipe(
           Effect.andThen(Queue.offer(arrivals, { instanceId, task })),
-          Effect.as(reply(task)),
+          Effect.andThen(
+            failWith === undefined
+              ? Effect.succeed(reply(task))
+              : Effect.fail(new ProviderComposerAssistError({ detail: failWith })),
+          ),
         ),
       roomForBackground: Ref.get(room),
     });
@@ -259,6 +276,110 @@ describe("ComposerAssistService", () => {
         Effect.provide(NodeServices.layer),
       );
       assert.include(saved, "Never push to origin/main");
+    }),
+  );
+
+  it.effect("answers with the model from the settings, Haiku by default", () =>
+    Effect.gen(function* () {
+      const plain = yield* makeHarness();
+      yield* plain.service.blank({ threadId, text: "shorter _" });
+      assert.equal(taken(plain)[0]?.model, "haiku");
+
+      const harness = yield* makeHarness({ composerAssist: { model: "sonnet" } });
+      yield* harness.service.blank({ threadId, text: "shorter _" });
+      yield* harness.service.cues({ threadId, text: "Now push to origin/main please." });
+      // The blank, the decisions, the rules and the cues all ask the same model.
+      assert.deepEqual(new Set(taken(harness).map((call) => call.model)), new Set(["sonnet"]));
+    }),
+  );
+
+  it.effect("writes cue notes in the language from the settings", () =>
+    Effect.gen(function* () {
+      const russian = yield* makeHarness({ composerAssist: { cueLanguage: "Russian" } });
+      yield* russian.service.cues({ threadId, text: "Now push to origin/main please." });
+      assert.include(taken(russian).at(-1)?.task, "Write every note in Russian");
+
+      const plain = yield* makeHarness();
+      yield* plain.service.cues({ threadId, text: "Now push to origin/main please." });
+      assert.include(taken(plain).at(-1)?.task, "in the draft's language");
+    }),
+  );
+
+  it.effect("leaves out a project rule the settings turned off", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        composerAssist: { disabledRules: ["Never push to origin/main"] },
+      });
+      yield* harness.service.cues({ threadId, text: "Now push to origin/main please." });
+      const task = taken(harness).at(-1)?.task ?? "";
+      assert.include(task, "- Push only to mp/main");
+      assert.notInclude(task, "Never push to origin/main");
+    }),
+  );
+
+  it.effect("reports what it has done, and a project's rules once they are known", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const before = yield* harness.service.status({
+        projectId: ProjectId.make("project-1"),
+      });
+      assert.equal(before.model, "haiku");
+      assert.equal(before.account?.instanceId, proton);
+      assert.isTrue(before.followsThread);
+      assert.deepEqual(before.blanks, { requests: 0, failures: 0 });
+      assert.deepEqual(before.projectRules, { fileName: "AGENTS.md", rules: null });
+      assert.deepEqual(taken(harness), []);
+
+      yield* harness.service.blank({ threadId, text: "shorter _" });
+      yield* harness.service.cues({ threadId, text: "Now push to origin/main please." });
+      const after = yield* harness.service.status({
+        projectId: ProjectId.make("project-1"),
+      });
+      assert.equal(after.blanks.requests, 1);
+      assert.equal(after.cues.requests, 1);
+      assert.deepEqual(
+        after.recent.map((activity) => [activity.operation, activity.ok]),
+        [
+          ["cues", true],
+          ["blank", true],
+        ],
+      );
+      assert.deepEqual(after.projectRules, {
+        fileName: "AGENTS.md",
+        rules: ["Never push to origin/main"],
+      });
+    }),
+  );
+
+  it.effect("reads a project's rules when asked to, and only then", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const read = yield* harness.service.status({
+        projectId: ProjectId.make("project-1"),
+        readRules: true,
+      });
+      assert.deepEqual(read.projectRules, {
+        fileName: "AGENTS.md",
+        rules: ["Never push to origin/main"],
+      });
+      assert.equal(taken(harness).length, 1);
+      // Known now: asking again costs nothing.
+      yield* harness.service.status({ projectId: ProjectId.make("project-1"), readRules: true });
+      assert.deepEqual(taken(harness), []);
+    }),
+  );
+
+  it.effect("counts a failed request and says why", () =>
+    Effect.gen(function* () {
+      const failing = yield* makeHarness({}, "Claude took too long to answer.");
+      const failed = yield* failing.service
+        .blank({ threadId, text: "shorter _" })
+        .pipe(Effect.flip);
+      assert.equal(failed.detail, "Claude took too long to answer.");
+      const status = yield* failing.service.status({});
+      assert.deepEqual(status.blanks, { requests: 1, failures: 1 });
+      assert.equal(status.recent[0]?.ok, false);
+      assert.equal(status.recent[0]?.detail, "Claude took too long to answer.");
     }),
   );
 
