@@ -207,6 +207,27 @@ describe("ComposerAssistService", () => {
     }),
   );
 
+  it.effect("says why a blank with nothing before it does nothing, without asking Claude", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.service.blank({ threadId, text: "  _ " });
+      assert.isTrue(result._tag === "none" && (result.reason?.length ?? 0) > 0);
+      assert.deepEqual(taken(harness), []);
+    }),
+  );
+
+  it.effect("asks for the rewrite in the language from the settings", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ composerAssist: { language: "English" } });
+      yield* harness.service.blank({ threadId, text: "почини падение в ⟦1⟧ _" });
+      assert.include(taken(harness)[0]?.task, "Write a REWRITE in English");
+
+      const plain = yield* makeHarness();
+      yield* plain.service.blank({ threadId, text: "почини падение в ⟦1⟧ _" });
+      assert.include(taken(plain)[0]?.task, "Keep the draft's language");
+    }),
+  );
+
   it.effect("checks a draft against the thread's decisions and AGENTS.md, distilled once", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

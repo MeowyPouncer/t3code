@@ -3,10 +3,13 @@
 // is dropped rather than shown wrong.
 import type { ComposerAssistCueKindName } from "./composerAssistPrompts.ts";
 
+/** A blank that changes nothing always says why, so the composer never just goes quiet. */
 export type ComposerAssistBlankOutcome =
   | { readonly kind: "rewrite"; readonly text: string }
   | { readonly kind: "fill"; readonly text: string }
-  | { readonly kind: "none"; readonly reason?: string };
+  | { readonly kind: "none"; readonly reason: string };
+
+const NOTHING_USABLE = "Claude sent back nothing usable. Retype the _ to try again.";
 
 export interface ComposerAssistCueDraft {
   readonly kind: ComposerAssistCueKindName;
@@ -68,7 +71,7 @@ export function parseBlankReply(reply: string, draft: string): ComposerAssistBla
   const verdict = tagContent(reply, "verdict")?.trim().toUpperCase();
   const text = unwrapLines(tagContent(reply, "text") ?? "");
   if (verdict === "REWRITE") {
-    if (text.trim().length === 0) return { kind: "none" };
+    if (text.trim().length === 0) return { kind: "none", reason: NOTHING_USABLE };
     const withoutBlank = draft.replace(/\s*_\s*$/, "");
     if (!sameMarkers(text, withoutBlank)) {
       return { kind: "none", reason: "The rewrite lost a file or skill reference." };
@@ -77,11 +80,14 @@ export function parseBlankReply(reply: string, draft: string): ComposerAssistBla
   }
   if (verdict === "FILL") {
     const value = text.trim();
-    if (value.length === 0) return { kind: "none" };
-    if (composerMarkers(value).length > 0) return { kind: "none" };
+    if (value.length === 0)
+      return { kind: "none", reason: "Claude does not know what goes in the blank." };
+    if (composerMarkers(value).length > 0) {
+      return { kind: "none", reason: "The answer named a file or skill the draft does not have." };
+    }
     return { kind: "fill", text: value };
   }
-  return { kind: "none" };
+  return { kind: "none", reason: NOTHING_USABLE };
 }
 
 /** The first JSON object in a reply, tolerating fences or a stray sentence around it. */

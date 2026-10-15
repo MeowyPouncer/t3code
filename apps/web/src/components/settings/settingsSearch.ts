@@ -392,6 +392,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["haiku claude instance account"],
   },
   {
+    id: "composer-assist-language",
+    title: "Composer assist: Prompt language",
+    to: "/settings/general",
+    searchTerms: ["translate translation english russian blank rewrite"],
+  },
+  {
     id: "auto-resume-limited-threads",
     title: "Auto-resume limited threads",
     to: "/settings/general",

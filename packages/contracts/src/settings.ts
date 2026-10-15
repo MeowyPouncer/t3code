@@ -1171,6 +1171,8 @@ export const ComposerAssistSettings = Schema.Struct({
   auditor: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The Claude instance that answers. Empty follows the thread's own Claude account. */
   instanceId: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** The language a blank's rewrite comes out in, such as "English". Empty keeps the draft's. */
+  language: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 });
 export type ComposerAssistSettings = typeof ComposerAssistSettings.Type;
 
@@ -1723,6 +1725,7 @@ export const ServerSettingsPatch = Schema.Struct({
       askCues: Schema.optionalKey(Schema.Boolean),
       auditor: Schema.optionalKey(Schema.Boolean),
       instanceId: Schema.optionalKey(TrimmedString),
+      language: Schema.optionalKey(TrimmedString),
     }),
   ),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
