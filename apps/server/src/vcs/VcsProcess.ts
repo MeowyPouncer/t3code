@@ -57,8 +57,10 @@ export class VcsProcess extends Context.Service<
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
-const VCS_PROCESS_CONCURRENCY = 8;
-const GITHUB_PROCESS_CONCURRENCY = 4;
+const GIT_PROCESS_CONCURRENCY = 8;
+// Per executable: a forge CLI stuck on its credentials (glab behind a locked keyring) must not
+// take git's permits, which repository detection and server config wait on, or another forge's.
+const CLI_PROCESS_CONCURRENCY = 4;
 
 export const CHECKPOINT_CAPTURE_OPERATION = "GitVcsDriver.checkpoints.captureCheckpoint";
 
@@ -115,8 +117,17 @@ const isTransientGitExit = (stderr: string) =>
 
 export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
-  const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
-  const githubProcesses = yield* Semaphore.make(GITHUB_PROCESS_CONCURRENCY);
+  const gitProcesses = yield* Semaphore.make(GIT_PROCESS_CONCURRENCY);
+  const cliProcesses = new Map<string, Semaphore.Semaphore>();
+  const gateFor = (command: string) => {
+    if (command === "git") return gitProcesses;
+    let gate = cliProcesses.get(command);
+    if (gate === undefined) {
+      gate = Semaphore.makeUnsafe(CLI_PROCESS_CONCURRENCY);
+      cliProcesses.set(command, gate);
+    }
+    return gate;
+  };
 
   const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* (input: VcsProcessInput) {
     const baseError = {
@@ -203,7 +214,7 @@ export const make = Effect.gen(function* () {
   });
 
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
-    const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
+    const bounded = gateFor(input.command).withPermits(1)(runUnbounded(input));
     if (
       input.command === "git" &&
       input.operation === CHECKPOINT_CAPTURE_OPERATION &&
@@ -224,7 +235,7 @@ export const make = Effect.gen(function* () {
         }),
       );
     }
-    return yield* input.command === "gh" ? githubProcesses.withPermits(1)(bounded) : bounded;
+    return yield* bounded;
   });
 
   return VcsProcess.of({ run });
