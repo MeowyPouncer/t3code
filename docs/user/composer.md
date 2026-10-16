@@ -154,10 +154,12 @@ and use **Attach again** or remove the missing file before sending.
 
 ## Composer assist
 
-Composer assist uses Claude Haiku to help with a draft before you send it. It
-needs a Claude provider and answers with the thread's own Claude account, or the
-first one when the thread runs on another provider. Change the account or turn
-off any part in **Settings → General → Composer assist**.
+Composer assist uses Claude to help with a draft before you send it. It needs a
+Claude provider and answers with the thread's own Claude account, or the first one
+when the thread runs on another provider. Everything is set in **Settings → General →
+Composer assist**, in three groups: the assistant (account and model, with what it has
+done so far), **Blanks**, and **Cues while you type**. The **Try composer assist** box
+at the end runs the current settings on a draft without sending anything.
 
 End a draft with a space and `_`, and Claude improves it as a prompt: typos fixed,
 clearer and more specific, nothing added. An instruction right before the `_` asks
@@ -181,8 +183,16 @@ with `Ctrl+Alt+↓` and `Ctrl+Alt+↑`. The first choice is what you wrote. On m
 the cues sit in a row above the composer. The auditor, off by default, tidies the
 whole draft after a pause instead.
 
+**Model** is Haiku, the fastest, unless you pick Sonnet or Opus: they write better
+but take longer and use more of your Claude limit. **Pause before cues** sets how long
+the draft stays quiet before cues are asked for, and **Cue language** the language of
+their notes (a suggested rewrite keeps the language of your draft). **Project rules**
+(web and desktop) lists the rules Claude took from a project's `AGENTS.md` for the
+contradiction cues, and lets you turn one off.
+
 Each answer takes a few seconds. Cues wait while a Claude usage window is at 90%
-or more; blanks still work.
+or more; blanks still work. **Activity** shows how many requests were asked and failed
+since the server started, and why the last one failed.
 
 ## Voice input on iPhone
 

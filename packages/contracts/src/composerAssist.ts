@@ -64,3 +64,69 @@ export class ComposerAssistError extends Schema.TaggedError<ComposerAssistError>
     return this.detail;
   }
 }
+
+/** What the last request of one kind did. */
+export const ComposerAssistActivity = Schema.Struct({
+  operation: Schema.Literals(["blank", "cues"]),
+  ok: Schema.Boolean,
+  durationMs: Schema.Int,
+  at: Schema.String,
+  /** Why it failed. */
+  detail: Schema.optional(Schema.String),
+});
+export type ComposerAssistActivity = typeof ComposerAssistActivity.Type;
+
+const ComposerAssistCounts = Schema.Struct({ requests: Schema.Int, failures: Schema.Int });
+
+/** What composer assist has done since the server started, and who would answer a draft now. */
+export const ComposerAssistStatus = Schema.Struct({
+  /** The model in use; the alias, never empty. */
+  model: Schema.String,
+  /** The Claude account that answers a draft with no thread; null when none can. */
+  account: Schema.NullOr(Schema.Struct({ instanceId: ProviderInstanceId, label: Schema.String })),
+  /** True when a thread's own Claude account answers instead of `account`. */
+  followsThread: Schema.Boolean,
+  /** Cues wait because that account is near a usage limit; a blank still runs. */
+  cuesPaused: Schema.Boolean,
+  blanks: ComposerAssistCounts,
+  cues: ComposerAssistCounts,
+  /** The newest requests that asked the model, newest first. */
+  recent: Schema.Array(ComposerAssistActivity),
+  since: Schema.String,
+  /** The rules contradiction cues check the asked-for project's drafts against. */
+  projectRules: Schema.optional(
+    Schema.Struct({
+      /** AGENTS.md or CLAUDE.md, whichever the rules come from; null when the project has neither. */
+      fileName: Schema.NullOr(Schema.String),
+      /** Null: this version of the file was not read yet. */
+      rules: Schema.NullOr(Schema.Array(Schema.String)),
+    }),
+  ),
+});
+export type ComposerAssistStatus = typeof ComposerAssistStatus.Type;
+
+export const ComposerAssistStatusRequest = Schema.Struct({
+  /** Include this project's rules. */
+  projectId: Schema.optional(ProjectId),
+  /** Read the project's rules file now when its rules were never worked out; runs Claude. */
+  readRules: Schema.optional(Schema.Boolean),
+});
+export type ComposerAssistStatusRequest = typeof ComposerAssistStatusRequest.Type;
+
+/**
+ * Composer assist is one RPC with an `operation`, not one per operation: the WS RPC group is at the
+ * size where a further method overflows TypeScript's inference and types the server's layers as `any`.
+ */
+export const ComposerAssistRunRequest = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("blank"), ...ComposerAssistRequest.fields }),
+  Schema.Struct({ operation: Schema.Literal("cues"), ...ComposerAssistRequest.fields }),
+  Schema.Struct({ operation: Schema.Literal("status"), ...ComposerAssistStatusRequest.fields }),
+]);
+export type ComposerAssistRunRequest = typeof ComposerAssistRunRequest.Type;
+
+export const ComposerAssistRunResult = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("blank"), blank: ComposerAssistBlankResult }),
+  Schema.Struct({ operation: Schema.Literal("cues"), cues: ComposerAssistCuesResult }),
+  Schema.Struct({ operation: Schema.Literal("status"), status: ComposerAssistStatus }),
+]);
+export type ComposerAssistRunResult = typeof ComposerAssistRunResult.Type;

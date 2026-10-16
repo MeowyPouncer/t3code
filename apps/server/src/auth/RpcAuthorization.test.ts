@@ -85,9 +85,9 @@ describe("RPC authorization scopes", () => {
   });
 
   it("lets only an operator spend the environment's Claude on composer assist", () => {
-    for (const method of [WS_METHODS.composerAssistBlank, WS_METHODS.composerAssistCues]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
-    }
+    expect(requiredScopeForRpcMethod(WS_METHODS.composerAssistRun)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("allows relay status reads without granting relay installation access", () => {

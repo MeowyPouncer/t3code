@@ -1162,6 +1162,19 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
  * pause in typing brings cues. Every part can be turned off; the auditor starts off because it
  * rewrites the draft without being asked.
  */
+/** The aliases `claude --model` takes; empty is Haiku. */
+export const ComposerAssistModel = Schema.Literals(["", "haiku", "sonnet", "opus"]);
+export type ComposerAssistModel = typeof ComposerAssistModel.Type;
+export const MIN_COMPOSER_ASSIST_PAUSE_MS = 500;
+export const MAX_COMPOSER_ASSIST_PAUSE_MS = 10_000;
+export const DEFAULT_COMPOSER_ASSIST_PAUSE_MS = 1_500;
+export const ComposerAssistPauseMs = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_COMPOSER_ASSIST_PAUSE_MS,
+    maximum: MAX_COMPOSER_ASSIST_PAUSE_MS,
+  }),
+);
+
 export const ComposerAssistSettings = Schema.Struct({
   blanks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   contradictions: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -1173,6 +1186,16 @@ export const ComposerAssistSettings = Schema.Struct({
   instanceId: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** The language a blank's rewrite comes out in, such as "English". Empty keeps the draft's. */
   language: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** The language of a cue's note or question. Empty keeps the draft's; suggested rewrites always do. */
+  cueLanguage: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** The Claude model that answers. Empty is Haiku, the fastest. */
+  model: ComposerAssistModel.pipe(Schema.withDecodingDefault(Effect.succeed("" as const))),
+  /** Quiet time in a draft before its cues are asked for. */
+  pauseMs: ComposerAssistPauseMs.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_COMPOSER_ASSIST_PAUSE_MS)),
+  ),
+  /** Rules read from a project's AGENTS.md that contradiction cues must not use, as written. */
+  disabledRules: Schema.Array(TrimmedString).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type ComposerAssistSettings = typeof ComposerAssistSettings.Type;
 
@@ -1726,6 +1749,10 @@ export const ServerSettingsPatch = Schema.Struct({
       auditor: Schema.optionalKey(Schema.Boolean),
       instanceId: Schema.optionalKey(TrimmedString),
       language: Schema.optionalKey(TrimmedString),
+      cueLanguage: Schema.optionalKey(TrimmedString),
+      model: Schema.optionalKey(ComposerAssistModel),
+      pauseMs: Schema.optionalKey(ComposerAssistPauseMs),
+      disabledRules: Schema.optionalKey(Schema.Array(TrimmedString)),
     }),
   ),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),

@@ -373,10 +373,9 @@ import { TodoBoardReadInput, TodoBoardReadResult, TodoBoardReadError } from "./t
 import { NightError, NightPlan, NightState, UnattendedStreamItem } from "./night.ts";
 import { AgentQueue, AgentQueueError, AgentQueueStartInput } from "./agentQueue.ts";
 import {
-  ComposerAssistBlankResult,
-  ComposerAssistCuesResult,
   ComposerAssistError,
-  ComposerAssistRequest,
+  ComposerAssistRunRequest,
+  ComposerAssistRunResult,
 } from "./composerAssist.ts";
 
 export const WS_METHODS = {
@@ -547,8 +546,7 @@ export const WS_METHODS = {
   agentQueueCancel: "agentQueue.cancel",
 
   // FORK: composer assist (blanks and cues in the composer)
-  composerAssistBlank: "composerAssist.blank",
-  composerAssistCues: "composerAssist.cues",
+  composerAssistRun: "composerAssist.run",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1864,17 +1862,10 @@ const WsAgentQueueCancelRpc = Rpc.make(WS_METHODS.agentQueueCancel, {
 });
 
 // FORK: composer assist.
-/** A draft ending in " _": what to put in its place. */
-const WsComposerAssistBlankRpc = Rpc.make(WS_METHODS.composerAssistBlank, {
-  payload: ComposerAssistRequest,
-  success: ComposerAssistBlankResult,
-  error: Schema.Union([ComposerAssistError, EnvironmentAuthorizationError]),
-});
-
-/** A draft after a pause in typing: what is worth pointing out before it is sent. */
-const WsComposerAssistCuesRpc = Rpc.make(WS_METHODS.composerAssistCues, {
-  payload: ComposerAssistRequest,
-  success: ComposerAssistCuesResult,
+/** A blank (a draft ending in " _"), the cues of a draft after a pause, or what assist has done. */
+const WsComposerAssistRunRpc = Rpc.make(WS_METHODS.composerAssistRun, {
+  payload: ComposerAssistRunRequest,
+  success: ComposerAssistRunResult,
   error: Schema.Union([ComposerAssistError, EnvironmentAuthorizationError]),
 });
 
@@ -2093,8 +2084,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsUnattendedSubscribeRpc,
   WsAgentQueueStartRpc,
   WsAgentQueueCancelRpc,
-  WsComposerAssistBlankRpc,
-  WsComposerAssistCuesRpc,
+  WsComposerAssistRunRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

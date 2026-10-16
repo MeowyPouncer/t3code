@@ -78,6 +78,8 @@ export function cuesTask(input: {
   readonly decisions: ReadonlyArray<string>;
   readonly rules: ReadonlyArray<string>;
   readonly calendar: string;
+  /** The language of the notes, such as "English"; null writes them in the draft's language. */
+  readonly language: string | null;
 }): string {
   const kinds = input.kinds.map((kind) => CUE_KIND_RULES[kind]).join("\n");
   const audit = input.audit
@@ -99,7 +101,11 @@ ${kinds}
 Rules for every cue:
 - "quote" is copied exactly from the draft, character for character: a word, a clause or one sentence.
 - Never report text inside code blocks or inline code, and never quote a ⟦n⟧ marker.
-- Write notes and alternatives in the draft's language.
+${
+  input.language === null
+    ? "- Write notes and alternatives in the draft's language."
+    : `- Write every note in ${input.language}. Alternatives are the draft's own words rewritten, so they stay in the draft's language.`
+}
 - Precision over recall: when unsure, report nothing.${audit}
 
 Reply with only JSON: {"cues":[{"kind":"…","quote":"…","note":"…","alternatives":["…"]}]${auditShape}}

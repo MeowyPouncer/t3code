@@ -144,6 +144,8 @@ export interface ProviderComposerAssist {
     readonly system: string;
     readonly task: string;
     readonly timeoutMs: number;
+    /** A `claude --model` alias; the provider's default model when absent. */
+    readonly model?: string;
   }) => Effect.Effect<string, ProviderComposerAssistError>;
   /** False near a usage limit: cues nobody asked for wait, a blank the user typed still runs. */
   readonly roomForBackground: Effect.Effect<boolean>;

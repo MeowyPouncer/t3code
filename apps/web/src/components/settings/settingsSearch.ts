@@ -392,6 +392,42 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["haiku claude instance account"],
   },
   {
+    id: "composer-assist-model",
+    title: "Composer assist: Model",
+    to: "/settings/general",
+    searchTerms: ["haiku sonnet opus claude faster slower blank cue"],
+  },
+  {
+    id: "composer-assist-activity",
+    title: "Composer assist: Activity",
+    to: "/settings/general",
+    searchTerms: ["status usage requests failed last answer account limit"],
+  },
+  {
+    id: "composer-assist-pause",
+    title: "Composer assist: Pause before cues",
+    to: "/settings/general",
+    searchTerms: ["delay debounce typing wait seconds"],
+  },
+  {
+    id: "composer-assist-cue-language",
+    title: "Composer assist: Cue language",
+    to: "/settings/general",
+    searchTerms: ["translate english russian note question cue"],
+  },
+  {
+    id: "composer-assist-rules",
+    title: "Composer assist: Project rules",
+    to: "/settings/general",
+    searchTerms: ["agents.md claude.md contradiction turn off rule"],
+  },
+  {
+    id: "composer-assist-try",
+    title: "Composer assist: Try it",
+    to: "/settings/general",
+    searchTerms: ["test preview draft blank cues"],
+  },
+  {
     id: "composer-assist-language",
     title: "Composer assist: Prompt language",
     to: "/settings/general",

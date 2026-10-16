@@ -28,8 +28,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Writing a guide runs a model on this environment's providers, which reading one does not.
   [WS_METHODS.pullRequestsGenerateReviewGuide]: AuthOrchestrationOperateScope,
   // FORK: composer assist runs Claude on the environment's subscription.
-  [WS_METHODS.composerAssistBlank]: AuthOrchestrationOperateScope,
-  [WS_METHODS.composerAssistCues]: AuthOrchestrationOperateScope,
+  [WS_METHODS.composerAssistRun]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.projectCloneStart]: AuthSourceControlWriteScope,

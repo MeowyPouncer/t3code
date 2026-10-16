@@ -4,7 +4,7 @@
 // has changed since is dropped, never applied.
 import { useAtomValue } from "@effect/atom-react";
 import {
-  COMPOSER_ASSIST_PAUSE_MS,
+  composerAssistAnswer,
   type ComposerDraftCue,
   composerBlankOutcome,
   composerBlankTooLong,
@@ -59,7 +59,7 @@ export function useComposerAssist(input: {
     serverEnvironment.settingsValueAtom(input.environmentId),
   )?.composerAssist;
   const permitted = useAtomValue(
-    serverEnvironment.composerAssistBlank.permissionAtom(input.environmentId),
+    serverEnvironment.composerAssist.permissionAtom(input.environmentId),
   );
   const supported = input.serverConfig?.environment.capabilities.composerAssist === true;
   const enabled = supported && permitted && input.active && settings !== undefined;
@@ -70,8 +70,7 @@ export function useComposerAssist(input: {
       settings.sentences ||
       settings.askCues ||
       settings.auditor);
-  const askBlank = useAtomCommand(serverEnvironment.composerAssistBlank, { reportFailure: false });
-  const askCues = useAtomCommand(serverEnvironment.composerAssistCues, { reportFailure: false });
+  const askAssist = useAtomCommand(serverEnvironment.composerAssist, { reportFailure: false });
   const [status, setStatus] = useState<MobileComposerAssistStatus | null>(null);
   const [cues, setCues] = useState<ReadonlyArray<MobileComposerCue>>([]);
   const previousDraftRef = useRef(input.draft);
@@ -117,9 +116,9 @@ export function useComposerAssist(input: {
         return;
       }
       setStatus({ kind: "working" });
-      void askBlank({
+      void askAssist({
         environmentId: input.environmentId,
-        input: { ...target, text: assist.text },
+        input: { operation: "blank", ...target, text: assist.text },
       }).then((result) => {
         setStatus((current) => (current?.kind === "working" ? null : current));
         if (result._tag === "Failure") {
@@ -131,7 +130,9 @@ export function useComposerAssist(input: {
           });
           return;
         }
-        const outcome = composerBlankOutcome(draft, assist, result.value);
+        const answer = composerAssistAnswer(result.value, "blank");
+        if (answer === null) return;
+        const outcome = composerBlankOutcome(draft, assist, answer.blank);
         if (outcome.kind === "note") setStatus({ kind: "note", text: outcome.text });
         if (outcome.kind !== "replace") return;
         if (replaceDraft(draft, outcome.text)) {
@@ -154,30 +155,31 @@ export function useComposerAssist(input: {
     const timer = setTimeout(() => {
       if (latestDraftRef.current !== draft) return;
       const assist = toComposerAssistDraft(draft);
-      void askCues({
+      void askAssist({
         environmentId: input.environmentId,
-        input: { ...target, text: assist.text },
+        input: { operation: "cues", ...target, text: assist.text },
       }).then((result) => {
         // Cues are optional: a failed check just shows nothing.
-        if (result._tag === "Failure" || latestDraftRef.current !== draft) return;
+        const answer =
+          result._tag === "Failure" ? null : composerAssistAnswer(result.value, "cues");
+        if (answer === null || latestDraftRef.current !== draft) return;
         answerCountRef.current += 1;
         setCues(
-          composerDraftCues(draft, assist, result.value.cues, `cue-${answerCountRef.current}`).map(
+          composerDraftCues(draft, assist, answer.cues.cues, `cue-${answerCountRef.current}`).map(
             (cue) => ({ ...cue, original: cue.quote }),
           ),
         );
-        const audit = result.value.audit;
+        const audit = answer.cues.audit;
         if (audit === undefined) return;
         const text = fromComposerAssistText(audit, assist);
         if (text !== null && replaceDraft(draft, text)) {
           setStatus({ kind: "rewritten", before: draft, after: text });
         }
       });
-    }, COMPOSER_ASSIST_PAUSE_MS);
+    }, settings.pauseMs);
     return () => clearTimeout(timer);
   }, [
-    askBlank,
-    askCues,
+    askAssist,
     enabled,
     input.draft,
     input.environmentId,

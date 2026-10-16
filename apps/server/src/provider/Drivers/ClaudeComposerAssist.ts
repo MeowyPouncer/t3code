@@ -35,7 +35,10 @@ const MAX_STDERR_CHARS = 2_000;
  * `--safe-mode` leaves out CLAUDE.md, skills, plugins, hooks and MCP servers while the login keeps
  * working (`--bare` would refuse the subscription login). No tools, no saved session.
  */
-export function claudeComposerAssistArgs(system: string): ReadonlyArray<string> {
+export function claudeComposerAssistArgs(
+  system: string,
+  model: string = COMPOSER_ASSIST_MODEL,
+): ReadonlyArray<string> {
   return [
     "-p",
     "--input-format",
@@ -44,7 +47,7 @@ export function claudeComposerAssistArgs(system: string): ReadonlyArray<string> 
     "stream-json",
     "--verbose",
     "--model",
-    COMPOSER_ASSIST_MODEL,
+    model,
     "--effort",
     "low",
     "--system-prompt",
@@ -107,6 +110,7 @@ export function claudeNearUsageLimit(
 
 interface StartedClaude {
   readonly system: string;
+  readonly model: string;
   readonly scope: Scope.Closeable;
   readonly stdin: Queue.Queue<Uint8Array, Cause.Done>;
   readonly reply: Deferred.Deferred<string, ProviderComposerAssistError>;
@@ -141,14 +145,14 @@ export const makeClaudeComposerAssist = Effect.fn("makeClaudeComposerAssist")(fu
   const fail = (detail: string, cause?: unknown) =>
     new ProviderComposerAssistError({ detail, ...(cause === undefined ? {} : { cause }) });
 
-  const start = (system: string) =>
+  const start = (system: string, model: string) =>
     Effect.gen(function* () {
       const scope = yield* Scope.fork(instanceScope);
       const stdin = yield* Queue.unbounded<Uint8Array, Cause.Done>();
       const reply = yield* Deferred.make<string, ProviderComposerAssistError>();
       const spawnCommand = yield* resolveSpawnCommand(
         input.binaryPath || "claude",
-        [...claudeComposerAssistArgs(system)],
+        [...claudeComposerAssistArgs(system, model)],
         { env: environment },
       );
       const child = yield* spawner
@@ -200,6 +204,7 @@ export const makeClaudeComposerAssist = Effect.fn("makeClaudeComposerAssist")(fu
       );
       return {
         system,
+        model,
         scope,
         stdin,
         reply,
@@ -210,27 +215,33 @@ export const makeClaudeComposerAssist = Effect.fn("makeClaudeComposerAssist")(fu
   const stop = (process: StartedClaude) => Scope.close(process.scope, Exit.void);
 
   /** Takes the process started ahead when it fits, and starts the next one in the background. */
-  const take = (system: string) =>
+  const take = (system: string, model: string) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
         const nowMs = yield* Clock.currentTimeMillis;
         let taken: StartedClaude | null = null;
         if (ready !== null) {
-          const fresh = ready.system === system && nowMs - lastUsedAtMs < WARM_IDLE_MS;
+          const fresh =
+            ready.system === system && ready.model === model && nowMs - lastUsedAtMs < WARM_IDLE_MS;
           if (fresh && Deferred.isDoneUnsafe(ready.reply) === false) taken = ready;
           else yield* stop(ready);
           ready = null;
         }
         lastUsedAtMs = nowMs;
-        const process = taken ?? (yield* start(system));
-        ready = yield* start(system).pipe(Effect.orElseSucceed(() => null));
+        const process = taken ?? (yield* start(system, model));
+        ready = yield* start(system, model).pipe(Effect.orElseSucceed(() => null));
         return process;
       }),
     );
 
-  const complete: ProviderComposerAssist["complete"] = ({ system, task, timeoutMs }) =>
+  const complete: ProviderComposerAssist["complete"] = ({
+    system,
+    task,
+    timeoutMs,
+    model = COMPOSER_ASSIST_MODEL,
+  }) =>
     Effect.gen(function* () {
-      const process = yield* take(system);
+      const process = yield* take(system, model);
       return yield* Effect.gen(function* () {
         yield* Queue.offer(
           process.stdin,

@@ -4,15 +4,22 @@
 // Claude process itself lives with the provider instance (Drivers/ClaudeComposerAssist.ts).
 // Drafts are private: nothing here logs their text.
 import {
+  type ComposerAssistActivity,
   type ComposerAssistBlankResult,
   type ComposerAssistCuesResult,
   ComposerAssistError,
   type ComposerAssistRequest,
+  type ComposerAssistRunRequest,
+  type ComposerAssistRunResult,
+  type ComposerAssistStatus,
+  type ComposerAssistStatusRequest,
+  type ProjectId,
   type ProviderInstanceId,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { ProviderComposerAssist } from "@t3tools/provider-core/server/driver";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -59,6 +66,7 @@ const RULE_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 const FAILED_DISTILL_BACKOFF_MS = 60_000;
 const MAX_CACHED_THREADS = 200;
 const MAX_PERSISTED_RULE_SETS = 64;
+const MAX_RECENT_ACTIVITY = 5;
 
 export class ComposerAssistService extends Context.Service<
   ComposerAssistService,
@@ -69,6 +77,17 @@ export class ComposerAssistService extends Context.Service<
     readonly cues: (
       input: ComposerAssistRequest,
     ) => Effect.Effect<ComposerAssistCuesResult, ComposerAssistError>;
+    /** What the RPC calls: one of the three below, by `operation`. */
+    readonly run: (
+      input: ComposerAssistRunRequest,
+    ) => Effect.Effect<ComposerAssistRunResult, ComposerAssistError>;
+    /**
+     * What it has done since the server started and who would answer a draft now; with a project,
+     * also the rules its contradiction cues check against (`readRules` works them out when unknown).
+     */
+    readonly status: (
+      input: ComposerAssistStatusRequest,
+    ) => Effect.Effect<ComposerAssistStatus, ComposerAssistError>;
   }
 >()("t3/composerAssist/ComposerAssistService") {}
 
@@ -104,6 +123,11 @@ export function pickComposerAssistInstance<
     return usable.find((instance) => instance.instanceId === configured) ?? null;
   }
   return usable.find((instance) => instance.instanceId === preferred) ?? usable[0] ?? null;
+}
+
+/** The `claude --model` alias for the setting; an empty setting is Haiku. */
+export function modelOf(settings: { readonly model: string }): string {
+  return settings.model === "" ? "haiku" : settings.model;
 }
 
 export interface ThreadMessage {
@@ -172,6 +196,13 @@ export const make = Effect.gen(function* () {
   >();
   const inflight = new Map<string, Deferred.Deferred<ReadonlyArray<string>>>();
   const failedAtMs = new Map<string, number>();
+  const startedAtIso = DateTime.formatIso(yield* DateTime.now);
+  const counts = {
+    blank: { requests: 0, failures: 0 },
+    cues: { requests: 0, failures: 0 },
+  };
+  /** The newest requests that asked the model, newest first. */
+  let recent: ReadonlyArray<ComposerAssistActivity> = [];
 
   const persistRules = Effect.suspend(() => {
     const entries = [...rulesByKey.entries()].slice(-MAX_PERSISTED_RULE_SETS);
@@ -217,6 +248,35 @@ export const make = Effect.gen(function* () {
         pending = created;
       }
       return yield* Deferred.await(pending);
+    });
+
+  /** Counts a request that asked the model, for the status in Settings. A dropped one is not counted. */
+  const timed = <A>(
+    operation: "blank" | "cues",
+    effect: Effect.Effect<A, ComposerAssistError>,
+  ): Effect.Effect<A, ComposerAssistError> =>
+    Effect.gen(function* () {
+      const startedMs = yield* Clock.currentTimeMillis;
+      const record = (detail: string | undefined) =>
+        Effect.gen(function* () {
+          const nowMs = yield* Clock.currentTimeMillis;
+          counts[operation].requests += 1;
+          if (detail !== undefined) counts[operation].failures += 1;
+          recent = [
+            {
+              operation,
+              ok: detail === undefined,
+              durationMs: nowMs - startedMs,
+              at: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+              ...(detail === undefined ? {} : { detail }),
+            },
+            ...recent,
+          ].slice(0, MAX_RECENT_ACTIVITY);
+        });
+      return yield* effect.pipe(
+        Effect.tap(() => record(undefined)),
+        Effect.tapError((error) => record(error.detail)),
+      );
     });
 
   const settingsOf = serverSettings.getSettings.pipe(
@@ -286,15 +346,17 @@ export const make = Effect.gen(function* () {
     task: string,
     timeoutMs: number,
     operation: "blank" | "cues",
+    model: string,
   ) =>
     assistant
-      .complete({ system: COMPOSER_ASSIST_SYSTEM_PROMPT, task, timeoutMs })
+      .complete({ system: COMPOSER_ASSIST_SYSTEM_PROMPT, task, timeoutMs, model })
       .pipe(
         Effect.mapError((cause) => new ComposerAssistError({ operation, detail: cause.detail })),
       );
 
   const decisionsFor = (
     assistant: ProviderComposerAssist,
+    model: string,
     threadId: ThreadId,
     runId: string | null,
   ) =>
@@ -309,7 +371,13 @@ export const make = Effect.gen(function* () {
             transcript.length === 0
               ? []
               : parseListReply(
-                  yield* complete(assistant, decisionsTask(transcript), DISTILL_TIMEOUT_MS, "cues"),
+                  yield* complete(
+                    assistant,
+                    decisionsTask(transcript),
+                    DISTILL_TIMEOUT_MS,
+                    "cues",
+                    model,
+                  ),
                   "decisions",
                   12,
                 );
@@ -330,47 +398,65 @@ export const make = Effect.gen(function* () {
       return yield* refresh;
     });
 
-  const rulesFor = (assistant: ProviderComposerAssist, root: string) =>
+  /** The rules file cues use: AGENTS.md, else CLAUDE.md, and which version of it this is. */
+  const rulesFile = (root: string) =>
     Effect.gen(function* () {
       for (const fileName of RULE_FILES) {
         const filePath = path.join(root, fileName);
         const content = yield* fs.readFileString(filePath).pipe(Effect.option);
         if (Option.isNone(content) || content.value.trim().length === 0) continue;
-        const key = `${filePath}:${contentHash(content.value)}`;
-        const known = rulesByKey.get(key);
-        if (known !== undefined) {
-          latestRulesKey.set(filePath, key);
-          return known;
-        }
-        const staleKey = latestRulesKey.get(filePath);
-        const stale = staleKey === undefined ? undefined : rulesByKey.get(staleKey);
-        const refresh = once(
-          `rules:${key}`,
-          Effect.gen(function* () {
-            const rules = parseListReply(
-              yield* complete(
-                assistant,
-                rulesTask({ fileName, content: content.value.slice(0, RULES_SOURCE_CHARS) }),
-                DISTILL_TIMEOUT_MS,
-                "cues",
-              ),
-              "rules",
-              24,
-            );
-            if (staleKey !== undefined) rulesByKey.delete(staleKey);
-            rulesByKey.set(key, rules);
-            latestRulesKey.set(filePath, key);
-            yield* persistRules;
-            return rules;
-          }),
-        );
-        if (stale !== undefined) {
-          yield* refresh.pipe(Effect.forkIn(scope));
-          return stale;
-        }
-        return yield* refresh;
+        return {
+          fileName,
+          filePath,
+          content: content.value,
+          key: `${filePath}:${contentHash(content.value)}`,
+        };
       }
-      return [] as ReadonlyArray<string>;
+      return null;
+    });
+
+  /**
+   * The rules in a project's rules file. An older version's rules serve while the new ones are
+   * worked out, unless `wait`: then a changed file is read before this returns.
+   */
+  const rulesFor = (assistant: ProviderComposerAssist, model: string, root: string, wait = false) =>
+    Effect.gen(function* () {
+      const file = yield* rulesFile(root);
+      if (file === null) return { fileName: null, rules: [] as ReadonlyArray<string> };
+      const { fileName, filePath, content, key } = file;
+      const known = rulesByKey.get(key);
+      if (known !== undefined) {
+        latestRulesKey.set(filePath, key);
+        return { fileName, rules: known };
+      }
+      const staleKey = latestRulesKey.get(filePath);
+      const stale = staleKey === undefined ? undefined : rulesByKey.get(staleKey);
+      const refresh = once(
+        `rules:${key}`,
+        Effect.gen(function* () {
+          const rules = parseListReply(
+            yield* complete(
+              assistant,
+              rulesTask({ fileName, content: content.slice(0, RULES_SOURCE_CHARS) }),
+              DISTILL_TIMEOUT_MS,
+              "cues",
+              model,
+            ),
+            "rules",
+            24,
+          );
+          if (staleKey !== undefined) rulesByKey.delete(staleKey);
+          rulesByKey.set(key, rules);
+          latestRulesKey.set(filePath, key);
+          yield* persistRules;
+          return rules;
+        }),
+      );
+      if (stale !== undefined && !wait) {
+        yield* refresh.pipe(Effect.forkIn(scope));
+        return { fileName, rules: stale };
+      }
+      return { fileName, rules: yield* refresh };
     });
 
   const projectRoot = (
@@ -412,15 +498,19 @@ export const make = Effect.gen(function* () {
           })),
         };
       }
-      const reply = yield* complete(
-        assistant,
-        blankTask({
-          text: input.text.replace(/\s+$/, ""),
-          thread,
-          language: settings.language === "" ? null : settings.language,
-        }),
-        BLANK_TIMEOUT_MS,
+      const reply = yield* timed(
         "blank",
+        complete(
+          assistant,
+          blankTask({
+            text: input.text.replace(/\s+$/, ""),
+            thread,
+            language: settings.language === "" ? null : settings.language,
+          }),
+          BLANK_TIMEOUT_MS,
+          "blank",
+          modelOf(settings),
+        ),
       );
       const outcome = parseBlankReply(reply, input.text.replace(/\s+$/, ""));
       yield* Effect.logDebug("Composer assist blank answered.", { outcome: outcome.kind });
@@ -445,32 +535,42 @@ export const make = Effect.gen(function* () {
         return { cues: [] };
       }
       const { assistant, shell } = yield* assistantFor(input, settings.instanceId, "cues");
+      const model = modelOf(settings);
       // Cues nobody asked for never take the last of a usage window.
       if (!(yield* assistant.roomForBackground)) return { cues: [] };
       let decisions: ReadonlyArray<string> = [];
       let rules: ReadonlyArray<string> = [];
       if (kinds.includes("contradiction")) {
         if (input.threadId !== undefined && shell !== null) {
-          decisions = yield* decisionsFor(assistant, input.threadId, shell.latestRunId);
+          decisions = yield* decisionsFor(assistant, model, input.threadId, shell.latestRunId);
         }
         const root = yield* projectRoot(shell, input.projectId);
-        if (root !== null) rules = yield* rulesFor(assistant, root);
+        if (root !== null) {
+          rules = (yield* rulesFor(assistant, model, root)).rules.filter(
+            (rule) => !settings.disabledRules.includes(rule),
+          );
+        }
       }
       const today = DateTime.toParts(
         DateTime.setZone(yield* DateTime.now, DateTime.zoneMakeLocal()),
       );
-      const reply = yield* complete(
-        assistant,
-        cuesTask({
-          text,
-          kinds,
-          audit: settings.auditor,
-          decisions,
-          rules,
-          calendar: renderCalendar({ year: today.year, month: today.month, day: today.day }),
-        }),
-        CUES_TIMEOUT_MS,
+      const reply = yield* timed(
         "cues",
+        complete(
+          assistant,
+          cuesTask({
+            text,
+            kinds,
+            audit: settings.auditor,
+            decisions,
+            rules,
+            calendar: renderCalendar({ year: today.year, month: today.month, day: today.day }),
+            language: settings.cueLanguage === "" ? null : settings.cueLanguage,
+          }),
+          CUES_TIMEOUT_MS,
+          "cues",
+          model,
+        ),
       );
       const parsed = parseCuesReply(reply, text, kinds, settings.auditor);
       return {
@@ -480,7 +580,77 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return ComposerAssistService.of({ blank, cues });
+  /** The rules cues use for a project: the known ones, or, when asked to, freshly read ones. */
+  const projectRules = (input: ComposerAssistStatusRequest & { readonly projectId: ProjectId }) =>
+    Effect.gen(function* () {
+      const settings = yield* settingsOf;
+      const root = yield* projectRoot(null, input.projectId);
+      const file = root === null ? null : yield* rulesFile(root);
+      if (root === null || file === null) return { fileName: null, rules: [] };
+      const known = rulesByKey.get(file.key);
+      if (known !== undefined) return { fileName: file.fileName, rules: known };
+      if (input.readRules !== true) {
+        const staleKey = latestRulesKey.get(file.filePath);
+        return {
+          fileName: file.fileName,
+          rules: staleKey === undefined ? null : (rulesByKey.get(staleKey) ?? null),
+        };
+      }
+      const { assistant } = yield* assistantFor(
+        { projectId: input.projectId, text: "" },
+        settings.instanceId,
+        "cues",
+      );
+      const read = yield* rulesFor(assistant, modelOf(settings), root, true);
+      return { fileName: read.fileName, rules: read.rules };
+    });
+
+  const status: ComposerAssistService["Service"]["status"] = Effect.fn(
+    "ComposerAssistService.status",
+  )(function* (input) {
+    const settings = yield* settingsOf;
+    const chosen = pickComposerAssistInstance(
+      yield* registry.listInstances,
+      settings.instanceId,
+      undefined,
+    );
+    const rules =
+      input.projectId === undefined
+        ? null
+        : yield* projectRules({ ...input, projectId: input.projectId });
+    return {
+      model: modelOf(settings),
+      account:
+        chosen === null
+          ? null
+          : { instanceId: chosen.instanceId, label: chosen.displayName ?? chosen.instanceId },
+      followsThread: settings.instanceId === "",
+      cuesPaused:
+        chosen?.composerAssist === undefined
+          ? false
+          : !(yield* chosen.composerAssist.roomForBackground),
+      blanks: { ...counts.blank },
+      cues: { ...counts.cues },
+      recent: [...recent],
+      since: startedAtIso,
+      ...(rules === null ? {} : { projectRules: rules }),
+    };
+  });
+
+  const run: ComposerAssistService["Service"]["run"] = (input) => {
+    switch (input.operation) {
+      case "blank":
+        return blank(input).pipe(Effect.map((result) => ({ operation: "blank", blank: result })));
+      case "cues":
+        return cues(input).pipe(Effect.map((result) => ({ operation: "cues", cues: result })));
+      case "status":
+        return status(input).pipe(
+          Effect.map((result) => ({ operation: "status", status: result })),
+        );
+    }
+  };
+
+  return ComposerAssistService.of({ blank, cues, status, run });
 });
 
 export const layer = Layer.effect(ComposerAssistService, make);
