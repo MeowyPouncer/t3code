@@ -93,7 +93,12 @@ function ChoiceSelect<T extends string>({
   onChange,
 }: {
   readonly value: T;
-  readonly options: ReadonlyArray<{ readonly value: T; readonly label: string }>;
+  readonly options: ReadonlyArray<{
+    readonly value: T;
+    readonly label: string;
+    /** Shown after the label in the list, not in the closed select. */
+    readonly note?: string;
+  }>;
   readonly label: string;
   readonly onChange: (value: T) => void;
 }) {
@@ -110,6 +115,9 @@ function ChoiceSelect<T extends string>({
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value}>
             {option.label}
+            {option.note === undefined ? null : (
+              <span className="ml-2 text-muted-foreground">{option.note}</span>
+            )}
           </SelectItem>
         ))}
       </SelectPopup>
@@ -461,7 +469,8 @@ export function ComposerAssistSettingsSections({
               value={assist.model}
               options={COMPOSER_ASSIST_MODELS.map((model) => ({
                 value: model.value,
-                label: `${model.label}: ${model.note}`,
+                label: model.label,
+                note: model.note,
               }))}
               label="Composer assist model"
               onChange={(value) => updateSettings({ composerAssist: { model: value } })}
