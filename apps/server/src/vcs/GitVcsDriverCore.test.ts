@@ -256,6 +256,38 @@ it.effect.each([{ timeoutMs: null }, { timeoutMs: 30_001 }])(
     }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 
+// Real Git, because only the Node spawner escalates. Git waits for a shell alias
+// it has signalled, so one that ignores SIGTERM keeps Git and its slot alive.
+// It runs for the ~2 s SIGKILL grace; without the escalation it never returns.
+it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "kills a timed-out Git whose child ignores SIGTERM, so the timeout ends the command",
+  () =>
+    Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const cwd = yield* makeTmpDir();
+      const started = yield* Deferred.make<void>();
+      const execution = yield* driver
+        .execute({
+          operation: "test.gitIgnoresSigterm",
+          cwd,
+          args: ["-c", "alias.hang=!trap '' TERM; echo started; exec sleep 30", "hang"],
+          timeoutMs: 1_000,
+          progress: {
+            onStdoutLine: () => Deferred.succeed(started, undefined).pipe(Effect.asVoid),
+          },
+        })
+        .pipe(Effect.flip, Effect.forkChild);
+
+      // The line is printed after the trap, so the alias now ignores SIGTERM.
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("1 second");
+      const error = yield* Fiber.join(execution);
+
+      assert.equal(error.detail, "Git command timed out.");
+    }).pipe(Effect.provide(layerTest)),
+  10_000,
+);
+
 it.effect.each(["root", "nested", "worktree"] as const)(
   "skips clean filters while the %s index is locked and resumes after unlock",
   (location) =>

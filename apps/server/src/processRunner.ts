@@ -148,6 +148,14 @@ export class ProcessRunner extends Context.Service<
 const DEFAULT_TIMEOUT = "60 seconds";
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
+/**
+ * `forceKillAfter` for children a caller waits on. When a timeout or interrupt
+ * stops one, its process group gets SIGTERM, then SIGKILL this long after. The
+ * Node spawner never sends SIGKILL without it, so a child that ignores SIGTERM
+ * would hold its caller, and any permit the caller has, until it exits.
+ */
+export const PROCESS_FORCE_KILL_AFTER = "2 seconds";
+
 export { isWindowsCommandNotFound } from "@t3tools/provider-core/server/snapshotProbe";
 
 // Untraced: no attributes, and its time is the runProcessCore span. Errors fail that span.
@@ -294,6 +302,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
             }
           : {}),
         shell: spawnCommand.shell,
+        forceKillAfter: PROCESS_FORCE_KILL_AFTER,
       }),
     )
     .pipe(
