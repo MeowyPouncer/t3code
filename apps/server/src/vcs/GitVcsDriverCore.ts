@@ -36,6 +36,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
+import { PROCESS_FORCE_KILL_AFTER } from "../processRunner.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
@@ -988,6 +989,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             ChildProcess.make(executable, commandInput.args, {
               cwd: commandInput.cwd,
               env: spawnEnv,
+              forceKillAfter: PROCESS_FORCE_KILL_AFTER,
             }),
           )
           .pipe(

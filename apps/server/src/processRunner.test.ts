@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -398,6 +399,39 @@ describe("runProcess", () => {
         stderrTruncated: false,
       });
     }),
+  );
+
+  // A real child, because only the Node spawner escalates. It runs for the
+  // ~2 s SIGKILL grace; without the escalation it never returns.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "kills a timed-out child that ignores SIGTERM, so the timeout ends the run",
+    () =>
+      Effect.gen(function* () {
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const childPid = yield* Deferred.make<number>();
+        const errorFiber = yield* runner
+          .run({
+            command: "sh",
+            args: ["-c", "trap '' TERM; echo $$; exec sleep 30"],
+            timeout: "1 second",
+            onStdoutChunk: (chunk) => {
+              Deferred.doneUnsafe(
+                childPid,
+                Effect.succeed(Number.parseInt(new TextDecoder().decode(chunk), 10)),
+              );
+            },
+          })
+          .pipe(Effect.flip, Effect.forkScoped);
+
+        // The pid is printed after the trap, so the child now ignores SIGTERM.
+        const pid = yield* Deferred.await(childPid);
+        yield* TestClock.adjust("1 second");
+        const error = yield* Fiber.join(errorFiber);
+
+        expect(error._tag).toBe("ProcessTimeoutError");
+        expect(() => process.kill(pid, 0)).toThrow(/ESRCH/);
+      }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)))),
+    10_000,
   );
 });
 
