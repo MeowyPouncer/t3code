@@ -276,6 +276,60 @@ describe("VcsProcess.run", () => {
     }),
   );
 
+  it.effect("hung gh and glab processes leave every Git permit to Git", () =>
+    Effect.gen(function* () {
+      const forgeCliHung = yield* Deferred.make<void>();
+      const gitGate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<string>();
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({
+            run: (input) =>
+              Queue.offer(starts, input.command).pipe(
+                Effect.andThen(Deferred.await(input.command === "git" ? gitGate : forgeCliHung)),
+                Effect.as({
+                  stdout: "",
+                  stderr: "",
+                  code: ChildProcessSpawner.ExitCode(0),
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                }),
+              ),
+          }),
+        ),
+      );
+      const burst = (command: string) =>
+        Effect.all(
+          Array.from({ length: 8 }, (_, index) =>
+            service.run({
+              operation: `synthetic.${command}.${index}`,
+              command,
+              args: [],
+              cwd: "/workspace",
+            }),
+          ),
+          { concurrency: "unbounded" },
+        ).pipe(Effect.forkChild);
+
+      yield* burst("glab");
+      yield* burst("gh");
+      const forgeStarts = yield* Effect.all(Array.from({ length: 8 }, () => Queue.take(starts)));
+      yield* Effect.yieldNow;
+      expect(yield* Queue.size(starts)).toBe(0);
+      expect(forgeStarts.toSorted().join(" ")).toBe("gh gh gh gh glab glab glab glab");
+
+      const git = yield* burst("git");
+      const gitStarts = yield* Effect.all(Array.from({ length: 8 }, () => Queue.take(starts)));
+      expect(gitStarts.join(" ")).toBe("git git git git git git git git");
+      yield* Deferred.succeed(gitGate, undefined);
+      yield* Fiber.join(git);
+    }),
+  );
+
   it.effect("collects stdout", () =>
     Effect.gen(function* () {
       const result = yield* run({
