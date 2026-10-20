@@ -65,6 +65,40 @@ const makeFakePi = (reply: string) =>
     return { spawner, received };
   });
 
+it.effect("applies the selected Pi model and thinking level before an assist prompt", () =>
+  Effect.gen(function* () {
+    const pi = yield* makeFakePi(
+      encodeJsonLine({ text: "<verdict>REWRITE</verdict><text>Fix ⟦1⟧.</text>" }),
+    );
+    const generation = yield* makePiTextGeneration(
+      { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
+      {},
+    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner));
+    const result = yield* generation.generateComposerAssist({
+      cwd: "/isolated-composer-assist",
+      system: "Edit the draft.",
+      task: "Keep ⟦1⟧.",
+      modelSelection: createModelSelection(ProviderInstanceId.make("pi"), "openai/gpt-6.1-sol", [
+        { id: "thinking", value: "high" },
+      ]),
+    });
+    assert.include(result, "Fix ⟦1⟧.");
+    assert.deepEqual(
+      pi.received.slice(0, 3).map((request) => ({
+        type: request.type,
+        provider: request.provider,
+        modelId: request.modelId,
+        level: request.level,
+      })),
+      [
+        { type: "set_model", provider: "openai", modelId: "gpt-6.1-sol", level: undefined },
+        { type: "set_thinking_level", provider: undefined, modelId: undefined, level: "high" },
+        { type: "prompt", provider: undefined, modelId: undefined, level: undefined },
+      ],
+    );
+  }),
+);
+
 it.effect("puts linked source control context in the Pi thread title prompt", () =>
   Effect.gen(function* () {
     const pi = yield* makeFakePi(encodeJsonLine({ title: "Route Reset Credits Through Hub" }));

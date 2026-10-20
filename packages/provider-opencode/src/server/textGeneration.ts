@@ -11,6 +11,7 @@ import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as OpenCodeServerOwner from "./OpenCodeServerOwner.ts";
 
 const OpenCodeTextGenerationOperation = Schema.Literals([
+  "generateComposerAssist",
   "generateCommitMessage",
   "generatePrContent",
   "generateBranchName",
@@ -185,19 +186,40 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           directory: input.cwd,
           ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         });
-        const session = yield* Effect.tryPromise({
-          try: () =>
-            client.session.create({
-              title: `T3 Code ${input.operation}`,
-              permission: [{ permission: "*", pattern: "*", action: "deny" }],
-            }),
-          catch: (cause) =>
-            new OpenCodeTextGenerationSessionRequestError({
-              operation: input.operation,
-              cwd: input.cwd,
-              cause,
-            }),
-        });
+        let answered = false;
+        const session = yield* Effect.acquireRelease(
+          Effect.tryPromise({
+            try: (signal) =>
+              client.session.create(
+                {
+                  title: `T3 Code ${input.operation}`,
+                  permission: [{ permission: "*", pattern: "*", action: "deny" }],
+                },
+                { signal },
+              ),
+            catch: (cause) =>
+              new OpenCodeTextGenerationSessionRequestError({
+                operation: input.operation,
+                cwd: input.cwd,
+                cause,
+              }),
+          }),
+          (created) => {
+            if (!created.data) return Effect.void;
+            const sessionID = created.data.id;
+            const stop = answered
+              ? Effect.void
+              : Effect.tryPromise((signal) => client.session.abort({ sessionID }, { signal })).pipe(
+                  Effect.timeout("5 seconds"),
+                  Effect.ignore,
+                );
+            const remove = Effect.tryPromise((signal) =>
+              client.session.delete({ sessionID }, { signal }),
+            ).pipe(Effect.timeout("5 seconds"), Effect.ignore);
+            return stop.pipe(Effect.andThen(remove));
+          },
+          { interruptible: true },
+        );
         if (!session.data) {
           return yield* new OpenCodeTextGenerationSessionPayloadError({
             operation: input.operation,
@@ -215,20 +237,24 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         };
 
         const result = yield* Effect.tryPromise({
-          try: () =>
-            client.session.prompt({
-              sessionID: session.data.id,
-              model: parsedModel,
-              ...(selectedAgent ? { agent: selectedAgent } : {}),
-              ...(selectedVariant ? { variant: selectedVariant } : {}),
-              parts: [{ type: "text", text: input.prompt }, ...fileParts],
-            }),
+          try: (signal) =>
+            client.session.prompt(
+              {
+                sessionID: session.data.id,
+                model: parsedModel,
+                ...(selectedAgent ? { agent: selectedAgent } : {}),
+                ...(selectedVariant ? { variant: selectedVariant } : {}),
+                parts: [{ type: "text", text: input.prompt }, ...fileParts],
+              },
+              { signal },
+            ),
           catch: (cause) =>
             new OpenCodeTextGenerationPromptRequestError({
               ...promptContext,
               cause,
             }),
         });
+        answered = true;
         const promptFailure = getOpenCodePromptFailure(result.data?.info?.error);
         if (promptFailure) {
           return yield* new OpenCodeTextGenerationPromptResponseError({
@@ -248,6 +274,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         }
         return rawText;
       },
+      Effect.scoped,
       Effect.catchTags({
         OpenCodeTextGenerationSessionRequestError: (cause) =>
           Effect.fail(

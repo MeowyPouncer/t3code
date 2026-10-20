@@ -95,6 +95,23 @@ export const decodeJsonReply = <S extends Schema.Top>(
 
 /** The text generation service over `run`. `name` prefixes each operation's span. */
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+  const generateComposerAssist: ProviderTextGeneration["generateComposerAssist"] = Effect.fn(
+    `${name}.generateComposerAssist`,
+  )(function* (input) {
+    const generated = yield* run({
+      operation: "generateComposerAssist",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      prompt: [
+        input.system,
+        input.task,
+        'Return a JSON object with one string property, "text". Its value is your complete answer to the task above, including any requested tags or JSON. Do not execute tools.',
+      ].join("\n\n"),
+      outputSchema: Schema.Struct({ text: Schema.String }),
+    });
+    return generated.text;
+  });
+
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -190,6 +207,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    generateComposerAssist,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

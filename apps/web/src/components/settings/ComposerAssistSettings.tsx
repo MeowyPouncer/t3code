@@ -7,6 +7,7 @@ import {
   COMPOSER_ASSIST_MODELS,
   COMPOSER_ASSIST_PAUSES,
   composerAssistAnswer,
+  composerAssistModelSelection,
 } from "@t3tools/client-runtime/composer-assist";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -14,14 +15,27 @@ import type {
   ComposerAssistStatus,
   EnvironmentId,
   ProjectId,
-  ProviderInstanceId,
+  ServerProvider,
 } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import * as Equal from "effect/Equal";
 
 import { useProjects } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
+import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { TraitsPicker } from "../chat/TraitsPicker";
+import { getComposerProviderState } from "../chat/composerProviderState";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "../../providerInstances";
+import { useSettingsScope } from "./SettingsScopeContext";
+import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
+import { toastManager } from "../ui/toast";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { ScopedSwitch } from "./ScopedSwitch";
@@ -35,7 +49,7 @@ const COMPOSER_ASSIST_SWITCHES = {
     searchId: "composer-assist-blanks",
     label: "Blanks",
     description:
-      "End a draft with “ _” and Claude works on it. Bare, it improves the draft as a prompt. After an instruction (“as a list _”, “shorter _”), it follows the instruction. After a slot (“the test command: _”), it fills in the value.",
+      "End a draft with “ _” and the assistant works on it. Bare, it improves the draft as a prompt. After an instruction (“as a list _”, “shorter _”), it follows the instruction. After a slot (“the test command: _”), it fills in the value.",
   },
   contradictions: {
     searchId: "composer-assist-contradictions",
@@ -132,10 +146,10 @@ function summaryOf(status: ComposerAssistStatus, nowMs: number): ReadonlyArray<s
     )?.label ?? status.model;
   const lines: string[] = [];
   if (status.account === null) {
-    lines.push("No Claude account can answer. Add one under Providers.");
+    lines.push("No text generation provider can answer. Add one under Providers.");
   } else if (status.followsThread) {
     lines.push(
-      `Answers with ${model} on the thread's own Claude account, and on ${status.account.label} for a draft outside a thread.`,
+      `Answers with ${model} automatically on ${status.account.label}. A thread's own Claude account takes precedence when available.`,
     );
   } else {
     lines.push(`Answers with ${model} on ${status.account.label}.`);
@@ -399,18 +413,46 @@ function TryRow({ environmentId }: { readonly environmentId: EnvironmentId }) {
 
 export function ComposerAssistSettingsSections({
   environmentId,
-  claudeProviders,
+  providers,
 }: {
   /** The one environment the settings show; null when several are selected. */
   readonly environmentId: EnvironmentId | null;
-  readonly claudeProviders: ReadonlyArray<{
-    readonly instanceId: ProviderInstanceId;
-    readonly displayName?: string | undefined;
-  }>;
+  readonly providers: ReadonlyArray<ServerProvider>;
 }) {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const assist = settings.composerAssist;
+  const { target, targets } = useSettingsScope();
+  const mixed = targets.some(({ settings: targetSettings }) => {
+    const other = targetSettings.composerAssist;
+    return (
+      other.instanceId !== assist.instanceId ||
+      other.model !== assist.model ||
+      !Equal.equals(other.options, assist.options)
+    );
+  });
+  const availableProviders = providers.filter(
+    (provider) => provider.supportsTextGeneration !== false,
+  );
+  const entries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(availableProviders),
+      settings,
+      target?.projectId ?? null,
+    ),
+  );
+  const selection = composerAssistModelSelection(assist, availableProviders);
+  const selectedEntry = entries.find((entry) => entry.instanceId === selection?.instanceId);
+  const modelOptions = getCustomModelOptionsByInstance(
+    settings,
+    availableProviders,
+    selection?.instanceId,
+    selection?.model,
+  );
+  const disabledReason = useScopedModelDisabledReason(settings, entries);
+  const selectedModelMissing =
+    selection !== null &&
+    !modelOptions.get(selection.instanceId)?.some((model) => model.slug === selection.model);
   const switchRow = (key: SwitchKey) => {
     const item = COMPOSER_ASSIST_SWITCHES[key];
     return (
@@ -439,42 +481,85 @@ export function ComposerAssistSettingsSections({
       <SettingsSection id="composer-assist" title="Composer assist">
         <SettingsRow
           serverScoped
-          {...searchableSetting("composer-assist-account")}
-          title="Claude account"
-          description="The Claude account that answers. By default it is the thread's own, so two accounts never work at once; a thread on another provider uses the first Claude."
-          settingKeys={["composerAssist"]}
-          control={
-            <ChoiceSelect
-              value={assist.instanceId}
-              options={[
-                { value: "", label: "The thread's Claude" },
-                ...claudeProviders.map((provider) => ({
-                  value: provider.instanceId as string,
-                  label: provider.displayName ?? provider.instanceId,
-                })),
-              ]}
-              label="Composer assist account"
-              onChange={(value) => updateSettings({ composerAssist: { instanceId: value } })}
-            />
-          }
-        />
-        <SettingsRow
-          serverScoped
           {...searchableSetting("composer-assist-model")}
-          title="Model"
-          description="The Claude model that answers. Every blank and cue waits for it, so the fastest is the default; a bigger one writes better and uses more of the Claude limit."
+          title="Provider and model"
+          description="The model that answers blanks and cues, from your configured providers. Faster models respond sooner; each request uses the selected provider's allowance. Automatic uses Haiku on Claude when available."
           settingKeys={["composerAssist"]}
           control={
-            <ChoiceSelect
-              value={assist.model}
-              options={COMPOSER_ASSIST_MODELS.map((model) => ({
-                value: model.value,
-                label: model.label,
-                note: model.note,
-              }))}
-              label="Composer assist model"
-              onChange={(value) => updateSettings({ composerAssist: { model: value } })}
-            />
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {selection === null ? (
+                <span className="text-sm text-muted-foreground">
+                  No text generation providers available.
+                </span>
+              ) : (
+                <ProviderModelPicker
+                  environmentId={environmentId}
+                  activeInstanceId={selection.instanceId}
+                  model={selection.model}
+                  lockedProvider={null}
+                  instanceEntries={entries}
+                  modelOptionsByInstance={modelOptions}
+                  triggerAriaLabel="Composer assist model"
+                  {...(mixed
+                    ? { triggerLabel: "Mixed" }
+                    : assist.instanceId === "" && assist.model === ""
+                      ? { triggerLabel: "Automatic" }
+                      : selectedModelMissing
+                        ? { triggerLabel: `${selection.model} (Unavailable)` }
+                        : {})}
+                  getModelDisabledReason={disabledReason}
+                  onInstanceModelChange={(instanceId, model) => {
+                    const reason = disabledReason(instanceId, model);
+                    if (reason) {
+                      toastManager.add({
+                        type: "error",
+                        title: "Composer assist model not saved",
+                        description: reason,
+                      });
+                      return;
+                    }
+                    const entry = entries.find((candidate) => candidate.instanceId === instanceId);
+                    if (entry === undefined) return;
+                    const { modelOptionsForDispatch } = getComposerProviderState({
+                      provider: entry.driverKind,
+                      model,
+                      models: entry.models,
+                      modelOptions: undefined,
+                      planModeEnabled: false,
+                    });
+                    updateSettings({
+                      composerAssist: { instanceId, model, options: modelOptionsForDispatch ?? [] },
+                    });
+                  }}
+                />
+              )}
+              {selection !== null && selectedEntry !== undefined && assist.instanceId !== "" ? (
+                <TraitsPicker
+                  provider={selectedEntry.driverKind}
+                  models={selectedEntry.models}
+                  model={selection.model}
+                  prompt=""
+                  onPromptChange={() => {}}
+                  modelOptions={assist.options}
+                  allowPromptInjectedEffort={false}
+                  planModeEnabled={false}
+                  onModelOptionsChange={(options) =>
+                    updateSettings({ composerAssist: { ...selection, options: options ?? [] } })
+                  }
+                />
+              ) : null}
+              {assist.instanceId !== "" || assist.model !== "" || assist.options.length > 0 ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    updateSettings({ composerAssist: { instanceId: "", model: "", options: [] } })
+                  }
+                >
+                  Use automatic
+                </Button>
+              ) : null}
+            </div>
           }
         />
         {environmentId === null ? null : <ActivityRow environmentId={environmentId} />}

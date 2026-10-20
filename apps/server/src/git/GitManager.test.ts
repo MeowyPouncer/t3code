@@ -328,6 +328,7 @@ function createTextGeneration(
   overrides: Partial<FakeGitTextGeneration> = {},
 ): TextGeneration.TextGeneration["Service"] {
   const implementation: FakeGitTextGeneration = {
+    generateComposerAssist: () => Effect.die("Composer assist is not used by GitManager"),
     generateCommitMessage: (input) =>
       Effect.succeed({
         subject: "Implement stacked git actions",
@@ -352,6 +353,7 @@ function createTextGeneration(
   };
 
   return {
+    generateComposerAssist: () => Effect.die("Composer assist is not used by GitManager"),
     generateCommitMessage: (input) =>
       implementation.generateCommitMessage(input).pipe(
         Effect.mapError(

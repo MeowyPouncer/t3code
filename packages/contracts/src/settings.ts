@@ -1162,8 +1162,8 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
  * pause in typing brings cues. Every part can be turned off; the auditor starts off because it
  * rewrites the draft without being asked.
  */
-/** The aliases `claude --model` takes; empty is Haiku. */
-export const ComposerAssistModel = Schema.Literals(["", "haiku", "sonnet", "opus"]);
+/** A configured provider's model ID; empty keeps the legacy Haiku default on Claude. */
+export const ComposerAssistModel = TrimmedString;
 export type ComposerAssistModel = typeof ComposerAssistModel.Type;
 export const MIN_COMPOSER_ASSIST_PAUSE_MS = 500;
 export const MAX_COMPOSER_ASSIST_PAUSE_MS = 10_000;
@@ -1182,14 +1182,15 @@ export const ComposerAssistSettings = Schema.Struct({
   sentences: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   askCues: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   auditor: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /** The Claude instance that answers. Empty follows the thread's own Claude account. */
+  /** The provider instance that answers. Empty keeps the automatic Claude account choice. */
   instanceId: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** The language a blank's rewrite comes out in, such as "English". Empty keeps the draft's. */
   language: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** The language of a cue's note or question. Empty keeps the draft's; suggested rewrites always do. */
   cueLanguage: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
-  /** The Claude model that answers. Empty is Haiku, the fastest. */
-  model: ComposerAssistModel.pipe(Schema.withDecodingDefault(Effect.succeed("" as const))),
+  /** The selected provider's model. Empty is Haiku on Claude, otherwise its default model. */
+  model: ComposerAssistModel.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  options: ProviderOptionSelections.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   /** Quiet time in a draft before its cues are asked for. */
   pauseMs: ComposerAssistPauseMs.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COMPOSER_ASSIST_PAUSE_MS)),
@@ -1751,6 +1752,7 @@ export const ServerSettingsPatch = Schema.Struct({
       language: Schema.optionalKey(TrimmedString),
       cueLanguage: Schema.optionalKey(TrimmedString),
       model: Schema.optionalKey(ComposerAssistModel),
+      options: Schema.optionalKey(ProviderOptionSelections),
       pauseMs: Schema.optionalKey(ComposerAssistPauseMs),
       disabledRules: Schema.optionalKey(Schema.Array(TrimmedString)),
     }),

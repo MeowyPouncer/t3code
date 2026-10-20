@@ -170,6 +170,29 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  it.effect("answers composer assist with the selected model and reasoning effort", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ text: "<verdict>REWRITE</verdict>\n<text>Fix ⟦1⟧.</text>" }),
+        requireArg: "--model gpt-6.1-sol",
+        requireReasoningEffort: "high",
+        stdinMustContain: "Keep ⟦1⟧ in the draft.",
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateComposerAssist({
+            cwd: process.cwd(),
+            system: "Edit the draft.",
+            task: "Keep ⟦1⟧ in the draft.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6.1-sol", [
+              { id: "reasoningEffort", value: "high" },
+            ]),
+          });
+          expect(result).toBe("<verdict>REWRITE</verdict>\n<text>Fix ⟦1⟧.</text>");
+        }),
+    ),
+  );
+
   it.effect.each(["gpt-5.6-luna", "openai.gpt-5.6-luna"])(
     "dispatches the qualified live model for %s",
     (selectedModel) =>

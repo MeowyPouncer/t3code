@@ -150,6 +150,11 @@ function selectOpenCodeRuntimeTextGeneration(
   v2: ProviderTextGeneration,
 ): ProviderTextGeneration {
   return {
+    generateComposerAssist: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateComposerAssist(input),
+        v2: v2.generateComposerAssist(input),
+      }),
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateCommitMessage(input),

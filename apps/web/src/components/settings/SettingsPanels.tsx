@@ -2273,7 +2273,6 @@ export function GeneralSettingsPanel() {
   const serverProviders = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
   const supportsComposerAssist =
     environment?.serverConfig?.environment.capabilities.composerAssist === true;
-  const claudeProviders = serverProviders.filter((provider) => provider.driver === "claudeAgent");
   const supportsAutoSettlement =
     connectedEnvironments.length > 0 &&
     connectedEnvironments.every(
@@ -3538,7 +3537,7 @@ export function GeneralSettingsPanel() {
       {supportsComposerAssist ? (
         <ComposerAssistSettingsSections
           environmentId={isEnvironmentScope ? environmentId : null}
-          claudeProviders={claudeProviders}
+          providers={serverProviders}
         />
       ) : null}
 

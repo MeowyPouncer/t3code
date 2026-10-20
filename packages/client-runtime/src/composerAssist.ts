@@ -5,7 +5,12 @@ import {
   type ComposerAssistBlankResult,
   type ComposerAssistCue,
   type ComposerAssistRunResult,
+  type ComposerAssistSettings,
+  type ModelSelection,
+  ProviderInstanceId,
+  type ServerProvider,
 } from "@t3tools/contracts";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
@@ -35,6 +40,36 @@ export const COMPOSER_ASSIST_MODELS = [
   },
   { value: "opus", label: "Opus", note: "Slowest, uses the most of the Claude limit" },
 ] as const;
+
+/** Display the saved account exactly; automatic mode keeps the original Claude/Haiku default. */
+export function composerAssistModelSelection(
+  settings: Pick<ComposerAssistSettings, "instanceId" | "model" | "options">,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection | null {
+  const automatic = providers.filter(
+    (provider) => provider.enabled && provider.supportsTextGeneration !== false,
+  );
+  const provider =
+    settings.instanceId !== ""
+      ? providers.find((provider) => provider.instanceId === settings.instanceId)
+      : (automatic.find((provider) => provider.driver === "claudeAgent") ?? automatic[0]);
+  if (provider === undefined && settings.instanceId === "") return null;
+  const model =
+    settings.model ||
+    (provider?.driver === "claudeAgent"
+      ? "haiku"
+      : (provider?.models.find((model) => model.isDefault)?.slug ??
+        provider?.models[0]?.slug ??
+        "default"));
+  return {
+    instanceId: provider?.instanceId ?? ProviderInstanceId.make(settings.instanceId),
+    model:
+      provider === undefined
+        ? model
+        : (resolveSelectableModel(provider.driver, model, provider.models) ?? model),
+    options: settings.options,
+  };
+}
 
 /** How long a draft stays quiet before cues are asked for, for the settings. */
 export const COMPOSER_ASSIST_PAUSES = [

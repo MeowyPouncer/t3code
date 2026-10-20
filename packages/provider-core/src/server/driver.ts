@@ -109,7 +109,7 @@ export interface ProviderInstance {
    * Null for no compaction now; absent for an instance that never wants it.
    */
   readonly idleCompaction?: Effect.Effect<ProviderIdleCompaction | null>;
-  /** FORK: composer assist (blanks and cues) on this instance's fast model; absent when it has none. */
+  /** FORK: optimized composer assist; other instances use their text generation runner. */
   readonly composerAssist?: ProviderComposerAssist;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
@@ -144,7 +144,7 @@ export interface ProviderComposerAssist {
     readonly system: string;
     readonly task: string;
     readonly timeoutMs: number;
-    /** A `claude --model` alias; the provider's default model when absent. */
+    /** A model ID or provider alias; the provider's default model when absent. */
     readonly model?: string;
   }) => Effect.Effect<string, ProviderComposerAssistError>;
   /** False near a usage limit: cues nobody asked for wait, a blank the user typed still runs. */
