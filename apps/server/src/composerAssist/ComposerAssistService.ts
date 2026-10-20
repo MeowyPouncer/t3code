@@ -1,5 +1,5 @@
 // FORK: composer assist, after OpenCues. A draft ending in " _" is rewritten or filled in, and a
-// pause in typing brings cues. This service picks the Claude account, gives the model the thread's
+// pause in typing brings cues. This service picks the provider account, gives the model the thread's
 // recent turns, its decisions and the project's AGENTS.md rules, and checks what comes back. The
 // Claude process itself lives with the provider instance (Drivers/ClaudeComposerAssist.ts).
 // Drafts are private: nothing here logs their text.
@@ -13,11 +13,17 @@ import {
   type ComposerAssistRunResult,
   type ComposerAssistStatus,
   type ComposerAssistStatusRequest,
+  type ComposerAssistSettings,
   type ProjectId,
   type ProviderInstanceId,
   type ThreadId,
 } from "@t3tools/contracts";
-import type { ProviderComposerAssist } from "@t3tools/provider-core/server/driver";
+import type {
+  ProviderComposerAssist,
+  ProviderInstance,
+} from "@t3tools/provider-core/server/driver";
+import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import { ProviderComposerAssistError } from "@t3tools/provider-core/server/errors";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -114,15 +120,26 @@ export function pickComposerAssistInstance<
     readonly instanceId: ProviderInstanceId;
     readonly enabled: boolean;
     readonly composerAssist?: ProviderComposerAssist;
+    readonly textGeneration?: Pick<ProviderTextGeneration, "generateComposerAssist">;
   },
 >(instances: ReadonlyArray<T>, configured: string, preferred: ProviderInstanceId | undefined) {
   const usable = instances.filter(
-    (instance) => instance.enabled && instance.composerAssist !== undefined,
+    (instance) =>
+      instance.enabled &&
+      (instance.composerAssist !== undefined || instance.textGeneration !== undefined),
   );
   if (configured.length > 0) {
     return usable.find((instance) => instance.instanceId === configured) ?? null;
   }
-  return usable.find((instance) => instance.instanceId === preferred) ?? usable[0] ?? null;
+  // Keep the existing automatic Claude choice; other providers are explicit selections.
+  const automatic = usable.filter((instance) => instance.composerAssist !== undefined);
+  return (
+    automatic.find((instance) => instance.instanceId === preferred) ??
+    automatic[0] ??
+    usable.find((instance) => instance.instanceId === preferred) ??
+    usable[0] ??
+    null
+  );
 }
 
 /** The `claude --model` alias for the setting; an empty setting is Haiku. */
@@ -178,6 +195,17 @@ export const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
 
   const rulesPath = path.join(config.stateDir, "composer-assist-rules.json");
+  const assistInstances = registry.listInstances.pipe(
+    Effect.flatMap((instances) =>
+      Effect.filter(instances, (instance) =>
+        instance.composerAssist !== undefined
+          ? Effect.succeed(true)
+          : instance.snapshot.getSnapshot.pipe(
+              Effect.map((snapshot) => snapshot.supportsTextGeneration !== false),
+            ),
+      ),
+    ),
+  );
   /** Distilled rules by `<file path>:<content hash>`, kept across restarts. */
   const rulesByKey = new Map<string, ReadonlyArray<string>>(
     Object.entries(
@@ -319,27 +347,101 @@ export const make = Effect.gen(function* () {
 
   const assistantFor = (
     input: ComposerAssistRequest,
-    configured: string,
+    settings: ComposerAssistSettings,
     operation: "blank" | "cues",
   ) =>
     Effect.gen(function* () {
       const shell = yield* threadShell(input.threadId);
       const chosen = pickComposerAssistInstance(
-        yield* registry.listInstances,
-        configured,
+        yield* assistInstances,
+        settings.instanceId,
         input.instanceId ?? shell?.modelSelection.instanceId,
       );
-      if (chosen?.composerAssist === undefined) {
+      if (chosen === null) {
         return yield* new ComposerAssistError({
           operation,
           detail:
-            configured.length > 0
-              ? `The Claude provider "${configured}" chosen for composer assist is not available.`
-              : "Composer assist needs a Claude provider.",
+            settings.instanceId.length > 0
+              ? `The provider "${settings.instanceId}" chosen for composer assist is not available.`
+              : "Composer assist needs a text generation provider.",
         });
       }
-      return { assistant: chosen.composerAssist, shell };
+      const model = yield* modelFor(chosen, settings);
+      return { assistant: assistantOf(chosen, settings), model, shell };
     });
+
+  const modelFor = (instance: ProviderInstance, settings: ComposerAssistSettings) =>
+    Effect.gen(function* () {
+      if (settings.model !== "" || instance.composerAssist !== undefined) return modelOf(settings);
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      return (
+        snapshot.models.find((model) => model.isDefault)?.slug ??
+        snapshot.models[0]?.slug ??
+        "default"
+      );
+    });
+
+  const assistantOf = (
+    instance: ProviderInstance,
+    settings: ComposerAssistSettings,
+  ): ProviderComposerAssist => {
+    if (
+      instance.composerAssist !== undefined &&
+      settings.options.length === 0 &&
+      ["", "haiku", "sonnet", "opus"].includes(settings.model)
+    ) {
+      return instance.composerAssist;
+    }
+    return {
+      complete: ({ system, task, timeoutMs, model }) =>
+        Effect.gen(function* () {
+          const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-composer-assist-" });
+          return yield* instance.textGeneration.generateComposerAssist({
+            cwd,
+            system,
+            task,
+            modelSelection: {
+              instanceId: instance.instanceId,
+              model: model ?? (yield* modelFor(instance, settings)),
+              options: settings.options,
+            },
+          });
+        }).pipe(
+          Effect.scoped,
+          Effect.mapError(
+            (cause) =>
+              new ProviderComposerAssistError({
+                detail:
+                  cause._tag === "TextGenerationError"
+                    ? cause.detail
+                    : "Could not prepare composer assist.",
+                cause,
+              }),
+          ),
+          Effect.timeoutOption(timeoutMs),
+          Effect.flatMap(
+            Option.match({
+              onSome: Effect.succeed,
+              onNone: () =>
+                Effect.fail(
+                  new ProviderComposerAssistError({ detail: "Composer assist request timed out." }),
+                ),
+            }),
+          ),
+        ),
+      roomForBackground:
+        instance.composerAssist?.roomForBackground ??
+        Effect.gen(function* () {
+          const snapshot = yield* instance.snapshot.getSnapshot;
+          const nowMs = yield* Clock.currentTimeMillis;
+          return !(snapshot.usageLimits?.windows ?? []).some(
+            (window) =>
+              window.usedPercent >= 90 &&
+              (window.resetsAt === undefined || Date.parse(window.resetsAt) > nowMs),
+          );
+        }),
+    };
+  };
 
   const complete = (
     assistant: ProviderComposerAssist,
@@ -486,7 +588,7 @@ export const make = Effect.gen(function* () {
       if (input.text.replace(/\s*_\s*$/, "").trim().length === 0) {
         return { _tag: "none" as const, reason: "Write something before the _." };
       }
-      const { assistant, shell } = yield* assistantFor(input, settings.instanceId, "blank");
+      const { assistant, shell, model } = yield* assistantFor(input, settings, "blank");
       let thread: ComposerAssistThreadContext | null = null;
       if (input.threadId !== undefined) {
         const recent = (yield* threadMessages(input.threadId)).slice(-BLANK_CONTEXT_MESSAGES);
@@ -509,7 +611,7 @@ export const make = Effect.gen(function* () {
           }),
           BLANK_TIMEOUT_MS,
           "blank",
-          modelOf(settings),
+          model,
         ),
       );
       const outcome = parseBlankReply(reply, input.text.replace(/\s+$/, ""));
@@ -534,8 +636,7 @@ export const make = Effect.gen(function* () {
       if (text.trim().length < MIN_CUE_DRAFT_CHARS || text.length > MAX_CUE_DRAFT_CHARS) {
         return { cues: [] };
       }
-      const { assistant, shell } = yield* assistantFor(input, settings.instanceId, "cues");
-      const model = modelOf(settings);
+      const { assistant, shell, model } = yield* assistantFor(input, settings, "cues");
       // Cues nobody asked for never take the last of a usage window.
       if (!(yield* assistant.roomForBackground)) return { cues: [] };
       let decisions: ReadonlyArray<string> = [];
@@ -596,12 +697,12 @@ export const make = Effect.gen(function* () {
           rules: staleKey === undefined ? null : (rulesByKey.get(staleKey) ?? null),
         };
       }
-      const { assistant } = yield* assistantFor(
+      const { assistant, model } = yield* assistantFor(
         { projectId: input.projectId, text: "" },
-        settings.instanceId,
+        settings,
         "cues",
       );
-      const read = yield* rulesFor(assistant, modelOf(settings), root, true);
+      const read = yield* rulesFor(assistant, model, root, true);
       return { fileName: read.fileName, rules: read.rules };
     });
 
@@ -610,7 +711,7 @@ export const make = Effect.gen(function* () {
   )(function* (input) {
     const settings = yield* settingsOf;
     const chosen = pickComposerAssistInstance(
-      yield* registry.listInstances,
+      yield* assistInstances,
       settings.instanceId,
       undefined,
     );
@@ -619,16 +720,14 @@ export const make = Effect.gen(function* () {
         ? null
         : yield* projectRules({ ...input, projectId: input.projectId });
     return {
-      model: modelOf(settings),
+      model: chosen === null ? modelOf(settings) : yield* modelFor(chosen, settings),
       account:
         chosen === null
           ? null
           : { instanceId: chosen.instanceId, label: chosen.displayName ?? chosen.instanceId },
       followsThread: settings.instanceId === "",
       cuesPaused:
-        chosen?.composerAssist === undefined
-          ? false
-          : !(yield* chosen.composerAssist.roomForBackground),
+        chosen === null ? false : !(yield* assistantOf(chosen, settings).roomForBackground),
       blanks: { ...counts.blank },
       cues: { ...counts.cues },
       recent: [...recent],

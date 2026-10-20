@@ -18,11 +18,11 @@ export const ComposerAssistCueKind = Schema.Literals([
 export type ComposerAssistCueKind = typeof ComposerAssistCueKind.Type;
 
 export const ComposerAssistRequest = Schema.Struct({
-  /** The thread the draft continues: its decisions and its Claude account. */
+  /** The thread the draft continues: its decisions and preferred account in automatic mode. */
   threadId: Schema.optional(ThreadId),
   /** Whose AGENTS.md rules apply when the draft starts a new thread. */
   projectId: Schema.optional(ProjectId),
-  /** The provider instance the composer sends with, to pick the matching Claude account. */
+  /** The provider instance the composer sends with, to pick an account in automatic mode. */
   instanceId: Schema.optional(ProviderInstanceId),
   text: Schema.String.check(Schema.isMaxLength(COMPOSER_ASSIST_MAX_DRAFT_CHARS)),
 });
@@ -82,9 +82,9 @@ const ComposerAssistCounts = Schema.Struct({ requests: Schema.Int, failures: Sch
 export const ComposerAssistStatus = Schema.Struct({
   /** The model in use; the alias, never empty. */
   model: Schema.String,
-  /** The Claude account that answers a draft with no thread; null when none can. */
+  /** The provider account that answers a draft with no thread; null when none can. */
   account: Schema.NullOr(Schema.Struct({ instanceId: ProviderInstanceId, label: Schema.String })),
-  /** True when a thread's own Claude account answers instead of `account`. */
+  /** Automatic account selection; a thread's Claude account takes precedence when available. */
   followsThread: Schema.Boolean,
   /** Cues wait because that account is near a usage limit; a blank still runs. */
   cuesPaused: Schema.Boolean,
@@ -108,7 +108,7 @@ export type ComposerAssistStatus = typeof ComposerAssistStatus.Type;
 export const ComposerAssistStatusRequest = Schema.Struct({
   /** Include this project's rules. */
   projectId: Schema.optional(ProjectId),
-  /** Read the project's rules file now when its rules were never worked out; runs Claude. */
+  /** Read the project's rules file now when its rules were never worked out; runs the selected model. */
   readRules: Schema.optional(Schema.Boolean),
 });
 export type ComposerAssistStatusRequest = typeof ComposerAssistStatusRequest.Type;

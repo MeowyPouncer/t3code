@@ -30,12 +30,7 @@ export class TextGeneration extends Context.Service<TextGeneration, ProviderText
   "t3/textGeneration/TextGeneration",
 ) {}
 
-type TextGenerationOp =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle"
-  | "generateReviewGuide";
+type TextGenerationOp = keyof ProviderTextGeneration;
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -60,6 +55,10 @@ export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   return TextGeneration.of({
+    generateComposerAssist: (input) =>
+      resolveInstance(registry, "generateComposerAssist", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateComposerAssist(input)),
+      ),
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),

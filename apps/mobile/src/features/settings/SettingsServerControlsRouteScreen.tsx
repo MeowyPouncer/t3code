@@ -1,8 +1,8 @@
 import { useNavigation } from "@react-navigation/native";
 import {
   COMPOSER_ASSIST_LANGUAGES,
-  COMPOSER_ASSIST_MODELS,
   COMPOSER_ASSIST_PAUSES,
+  composerAssistModelSelection,
 } from "@t3tools/client-runtime/composer-assist";
 import { SettingsRow } from "./components/SettingsRow";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
@@ -18,11 +18,12 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { RUNTIME_MODE_CHOICES } from "../threads/thread-settings-options";
+import { buildModelOptions } from "../../lib/modelOptions";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -46,7 +47,7 @@ import {
 
 type SettingsPage = "new-threads" | "source-control" | "agent-behavior" | "maintenance";
 
-/** FORK: the composer assist parts; the Claude account, status, rules and Try are on web and desktop. */
+/** FORK: the composer assist parts; status, rules and Try are on web and desktop. */
 const COMPOSER_ASSIST_SWITCHES = [
   {
     key: "blanks",
@@ -54,7 +55,7 @@ const COMPOSER_ASSIST_SWITCHES = [
     icon: "square.and.pencil",
     label: "Blanks",
     subtitle:
-      "End a draft with “ _” and Claude works on it. Bare, it improves the draft as a prompt; after an instruction (“as a list _”) it follows it; after a slot (“the test command: _”) it fills in the value.",
+      "End a draft with “ _” and the assistant works on it. Bare, it improves the draft as a prompt; after an instruction (“as a list _”) it follows it; after a slot (“the test command: _”) it fills in the value.",
   },
   {
     key: "contradictions",
@@ -228,6 +229,30 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     targets.every(
       (target) => target.environment.serverConfig.environment.capabilities.composerAssist === true,
     );
+  const composerAssistSelection =
+    reference === null
+      ? null
+      : composerAssistModelSelection(
+          reference.settings.composerAssist,
+          reference.environment.serverConfig.providers,
+        );
+  const composerAssistModels = useMemo(() => {
+    const catalogs = displayTargets.map((target) => {
+      const config = target.environment.serverConfig;
+      const supported = {
+        ...config,
+        providers: config.providers.filter((provider) => provider.supportsTextGeneration !== false),
+      };
+      return new Map(
+        buildModelOptions(supported, null, undefined, target.projectId)
+          .filter((model) => !model.isUnavailable)
+          .map((model) => [model.key, model]),
+      );
+    });
+    return [...(catalogs[0]?.values() ?? [])].filter((model) =>
+      catalogs.every((catalog) => catalog.get(model.key)?.providerDriver === model.providerDriver),
+    );
+  }, [displayTargets]);
   const renderComposerAssistSwitches = (group: "blanks" | "cues") =>
     COMPOSER_ASSIST_SWITCHES.filter((item) => item.group === group).map((item, index) => (
       <View key={item.key} className={index > 0 ? "border-t border-border-subtle" : undefined}>
@@ -509,22 +534,69 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   {supportsComposerAssist ? (
                     <>
                       <SettingsSection
-                        title="Composer assist model"
+                        title="Composer assist provider and model"
                         trailing={
-                          pendingWrites === 0 && uniformComposerAssist("model") === null ? (
+                          pendingWrites === 0 &&
+                          (uniformComposerAssist("model") === null ||
+                            uniformComposerAssist("instanceId") === null) ? (
                             <MixedValuesLabel projectSelected={projectSelected} />
                           ) : null
                         }
                       >
-                        {COMPOSER_ASSIST_MODELS.map((choice, index) => (
+                        <SettingsChoiceRow
+                          label="Automatic"
+                          description="Haiku on Claude when available, otherwise a provider's default model."
+                          selected={
+                            uniformComposerAssist("instanceId") === "" &&
+                            uniformComposerAssist("model") === ""
+                          }
+                          disabled={disabledFor("composerAssist")}
+                          onPress={() =>
+                            write({ composerAssist: { instanceId: "", model: "", options: [] } })
+                          }
+                        />
+                        {composerAssistSelection !== null &&
+                        uniformComposerAssist("instanceId") !== null &&
+                        uniformComposerAssist("model") !== null &&
+                        uniformComposerAssist("instanceId") !== "" &&
+                        !composerAssistModels.some(
+                          (choice) =>
+                            choice.selection.instanceId === composerAssistSelection.instanceId &&
+                            choice.selection.model === composerAssistSelection.model,
+                        ) ? (
                           <SettingsChoiceRow
-                            key={choice.value}
+                            label={composerAssistSelection.model}
+                            description={`${composerAssistSelection.instanceId} · Unavailable`}
+                            selected
+                            separated
+                            disabled
+                            onPress={() => {}}
+                          />
+                        ) : null}
+                        {composerAssistModels.map((choice) => (
+                          <SettingsChoiceRow
+                            key={choice.key}
                             label={choice.label}
-                            description={choice.note}
-                            selected={uniformComposerAssist("model") === choice.value}
-                            separated={index > 0}
+                            description={choice.providerLabel}
+                            selected={
+                              (uniformComposerAssist("instanceId") !== "" ||
+                                uniformComposerAssist("model") !== "") &&
+                              composerAssistSelection?.instanceId === choice.selection.instanceId &&
+                              composerAssistSelection.model === choice.selection.model &&
+                              uniformComposerAssist("model") !== null &&
+                              uniformComposerAssist("instanceId") !== null
+                            }
+                            separated
                             disabled={disabledFor("composerAssist")}
-                            onPress={() => write({ composerAssist: { model: choice.value } })}
+                            onPress={() =>
+                              write({
+                                composerAssist: {
+                                  instanceId: choice.selection.instanceId,
+                                  model: choice.selection.model,
+                                  options: choice.selection.options ?? [],
+                                },
+                              })
+                            }
                           />
                         ))}
                       </SettingsSection>

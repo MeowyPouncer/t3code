@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -24,6 +25,11 @@ const runtimeMock = {
     authHeaders: [] as Array<string | null>,
     closeCalls: [] as string[],
     sessionCreateCalls: 0,
+    sessionAbortCalls: [] as string[],
+    sessionDeleteCalls: [] as string[],
+    promptSignals: [] as Array<AbortSignal | undefined>,
+    promptStarted: undefined as (() => void) | undefined,
+    hangPrompt: false,
     connectionError: undefined as Error | undefined,
     sessionCreateError: undefined as unknown,
     sessionResult: undefined as { data?: { id: string } } | undefined,
@@ -39,6 +45,11 @@ const runtimeMock = {
     this.state.authHeaders.length = 0;
     this.state.closeCalls.length = 0;
     this.state.sessionCreateCalls = 0;
+    this.state.sessionAbortCalls.length = 0;
+    this.state.sessionDeleteCalls.length = 0;
+    this.state.promptSignals.length = 0;
+    this.state.promptStarted = undefined;
+    this.state.hangPrompt = false;
     this.state.connectionError = undefined;
     this.state.sessionCreateError = undefined;
     this.state.sessionResult = undefined;
@@ -102,12 +113,26 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
           }
           return runtimeMock.state.sessionResult ?? { data: { id: `${baseUrl}/session` } };
         },
-        prompt: async (input: { readonly parts: ReadonlyArray<unknown> }) => {
+        abort: async (input: { sessionID: string }) => {
+          runtimeMock.state.sessionAbortCalls.push(input.sessionID);
+          return { data: true };
+        },
+        delete: async (input: { sessionID: string }) => {
+          runtimeMock.state.sessionDeleteCalls.push(input.sessionID);
+          return { data: true };
+        },
+        prompt: async (
+          input: { readonly parts: ReadonlyArray<unknown> },
+          options?: { signal?: AbortSignal },
+        ) => {
           runtimeMock.state.promptUrls.push(baseUrl);
           runtimeMock.state.promptParts.push(input.parts);
           runtimeMock.state.authHeaders.push(
             serverPassword ? `Basic ${btoa(`opencode:${serverPassword}`)}` : null,
           );
+          runtimeMock.state.promptSignals.push(options?.signal);
+          runtimeMock.state.promptStarted?.();
+          if (runtimeMock.state.hangPrompt) return new Promise(() => {});
           if (runtimeMock.state.promptRequestError !== undefined) {
             throw runtimeMock.state.promptRequestError;
           }
@@ -543,6 +568,64 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
 it.layer(layerOpenCodeTextGenerationExistingServerTest)(
   "OpenCodeTextGeneration with configured server URL",
   (it) => {
+    it.effect.each(["timeout", "cancel"] as const)(
+      "stops and deletes a persistent server's assist session on %s",
+      (ending) =>
+        withOpenCodeTextGeneration(EXISTING_SERVER_OPENCODE_SETTINGS, (generation) =>
+          Effect.gen(function* () {
+            runtimeMock.state.hangPrompt = true;
+            let started: () => void = () => {};
+            const called = new Promise<void>((resolve) => {
+              started = resolve;
+            });
+            runtimeMock.state.promptStarted = started;
+            const running = yield* generation
+              .generateComposerAssist({
+                cwd: "/isolated-composer-assist",
+                system: "Edit the draft.",
+                task: "Keep ⟦1⟧.",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(Effect.timeoutOption("30 seconds"), Effect.forkScoped);
+            yield* Effect.promise(() => called);
+            if (ending === "timeout") {
+              yield* TestClock.adjust("30 seconds");
+              yield* Fiber.join(running);
+            } else {
+              yield* Fiber.interrupt(running);
+            }
+            expect(runtimeMock.state.promptSignals[0]?.aborted).toBe(true);
+            expect(runtimeMock.state.sessionAbortCalls).toEqual(["http://127.0.0.1:9999/session"]);
+            expect(runtimeMock.state.sessionDeleteCalls).toEqual(["http://127.0.0.1:9999/session"]);
+            expect(runtimeMock.state.closeCalls).toEqual([]);
+          }),
+        ),
+    );
+
+    it.effect(
+      "deletes a completed assist session while leaving its persistent server running",
+      () =>
+        withOpenCodeTextGeneration(EXISTING_SERVER_OPENCODE_SETTINGS, (generation) =>
+          Effect.gen(function* () {
+            runtimeMock.state.promptResult = {
+              data: {
+                parts: [{ type: "text", text: JSON.stringify({ text: "Rewritten draft." }) }],
+              },
+            };
+            const result = yield* generation.generateComposerAssist({
+              cwd: "/isolated-composer-assist",
+              system: "Edit.",
+              task: "Draft.",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+            expect(result).toBe("Rewritten draft.");
+            expect(runtimeMock.state.sessionDeleteCalls).toEqual(["http://127.0.0.1:9999/session"]);
+            expect(runtimeMock.state.sessionAbortCalls).toEqual([]);
+            expect(runtimeMock.state.closeCalls).toEqual([]);
+          }),
+        ),
+    );
+
     it.effect("does not send a local environment password to a configured server", () =>
       withOpenCodeTextGeneration(
         EXTERNAL_SERVER_WITHOUT_AUTH_OPENCODE_SETTINGS,

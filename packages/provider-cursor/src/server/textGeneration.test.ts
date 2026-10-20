@@ -72,6 +72,35 @@ beforeEach(() => {
 });
 
 describe("CursorTextGeneration", () => {
+  it.effect("answers composer assist through the configured model in an isolated directory", () =>
+    Effect.gen(function* () {
+      cursorSdkMock.prompt.mockResolvedValue({
+        id: "composer-assist",
+        status: "finished",
+        result: JSON.stringify({ text: "<verdict>REWRITE</verdict>\n<text>Fix ⟦1⟧.</text>" }),
+      });
+      const generation = yield* makeCursorTextGeneration(cursorSettings, {
+        CURSOR_API_KEY: "test-cursor-key",
+      });
+      const result = yield* generation.generateComposerAssist({
+        cwd: "/the-project",
+        system: "Edit the draft.",
+        task: "Keep ⟦1⟧ in the draft.",
+        modelSelection: createModelSelection(ProviderInstanceId.make("cursor"), "gemini-4-argon", [
+          { id: "reasoning_effort", value: "high" },
+        ]),
+      });
+      expect(result).toBe("<verdict>REWRITE</verdict>\n<text>Fix ⟦1⟧.</text>");
+      expect(cursorSdkMock.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: { id: "gemini-4-argon", params: [{ id: "reasoning_effort", value: "high" }] },
+          local: expect.objectContaining({ cwd: "/isolated-text-generation", settingSources: [] }),
+        }),
+      );
+      expect(cursorSdkMock.close).toHaveBeenCalledTimes(1);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("resolves the browser credential for every request after an account change", () =>
     Effect.gen(function* () {
       let apiKey = "first-browser-key";

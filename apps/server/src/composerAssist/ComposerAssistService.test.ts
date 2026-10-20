@@ -2,20 +2,24 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   type OrchestrationV2ThreadShell,
+  type ModelSelection,
   ProjectId,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TextGenerationError,
 } from "@t3tools/contracts";
 import type { ProviderComposerAssist } from "@t3tools/provider-core/server/driver";
 import { ProviderComposerAssistError } from "@t3tools/provider-core/server/errors";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -28,6 +32,7 @@ import * as ComposerAssist from "./ComposerAssistService.ts";
 const proton = ProviderInstanceId.make("ClaudeProton");
 const catz = ProviderInstanceId.make("ClaudeCatz");
 const codex = ProviderInstanceId.make("codex");
+const cursor = ProviderInstanceId.make("cursor");
 const threadId = ThreadId.make("thread-1");
 const fakeAssist = {} as ProviderComposerAssist;
 
@@ -76,6 +81,8 @@ interface Harness {
     readonly instanceId: ProviderInstanceId;
     readonly task: string;
     readonly model: string | undefined;
+    readonly options?: ModelSelection["options"];
+    readonly cwd?: string;
   }>;
   /** The same tasks as they arrive, to wait for one run in the background. */
   readonly arrivals: Queue.Queue<{
@@ -108,6 +115,7 @@ const makeHarness = (
   settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
   /** Every request to Claude fails with this. */
   failWith?: string,
+  genericMode: "answer" | "hang" | "unsupported" = "answer",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -120,6 +128,8 @@ const makeHarness = (
       instanceId: ProviderInstanceId;
       task: string;
       model: string | undefined;
+      options?: ModelSelection["options"];
+      cwd?: string;
     }> = [];
     const arrivals = yield* Queue.unbounded<{ instanceId: ProviderInstanceId; task: string }>();
     const runId = yield* Ref.make("run-1");
@@ -136,6 +146,49 @@ const makeHarness = (
         ),
       roomForBackground: Ref.get(room),
     });
+    const textGenerationFor = (instanceId: ProviderInstanceId) => ({
+      generateComposerAssist: ({
+        task,
+        modelSelection,
+        cwd,
+      }: {
+        task: string;
+        modelSelection: ModelSelection;
+        cwd: string;
+      }) =>
+        Effect.sync(() => {
+          calls.push({
+            instanceId,
+            task,
+            model: modelSelection.model,
+            options: modelSelection.options,
+            cwd,
+          });
+        }).pipe(
+          Effect.andThen(Queue.offer(arrivals, { instanceId, task })),
+          Effect.andThen(
+            genericMode === "hang"
+              ? Effect.never
+              : failWith === undefined
+                ? Effect.succeed(reply(task))
+                : Effect.fail(
+                    new TextGenerationError({
+                      operation: "generateComposerAssist",
+                      detail: failWith,
+                    }),
+                  ),
+          ),
+        ),
+    });
+    const snapshot = {
+      getSnapshot: Ref.get(room).pipe(
+        Effect.map((available) => ({
+          supportsTextGeneration: genericMode !== "unsupported",
+          models: [{ slug: "gpt-6.1-sol", isDefault: true }],
+          usageLimits: { windows: [{ usedPercent: available ? 20 : 95 }] },
+        })),
+      ),
+    };
     const shell = (latestRunId: string) =>
       ({
         id: threadId,
@@ -174,7 +227,18 @@ const makeHarness = (
               listInstances: Effect.succeed([
                 { instanceId: proton, enabled: true, composerAssist: assistFor(proton) },
                 { instanceId: catz, enabled: true, composerAssist: assistFor(catz) },
-                { instanceId: codex, enabled: true },
+                {
+                  instanceId: codex,
+                  enabled: true,
+                  textGeneration: textGenerationFor(codex),
+                  snapshot,
+                },
+                {
+                  instanceId: cursor,
+                  enabled: true,
+                  textGeneration: textGenerationFor(cursor),
+                  snapshot,
+                },
               ]),
             } as unknown as ProviderInstanceRegistry["Service"]),
           ),
@@ -200,6 +264,122 @@ const makeHarness = (
 const taken = (harness: Harness) => harness.calls.splice(0);
 
 describe("ComposerAssistService", () => {
+  it.effect("reports another provider's failure without retrying on Claude", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        { composerAssist: { instanceId: codex, model: "gpt-6.1-sol" } },
+        "Account unavailable",
+      );
+      const error = yield* harness.service.blank({ threadId, text: "shorter _" }).pipe(Effect.flip);
+      assert.equal(error.detail, "Account unavailable");
+      const calls = taken(harness);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.instanceId, codex);
+    }),
+  );
+
+  it.effect("interrupts a timed-out provider request and removes its temporary directory", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        { composerAssist: { instanceId: codex, model: "gpt-6.1-sol" } },
+        undefined,
+        "hang",
+      );
+      const result = yield* harness.service
+        .blank({ threadId, text: "shorter _" })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Queue.take(harness.arrivals);
+      const cwd = harness.calls[0]?.cwd;
+      assert.isDefined(cwd);
+      yield* TestClock.adjust("30 seconds");
+      assert.include((yield* Fiber.join(result)).detail, "timed out");
+      assert.isFalse(
+        yield* FileSystem.FileSystem.pipe(
+          Effect.flatMap((fs) => fs.exists(cwd!)),
+          Effect.provide(NodeServices.layer),
+        ),
+      );
+      assert.equal((yield* harness.service.status({})).blanks.failures, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses a configured provider without text generation support", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        { composerAssist: { instanceId: codex, model: "gpt-6.1-sol" } },
+        undefined,
+        "unsupported",
+      );
+      const error = yield* harness.service.blank({ threadId, text: "shorter _" }).pipe(Effect.flip);
+      assert.include(error.detail, "not available");
+      assert.deepEqual(taken(harness), []);
+      assert.isNull((yield* harness.service.status({})).account);
+    }),
+  );
+
+  it.effect.each([
+    [codex, "gpt-6.1-sol", "reasoningEffort"],
+    [cursor, "gemini-4-argon", "reasoning_effort"],
+  ] as const)(
+    "routes blanks and cues to the selected %s model with its options",
+    ([instanceId, model, option]) =>
+      Effect.gen(function* () {
+        const options = [{ id: option, value: "high" }];
+        const harness = yield* makeHarness({ composerAssist: { instanceId, model, options } });
+        const result = yield* harness.service.blank({ threadId, text: "fix the crash in ⟦1⟧ _" });
+        assert.deepEqual(result, { _tag: "rewrite", text: "Fix the crash in ⟦1⟧." });
+        yield* harness.service.cues({ threadId, text: "Now push to origin/main please." });
+        const calls = taken(harness);
+        assert.equal(calls.length, 4);
+        for (const call of calls) {
+          assert.equal(call.instanceId, instanceId);
+          assert.equal(call.model, model);
+          assert.deepEqual(call.options, options);
+          assert.isDefined(call.cwd);
+          assert.notEqual(call.cwd, process.cwd());
+          assert.isFalse(
+            yield* FileSystem.FileSystem.pipe(
+              Effect.flatMap((fs) => fs.exists(call.cwd!)),
+              Effect.provide(NodeServices.layer),
+            ),
+          );
+        }
+        const status = yield* harness.service.status({});
+        assert.equal(status.account?.instanceId, instanceId);
+        assert.equal(status.model, model);
+      }),
+  );
+
+  it.effect(
+    "pauses background cues near another provider's limit but still answers typed blanks",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          composerAssist: { instanceId: codex, model: "gpt-6.1-sol" },
+        });
+        yield* harness.setRoom(false);
+        assert.deepEqual(
+          yield* harness.service.cues({ threadId, text: "Now push to origin/main please." }),
+          { cues: [] },
+        );
+        assert.deepEqual(taken(harness), []);
+        assert.isTrue((yield* harness.service.status({})).cuesPaused);
+        yield* harness.service.blank({ threadId, text: "shorter _" });
+        assert.equal(taken(harness)[0]?.instanceId, codex);
+      }),
+  );
+
+  it.effect("refuses a missing configured provider without falling back to Claude", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        composerAssist: { instanceId: "missing", model: "gpt-6.1-sol" },
+      });
+      const error = yield* harness.service.blank({ threadId, text: "shorter _" }).pipe(Effect.flip);
+      assert.equal(error._tag, "ComposerAssistError");
+      assert.deepEqual(taken(harness), []);
+    }),
+  );
+
   it.effect("rewrites a blank on the thread's account with its recent messages", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

@@ -117,6 +117,14 @@ export type ReviewGuideGenerationResult = Omit<
 
 /** Commit, change request, branch, and title generation backed by one provider instance. */
 export interface ProviderTextGeneration {
+  /** Edit a draft using only its supplied context, with no checkout investigation. */
+  readonly generateComposerAssist: (input: {
+    readonly cwd: string;
+    readonly system: string;
+    readonly task: string;
+    readonly modelSelection: ModelSelection;
+  }) => Effect.Effect<string, TextGenerationError>;
+
   /**
    * Generate a commit message from staged change context.
    */

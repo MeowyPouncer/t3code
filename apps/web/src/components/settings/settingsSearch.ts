@@ -386,16 +386,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["grammar tidy rewrite whole draft"],
   },
   {
-    id: "composer-assist-account",
-    title: "Composer assist: Claude account",
-    to: "/settings/general",
-    searchTerms: ["haiku claude instance account"],
-  },
-  {
     id: "composer-assist-model",
-    title: "Composer assist: Model",
+    title: "Composer assist: Provider and model",
     to: "/settings/general",
-    searchTerms: ["haiku sonnet opus claude faster slower blank cue"],
+    searchTerms: [
+      "provider instance account model codex cursor gemini grok haiku sonnet opus claude faster slower blank cue",
+    ],
   },
   {
     id: "composer-assist-activity",

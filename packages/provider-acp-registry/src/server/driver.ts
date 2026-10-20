@@ -79,6 +79,7 @@ const makeUnsupportedTextGeneration = (): ProviderTextGeneration => {
       }),
     );
   return {
+    generateComposerAssist: () => unsupported("generateComposerAssist"),
     generateCommitMessage: () => unsupported("generateCommitMessage"),
     generatePrContent: () => unsupported("generatePrContent"),
     generateBranchName: () => unsupported("generateBranchName"),

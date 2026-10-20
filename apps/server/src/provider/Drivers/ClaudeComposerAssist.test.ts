@@ -33,7 +33,7 @@ process.stdin.on("data", (chunk) => {
       JSON.stringify(
         mode === "error"
           ? { type: "result", subtype: "error_during_execution", is_error: true, result: "Usage limit reached" }
-          : { type: "result", subtype: "success", is_error: false, result: "echo:" + text },
+          : { type: "result", subtype: "success", is_error: false, result: mode === "model" ? process.argv[process.argv.indexOf("--model") + 1] + ":" + text : "echo:" + text },
       ) + "\\n",
     );
   }
@@ -41,7 +41,7 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => process.exit(0));
 `;
 
-const setup = (mode: "echo" | "silent" | "error") =>
+const setup = (mode: "echo" | "silent" | "error" | "model") =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -86,13 +86,18 @@ describe("ClaudeComposerAssist", () => {
 
   it.live("starts a process for the model asked, not the one started ahead", () =>
     Effect.gen(function* () {
-      const { assist, starts } = yield* setup("echo");
-      yield* assist.complete({ system: "SYS", task: "one", timeoutMs: 15_000 });
-      yield* assist.complete({ system: "SYS", task: "two", timeoutMs: 15_000, model: "sonnet" });
-      const models = (yield* starts).map((argv) => argv[argv.indexOf("--model") + 1]);
-      // Two for haiku (the one used and the next one started ahead), then sonnet's own.
-      assert.deepEqual(models.slice(0, 2), ["haiku", "haiku"]);
-      assert.include(models, "sonnet");
+      const { assist } = yield* setup("model");
+      const first = yield* assist.complete({ system: "SYS", task: "one", timeoutMs: 15_000 });
+      const second = yield* assist.complete({
+        system: "SYS",
+        task: "two",
+        timeoutMs: 15_000,
+        model: "sonnet",
+      });
+      // A warmed child may be stopped before it writes its startup log; the served answer
+      // proves which model handled each task regardless of process startup order.
+      assert.equal(first, "haiku:one");
+      assert.equal(second, "sonnet:two");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
